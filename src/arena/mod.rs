@@ -6,7 +6,7 @@
 //
 // https://www.gingerbill.org/article/2019/02/08/memory-allocation-strategies-002/
 
-use core::{alloc::LayoutError, ptr::NonNull};
+use core::{alloc::LayoutError, marker::PhantomData, ptr::NonNull};
 
 use alloc::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 
@@ -28,6 +28,17 @@ impl From<LayoutError> for ArenaAllocError {
     }
 }
 
+pub struct ArenaPtr<'arena, T>(NonNull<T>, PhantomData<&'arena ()>);
+
+impl<'arena, T> ArenaPtr<'arena, T> {
+    unsafe fn from_raw(raw: NonNull<T>) -> Self {
+        Self(raw, PhantomData)
+    }
+
+    fn to_non_null(self) -> NonNull<T> {
+        self.0
+    }
+}
 
 /// An `ArenaAllocator` written in Rust.
 ///
@@ -39,14 +50,15 @@ impl From<LayoutError> for ArenaAllocError {
 /// fragmentation.
 #[derive(Debug)]
 #[repr(C)]
-pub struct ArenaAllocator {
+pub struct Arena<'arena> {
     pub layout: Layout,
     pub previous_offset: usize,
     pub current_offset: usize,
     pub buffer: NonNull<u8>,
+    _marker: PhantomData<&'arena ()>,
 }
 
-impl ArenaAllocator {
+impl<'arena> Arena<'arena> {
     pub fn try_init(arena_size: usize, alignment: usize) -> Result<Self, ArenaAllocError> {
         let layout = Layout::from_size_align(arena_size, alignment)?;
         let data = unsafe {
@@ -62,14 +74,15 @@ impl ArenaAllocator {
             previous_offset: 0,
             current_offset: 0,
             buffer: data,
+            _marker: PhantomData
         })
     }
 
-    pub fn alloc<T: Finalize>(&mut self, value: T) -> NonNull<T> {
+    pub fn alloc<T: Finalize>(&mut self, value: T) -> ArenaPtr<'arena, T> {
         self.try_alloc(value).unwrap()
     }
 
-    // HUGE TODO: I think this may be wildly unsafe, if the returned NonNull<T> is ever
+    // HUGE TODO: I think this is probably wildly unsafe, if the returned NonNull<T> is ever
     // dropped while we still own then memory, then we may run into a double free
     // situation.
     //
@@ -79,7 +92,7 @@ impl ArenaAllocator {
     // Or maybe `try_alloc` and `alloc` should just be considered unsafe.
 
     /// Allocate a value and return that value.
-    pub fn try_alloc<T: Finalize>(&mut self, value: T) -> Result<NonNull<T>, ArenaAllocError> {
+    pub fn try_alloc<T: Finalize>(&mut self, value: T) -> Result<ArenaPtr<'arena, T>, ArenaAllocError> {
         let size = core::mem::size_of::<T>();
         let alignment = core::mem::align_of_val(&value);
         
@@ -116,17 +129,12 @@ impl ArenaAllocator {
         unsafe {
             let dst = self.buffer.add(offset).cast::<T>();
             dst.write_unaligned(value);
-            Ok(dst)
+            Ok(ArenaPtr::from_raw(dst))
         }
-    }
-
-    pub fn dealloc<T: Finalize>(&self, ptr: NonNull<T>) {
-        // SAFETY: todo
-        unsafe { ptr.as_ref().finalize() };
     }
 }
 
-impl Drop for ArenaAllocator {
+impl<'arena> Drop for Arena<'arena> {
     fn drop(&mut self) {
         unsafe { dealloc(self.buffer.as_ptr(), self.layout) };
     }
@@ -134,12 +142,12 @@ impl Drop for ArenaAllocator {
 
 #[cfg(test)]
 mod tests {
-    use crate::arena::{boxed::Box, finalize::Finalize, ArenaAllocator};
+    use crate::arena::{boxed::Box, finalize::Finalize, Arena};
 
     const DEFAULT_PAGE_SIZE: usize = 4096;
 
-    fn create_arena_allocator() -> ArenaAllocator {
-        ArenaAllocator::try_init(DEFAULT_PAGE_SIZE, 16).expect("A valid arena alloc initialization.")
+    fn create_arena_allocator<'arena>() -> Arena<'arena> {
+        Arena::try_init(DEFAULT_PAGE_SIZE, 16).expect("A valid arena alloc initialization.")
     }
 
     #[test]
@@ -175,8 +183,7 @@ mod tests {
                 _two: i as u128,
             };
             let pointer = allocator.alloc(value);
-            let boxed = unsafe { Box::from_raw(pointer.as_ptr()) };
-            // let boxed = unsafe { Box::from_raw(pointer.as_ptr()) };
+            let boxed = Box::from_arena_ptr(pointer);
             list.push_back(boxed);
         }
 
@@ -196,7 +203,6 @@ mod tests {
         }
 
         for item in list {
-            // let _ptr = Box::into_raw(item);
             let _ptr = Box::into_raw(item);
         }
 
@@ -227,7 +233,7 @@ mod tests {
             dropped: dropped.clone(),
         });
 
-        let boxed = unsafe { Box::from_raw(a.as_ptr()) };
+        let boxed = Box::from_arena_ptr(a);
 
         // dropping a box just runs its finalizer.
         drop(boxed);
@@ -237,10 +243,10 @@ mod tests {
 
     #[test]
     fn test_double_free() {
-        let mut arena = ArenaAllocator::try_init(4, 4).expect("A valid arena alloc initialization.");
+        let mut arena = Arena::try_init(4, 4).expect("A valid arena alloc initialization.");
         let val = arena.alloc(0i32);
 
-        let boxed = unsafe { Box::from_raw(val.as_ptr()) };
+        let boxed = Box::from_arena_ptr(val);
 
         drop(boxed);
         drop(arena);

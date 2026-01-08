@@ -1,19 +1,19 @@
 //! A `Box` type for the `ArenaAllocator`.
 
+use core::marker::PhantomData;
 use core::mem;
 use core::ops::{DerefMut, Deref};
 use core::ptr::NonNull;
-use std::ptr;
 
 use crate::arena::finalize::Finalize;
+use crate::arena::ArenaPtr;
 
 
-pub struct Box<T: Finalize>(NonNull<T>);
+pub struct Box<'arena, T: Finalize>(NonNull<T>, PhantomData<&'arena ()>);
 
-impl<T: Finalize> Box<T> {
-    pub unsafe fn from_raw(raw: *mut T) -> Self {
-        // Safety: Caller must guarantee that *mut T is a valid pointer.
-        Self(unsafe {NonNull::new_unchecked(raw) })
+impl<'arena, T: Finalize> Box<'arena, T> {
+    pub fn from_arena_ptr(raw: ArenaPtr<'arena, T>) -> Self {
+        Self(raw.to_non_null(), PhantomData)
     }
 
     pub fn into_raw(b: Self) -> *mut T {
@@ -22,30 +22,39 @@ impl<T: Finalize> Box<T> {
     }
 }
 
-impl<T: Finalize> Finalize for Box<T> {
+impl<'arena, T: Finalize> Finalize for Box<'arena, T> {
     fn finalize(&self) {
         unsafe { self.0.as_ref().finalize() };
     }
 }
 
-impl<T: Finalize> Drop for Box<T> {
+impl<'arena, T: Finalize> Drop for Box<'arena, T> {
     fn drop(&mut self) {
         // Run the finalizer on the fields of the box. 
         Finalize::finalize(self);
-        // SAFETY: TODO - is this a double free?
+        // TODO (nekevss): Can this cause a double free?
+        //
+        // MIRI appears to be alright with this general
+        // construction, and we leak memory if we don't
+        // drop any heap allocated memory that is part
+        // of T.
+        //
+        // SAFETY: We own the underlying data, so it is
+        // valid to drop anything connected to T
         unsafe {
             core::ptr::drop_in_place(self.0.as_mut());
         }
     }
 }
 
-impl<T: Finalize> DerefMut for Box<T> {
+impl<'arena, T: Finalize> DerefMut for Box<'arena, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: Box<T> is valid for the life of the Arena.
         unsafe { self.0.as_mut() }
     }
 }
 
-impl<T: Finalize> Deref for Box<T> {
+impl<'arena, T: Finalize> Deref for Box<'arena, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         unsafe { self.0.as_ref() }
