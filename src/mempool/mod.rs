@@ -4,10 +4,12 @@
 //! More stuff to be explained later.
 #![cfg_attr(not(test), forbid(clippy::unwrap_used))]
 
-use std::alloc::{Layout, alloc, dealloc};
-use std::cell::RefCell;
-use std::fmt::Debug;
-use std::ptr::NonNull;
+use alloc::alloc::{Layout, alloc, dealloc};
+use alloc::vec::Vec;
+use alloc::vec;
+use core::cell::RefCell;
+use core::fmt::Debug;
+use core::ptr::NonNull;
 
 #[cfg(test)]
 mod tests;
