@@ -7,5 +7,6 @@
 
 extern crate alloc;
 
+pub mod arena;
 pub mod mempool;
 
