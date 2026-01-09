@@ -2,8 +2,9 @@
 //! These are better run within Miri.
 
 use super::MemPoolAllocator;
-use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
+use alloc::rc::Rc;
+use alloc::vec;
+use core::sync::atomic::AtomicBool;
 
 #[test]
 fn small_in_order() {
@@ -113,7 +114,7 @@ fn drop() {
     impl Drop for MyS {
         fn drop(&mut self) {
             self.dropped
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+                .store(true, core::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -124,5 +125,5 @@ fn drop() {
     });
 
     pool.dealloc(a);
-    assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(dropped.load(core::sync::atomic::Ordering::SeqCst));
 }
