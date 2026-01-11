@@ -104,6 +104,7 @@ impl Pool {
 
     /// Try to allocate a value to this pool
     pub fn try_alloc<T>(&mut self, value: T) -> Result<NonNull<T>, PoolAllocError> {
+        // Confirm that the next FreeChunk is valid and not null
         let next = NonNull::new(self.free_head);
         let Some(chunk) = next else {
             return Err(PoolAllocError::OutOfChunks);
@@ -118,11 +119,12 @@ impl Pool {
         // Pop the chunk from the free list
         //
         // SAFETY: Chunk is safe to dereference. It is well aligned by design of
-        // the allocator, and a valid value of type `FreeChunk`
+        // the allocator, not null, and a valid value of type `FreeChunk`
         unsafe {
             self.free_head =  chunk.as_ref().next.get();
         }
 
+        // Cast the FreeChunk into value T
         let dst = chunk.cast::<T>();
 
         // SAFETY: The `dst` has been popped from the free list and is a valid
@@ -132,12 +134,16 @@ impl Pool {
         Ok(dst)
     }
 
-    // deallocate the chunk and move it back to the free list.
+    // Deallocate the chunk and move it back to the free list.
     pub unsafe fn dealloc<T: Drop>(&mut self, ptr: NonNull<T>) {
         // Check that the pointer is within the bounds of the owned data block.
-        assert!(self.data.as_ptr() as usize <= ptr.as_ptr() as usize && self.data.as_ptr() as usize + self.layout.size() - self.chunk_size >= ptr.as_ptr() as usize);
-
-        // SAFETY: TODO
+        // 
+        // Check the ptr larger than the lower bound
+        assert!(self.data.as_ptr() as usize <= ptr.as_ptr() as usize);
+        // Assert that we are within the upper bound - chunk_size
+        assert!(self.data.as_ptr() as usize + self.layout.size() - self.chunk_size >= ptr.as_ptr() as usize);
+        // SAFETY: We have asserted that we are within the bounds of this Pool's data
+        // and the ptr MUST be `NonNull`
         unsafe {
             let ptr = ptr.as_ptr();
             drop_in_place(ptr);
@@ -160,10 +166,11 @@ impl Pool {
             assert!(chunk_offset + self.chunk_size <= self.layout.size());
             // We add the offset to our data pointer and cast it to a chunk.
             //
-            // SAFETY: todo
+            // SAFETY: This is safe as we have asserted that chunk offset
+            // so we will not overflow the bounds of Pool's data.
             unsafe {
                 let chunk_ptr = self.data.as_ptr().add(chunk_offset) as *mut FreeChunk;
-                // Push the Chunk onto the free list.
+                // Push the Chunk onto the free stack.
                 (*chunk_ptr).next = NextOrNull::from_raw(self.free_head);
                 self.free_head = chunk_ptr;
             }
