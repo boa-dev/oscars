@@ -4,6 +4,7 @@ use alloc::alloc::{LayoutError, alloc, handle_alloc_error, dealloc};
 use core::alloc::Layout;
 use core::ptr::{drop_in_place, NonNull};
 use core::ptr;
+use core::marker::PhantomData;
 
 #[cfg(test)]
 mod tests;
@@ -56,15 +57,16 @@ impl FreeChunk {
 /// The pool allocator allocates a chunk of memory and subdivides it into specific sizes.
 ///
 #[repr(C)]
-pub struct Pool {
+pub struct Pool<'pool> {
     layout: Layout,
     chunk_size: usize,
     free_head: *mut FreeChunk,
     data: NonNull<u8>,
+    _marker: PhantomData<&'pool ()>,
 }
 
 
-impl Pool {
+impl<'pool> Pool<'pool> {
     pub fn init(chunk_size: usize, page_size: usize, align: usize) -> Result<Self, PoolAllocError> {
         // Create the layout for the page, align it to the chunk alignment.
         let layout = Layout::from_size_align(page_size, align)?;
@@ -90,6 +92,7 @@ impl Pool {
             chunk_size: aligned_chunk_size,
             free_head: ptr::null_mut::<FreeChunk>(), // Note the tail node.
             data,
+            _marker: PhantomData,
         };
 
         pool.free_all();
@@ -135,7 +138,7 @@ impl Pool {
     }
 
     // Deallocate the chunk and move it back to the free list.
-    pub unsafe fn dealloc<T: Drop>(&mut self, ptr: NonNull<T>) {
+    pub fn dealloc<T: Drop>(&mut self, ptr: NonNull<T>) {
         // Check that the pointer is within the bounds of the owned data block.
         // 
         // Check the ptr larger than the lower bound
@@ -178,7 +181,7 @@ impl Pool {
     }
 }
 
-impl Drop for Pool {
+impl<'pool> Drop for Pool<'pool> {
     fn drop(&mut self) {
         unsafe { dealloc(self.data.as_ptr(), self.layout) }
     }

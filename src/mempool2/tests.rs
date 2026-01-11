@@ -50,7 +50,7 @@ fn alloc_dealloc_realloc() {
         // Deallocate any item divisble by 32, but leave those
         // divisible by 16 still allocated.
         if item_ref.one % 32 == 0 {
-            unsafe { allocator.dealloc(item) };
+            allocator.dealloc(item);
         } else {
             still_allocated.push(item)
         }
@@ -109,7 +109,7 @@ fn drop() {
         dropped: dropped.clone(),
     });
 
-    unsafe { pool.dealloc(a) };
+    pool.dealloc(a);
     assert!(dropped.load(Ordering::SeqCst));
 }
 
