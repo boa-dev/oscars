@@ -27,7 +27,7 @@ pub struct NextOrNull(*mut FreeChunk);
 impl NextOrNull {
     // Yeah, this is dangerous, track this.
     const fn null() -> Self {
-        NextOrNull(ptr::null::<*const FreeChunk>() as *mut FreeChunk)
+        NextOrNull(ptr::null_mut::<FreeChunk>())
     }
 
     fn from_raw(raw: *mut FreeChunk) -> Self {
@@ -88,7 +88,7 @@ impl Pool {
         let mut pool = Pool {
             layout,
             chunk_size: aligned_chunk_size,
-            free_head: ptr::null::<*const FreeChunk>() as *mut FreeChunk, // Note the tail node.
+            free_head: ptr::null_mut::<FreeChunk>(), // Note the tail node.
             data,
         };
 
