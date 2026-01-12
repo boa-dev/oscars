@@ -127,9 +127,9 @@ impl<'arena> Arena<'arena> {
         // We have determined that we will not overflow the range of the Arena's buffer
         // and that the alignment is possible.
         unsafe {
-            let dst = self.buffer.add(offset).cast::<T>();
-            dst.write_unaligned(value);
-            Ok(ArenaPtr::from_raw(dst))
+            let dst = self.buffer.as_ptr().add(new_buffer_offset).cast::<T>();
+            dst.write(value);
+            Ok(ArenaPtr::from_raw(NonNull::new_unchecked(dst)))
         }
     }
 }
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn arena_alloc_misc() {
         use alloc::collections::LinkedList;
-        use crate::arena::boxed::Box;
+        use alloc::boxed::Box;
 
         // 32 byte struct (24 bytes + 8 padding) -> 128 fit inside a 4096 page
         struct MiscItem {
@@ -183,7 +183,7 @@ mod tests {
                 _two: i as u128,
             };
             let pointer = allocator.alloc(value);
-            let boxed = Box::from_arena_ptr(pointer);
+            let boxed = unsafe { Box::from_raw(pointer.0.as_ptr()) };
             list.push_back(boxed);
         }
 
