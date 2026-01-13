@@ -1,6 +1,6 @@
 //! A block based mempool
 
-use alloc::alloc::{LayoutError, alloc, handle_alloc_error, dealloc};
+use rust_alloc::alloc::{LayoutError, alloc, handle_alloc_error, dealloc};
 use core::alloc::Layout;
 use core::ptr::{drop_in_place, NonNull};
 use core::ptr;

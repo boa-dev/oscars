@@ -32,7 +32,7 @@ fn alloc_dealloc_realloc() {
         align_of::<Item>(),
     ).unwrap();
 
-    let mut collection = alloc::vec::Vec::default();
+    let mut collection = rust_alloc::vec::Vec::default();
     // Fill all of our chunks
     for i in (0..4096).step_by(size_of::<Item>()) {
         let allocated = allocator.try_alloc(Item {
@@ -44,7 +44,7 @@ fn alloc_dealloc_realloc() {
 
     assert!(allocator.try_alloc(Item { one: 0, phase: 0}).is_err());
 
-    let mut still_allocated = alloc::vec::Vec::default();
+    let mut still_allocated = rust_alloc::vec::Vec::default();
     for item in collection {
         let item_ref = unsafe { item.as_ref() };
         // Deallocate any item divisble by 32, but leave those
@@ -56,7 +56,7 @@ fn alloc_dealloc_realloc() {
         }
     }
 
-    let mut reallocated = alloc::vec::Vec::default();
+    let mut reallocated = rust_alloc::vec::Vec::default();
     for i in (0usize..4096).step_by(size_of::<Item>() * 2) {
         let allocated = allocator.try_alloc(Item {
             one: i + size_of::<Item>(),
@@ -83,7 +83,7 @@ fn alloc_dealloc_realloc() {
 
 #[test]
 fn drop() {
-    use alloc::rc::Rc;
+    use rust_alloc::rc::Rc;
     use core::sync::atomic::{AtomicBool, Ordering};
 
     struct MyS {
