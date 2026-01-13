@@ -1,5 +1,5 @@
 
-use alloc::vec::Vec;
+use rust_alloc::vec::Vec;
 
 use super::ArenaAllocator;
 
@@ -37,7 +37,7 @@ fn alloc_dealloc() {
 
 #[test]
 fn arc_drop() {
-    use alloc::rc::Rc;
+    use rust_alloc::rc::Rc;
     use core::sync::atomic::{AtomicBool, Ordering};
     
     struct MyS {

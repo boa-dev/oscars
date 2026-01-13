@@ -8,7 +8,7 @@
 
 use core::{alloc::LayoutError, marker::PhantomData, ptr::NonNull};
 
-use alloc::alloc::{alloc, dealloc, handle_alloc_error, Layout};
+use rust_alloc::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 
 use finalize::Finalize;
 
@@ -162,8 +162,8 @@ mod tests {
 
     #[test]
     fn arena_alloc_misc() {
-        use alloc::collections::LinkedList;
-        use alloc::boxed::Box;
+        use rust_alloc::collections::LinkedList;
+        use rust_alloc::boxed::Box;
 
         // 32 byte struct (24 bytes + 8 padding) -> 128 fit inside a 4096 page
         struct MiscItem {
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_arc_drop() {
-        use alloc::rc::Rc;
+        use rust_alloc::rc::Rc;
         use core::sync::atomic::{AtomicBool, Ordering};
         
         struct MyS {

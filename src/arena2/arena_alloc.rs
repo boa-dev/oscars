@@ -1,6 +1,6 @@
 use core::{marker::PhantomData, ptr::{drop_in_place, NonNull}};
 
-use alloc::alloc::{alloc, dealloc, handle_alloc_error, Layout};
+use rust_alloc::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 
 use crate::arena2::ArenaAllocError;
 

@@ -1,7 +1,7 @@
 //! An Arena allocator that manages multiple backing arenas
 
-use alloc::alloc::LayoutError;
-use alloc::collections::LinkedList;
+use rust_alloc::alloc::LayoutError;
+use rust_alloc::collections::LinkedList;
 
 mod arena_alloc;
 
