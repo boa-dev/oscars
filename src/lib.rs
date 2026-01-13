@@ -7,7 +7,4 @@
 
 extern crate alloc as rust_alloc;
 
-pub mod arena;
-pub mod arena2;
-pub mod mempool;
-pub mod mempool2;
+pub mod alloc;

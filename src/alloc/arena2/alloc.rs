@@ -5,7 +5,7 @@ use core::{
 
 use rust_alloc::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 
-use crate::arena2::ArenaAllocError;
+use crate::alloc::arena2::ArenaAllocError;
 
 #[derive(Debug)]
 #[repr(C)]

@@ -5,8 +5,8 @@ use core::mem;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
-use crate::arena::ArenaPtr;
-use crate::arena::finalize::Finalize;
+use crate::alloc::arena::ArenaPtr;
+use crate::alloc::arena::finalize::Finalize;
 
 pub struct Box<'arena, T: Finalize>(NonNull<T>, PhantomData<&'arena ()>);
 

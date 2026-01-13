@@ -143,7 +143,7 @@ impl<'arena> Drop for Arena<'arena> {
 
 #[cfg(test)]
 mod tests {
-    use crate::arena::{Arena, boxed::Box, finalize::Finalize};
+    use crate::alloc::arena::{Arena, boxed::Box, finalize::Finalize};
 
     const DEFAULT_PAGE_SIZE: usize = 4096;
 
