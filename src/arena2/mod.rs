@@ -3,9 +3,9 @@
 use rust_alloc::alloc::LayoutError;
 use rust_alloc::collections::LinkedList;
 
-mod arena_alloc;
+mod alloc;
 
-use arena_alloc::{Arena, ArenaPtr};
+use alloc::{Arena, ArenaPtr};
 
 #[cfg(test)]
 mod tests;
