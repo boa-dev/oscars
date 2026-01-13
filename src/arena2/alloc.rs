@@ -85,14 +85,13 @@ impl<T> TaggedPtr<T> {
     }
 }
 
-
-
 // An arena pointer
 //
 // NOTE: This will actually need to be an offset at some point if we were to add
 // serialization. That's because the underlying pointer is unreliable, so we
 // would always need to derive the actual pointer from the Arena's buffer pointer
 
+#[repr(transparent)]
 pub struct ArenaPtr<'arena, T>(NonNull<ErasedHeapItem>, PhantomData<&'arena T>);
 
 impl<'arena, T> ArenaPtr<'arena, T> {
