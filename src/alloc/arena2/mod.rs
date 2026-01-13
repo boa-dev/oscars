@@ -44,7 +44,6 @@ impl<'alloc> Default for ArenaAllocator<'alloc> {
     }
 }
 
-
 impl<'alloc> ArenaAllocator<'alloc> {
     pub fn with_arena_size(mut self, arena_size: usize) -> Self {
         self.arena_size = arena_size;
@@ -65,7 +64,8 @@ impl<'alloc> ArenaAllocator<'alloc> {
                 //
                 // TODO: also, we need a min-alignment
                 self.initialize_new_arena()?;
-                self.get_active_arena_mut().expect("must exist, we just set it")
+                self.get_active_arena_mut()
+                    .expect("must exist, we just set it")
             }
         };
 
@@ -76,8 +76,8 @@ impl<'alloc> ArenaAllocator<'alloc> {
                 self.initialize_new_arena()?;
                 let new_active = self.get_active_arena_mut().expect("must exist, ");
                 new_active.try_alloc(value)
-            },
-            Err(e) => return Err(e),
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -97,4 +97,3 @@ impl<'alloc> ArenaAllocator<'alloc> {
         }
     }
 }
-

@@ -1,11 +1,10 @@
-
 use super::Pool;
 
 #[test]
 fn basic_alloc() {
     // TODO: Is there a better way to initialize a page?
     //
-    // Maybe have the page be time N * chunk_size 
+    // Maybe have the page be time N * chunk_size
     let mut allocator = Pool::init(size_of::<usize>(), 256, align_of::<usize>()).unwrap();
 
     for i in 0..(256 / size_of::<usize>()) {
@@ -26,23 +25,16 @@ fn alloc_dealloc_realloc() {
         fn drop(&mut self) {}
     }
 
-    let mut allocator = Pool::init(
-        size_of::<Item>(),
-        4096,
-        align_of::<Item>(),
-    ).unwrap();
+    let mut allocator = Pool::init(size_of::<Item>(), 4096, align_of::<Item>()).unwrap();
 
     let mut collection = rust_alloc::vec::Vec::default();
     // Fill all of our chunks
     for i in (0..4096).step_by(size_of::<Item>()) {
-        let allocated = allocator.try_alloc(Item {
-            one: i,
-            phase: 1
-        }).unwrap();
+        let allocated = allocator.try_alloc(Item { one: i, phase: 1 }).unwrap();
         collection.push(allocated);
     }
 
-    assert!(allocator.try_alloc(Item { one: 0, phase: 0}).is_err());
+    assert!(allocator.try_alloc(Item { one: 0, phase: 0 }).is_err());
 
     let mut still_allocated = rust_alloc::vec::Vec::default();
     for item in collection {
@@ -58,10 +50,12 @@ fn alloc_dealloc_realloc() {
 
     let mut reallocated = rust_alloc::vec::Vec::default();
     for i in (0usize..4096).step_by(size_of::<Item>() * 2) {
-        let allocated = allocator.try_alloc(Item {
-            one: i + size_of::<Item>(),
-            phase: 2
-        }).unwrap();
+        let allocated = allocator
+            .try_alloc(Item {
+                one: i + size_of::<Item>(),
+                phase: 2,
+            })
+            .unwrap();
         reallocated.push(allocated)
     }
 
@@ -83,8 +77,8 @@ fn alloc_dealloc_realloc() {
 
 #[test]
 fn drop() {
-    use rust_alloc::rc::Rc;
     use core::sync::atomic::{AtomicBool, Ordering};
+    use rust_alloc::rc::Rc;
 
     struct MyS {
         dropped: Rc<AtomicBool>,
@@ -92,17 +86,11 @@ fn drop() {
 
     impl Drop for MyS {
         fn drop(&mut self) {
-            self.dropped
-                .store(true, Ordering::SeqCst);
+            self.dropped.store(true, Ordering::SeqCst);
         }
     }
 
-    let mut pool = Pool::init(
-        size_of::<MyS>(),
-        4096,
-        align_of::<MyS>(),
-    ).unwrap();
-
+    let mut pool = Pool::init(size_of::<MyS>(), 4096, align_of::<MyS>()).unwrap();
 
     let dropped = Rc::new(AtomicBool::new(false));
     let a = pool.alloc(MyS {
@@ -112,4 +100,3 @@ fn drop() {
     pool.dealloc(a);
     assert!(dropped.load(Ordering::SeqCst));
 }
-

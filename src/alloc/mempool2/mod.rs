@@ -1,10 +1,10 @@
 //! A block based mempool
 
-use rust_alloc::alloc::{LayoutError, alloc, handle_alloc_error, dealloc};
 use core::alloc::Layout;
-use core::ptr::{drop_in_place, NonNull};
-use core::ptr;
 use core::marker::PhantomData;
+use core::ptr;
+use core::ptr::{NonNull, drop_in_place};
+use rust_alloc::alloc::{LayoutError, alloc, dealloc, handle_alloc_error};
 
 #[cfg(test)]
 mod tests;
@@ -48,7 +48,9 @@ struct FreeChunk {
 
 impl FreeChunk {
     const fn empty() -> Self {
-        Self { next: NextOrNull::null() }
+        Self {
+            next: NextOrNull::null(),
+        }
     }
 }
 
@@ -64,7 +66,6 @@ pub struct Pool<'pool> {
     data: NonNull<u8>,
     _marker: PhantomData<&'pool ()>,
 }
-
 
 impl<'pool> Pool<'pool> {
     pub fn init(chunk_size: usize, page_size: usize, align: usize) -> Result<Self, PoolAllocError> {
@@ -124,7 +125,7 @@ impl<'pool> Pool<'pool> {
         // SAFETY: Chunk is safe to dereference. It is well aligned by design of
         // the allocator, not null, and a valid value of type `FreeChunk`
         unsafe {
-            self.free_head =  chunk.as_ref().next.get();
+            self.free_head = chunk.as_ref().next.get();
         }
 
         // Cast the FreeChunk into value T
@@ -132,7 +133,9 @@ impl<'pool> Pool<'pool> {
 
         // SAFETY: The `dst` has been popped from the free list and is a valid
         // destination to be written.
-        unsafe { dst.write(value); }
+        unsafe {
+            dst.write(value);
+        }
 
         Ok(dst)
     }
@@ -140,11 +143,14 @@ impl<'pool> Pool<'pool> {
     // Deallocate the chunk and move it back to the free list.
     pub fn dealloc<T: Drop>(&mut self, ptr: NonNull<T>) {
         // Check that the pointer is within the bounds of the owned data block.
-        // 
+        //
         // Check the ptr larger than the lower bound
         assert!(self.data.as_ptr() as usize <= ptr.as_ptr() as usize);
         // Assert that we are within the upper bound - chunk_size
-        assert!(self.data.as_ptr() as usize + self.layout.size() - self.chunk_size >= ptr.as_ptr() as usize);
+        assert!(
+            self.data.as_ptr() as usize + self.layout.size() - self.chunk_size
+                >= ptr.as_ptr() as usize
+        );
         // SAFETY: We have asserted that we are within the bounds of this Pool's data
         // and the ptr MUST be `NonNull`
         unsafe {
@@ -188,18 +194,17 @@ impl<'pool> Drop for Pool<'pool> {
 }
 
 fn is_power_of_two(x: usize) -> bool {
-    (x & (x-1)) == 0
+    (x & (x - 1)) == 0
 }
 
 fn aligned_chunk_size(size: usize, align: usize) -> usize {
     let mut aligned_size = size;
 
-	assert!(is_power_of_two(align));
+    assert!(is_power_of_two(align));
 
-	let modulo = size % align;
-	if modulo != 0 {
-		aligned_size += align - modulo;
-	}
-	return aligned_size;
+    let modulo = size % align;
+    if modulo != 0 {
+        aligned_size += align - modulo;
+    }
+    aligned_size
 }
-

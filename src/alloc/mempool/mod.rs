@@ -4,12 +4,12 @@
 //! More stuff to be explained later.
 #![cfg_attr(not(test), forbid(clippy::unwrap_used))]
 
-use rust_alloc::alloc::{Layout, alloc, dealloc};
-use rust_alloc::vec::Vec;
-use rust_alloc::vec;
 use core::cell::RefCell;
 use core::fmt::Debug;
 use core::ptr::NonNull;
+use rust_alloc::alloc::{Layout, alloc, dealloc};
+use rust_alloc::vec;
+use rust_alloc::vec::Vec;
 
 #[cfg(test)]
 mod tests;

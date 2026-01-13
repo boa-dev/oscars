@@ -2,9 +2,9 @@
 //! These are better run within Miri.
 
 use super::MemPoolAllocator;
+use core::sync::atomic::AtomicBool;
 use rust_alloc::rc::Rc;
 use rust_alloc::vec;
-use core::sync::atomic::AtomicBool;
 
 #[test]
 fn small_in_order() {
