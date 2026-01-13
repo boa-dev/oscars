@@ -1,6 +1,9 @@
-use core::{marker::PhantomData, ptr::{drop_in_place, NonNull}};
+use core::{
+    marker::PhantomData,
+    ptr::{NonNull, drop_in_place},
+};
 
-use rust_alloc::alloc::{alloc, dealloc, handle_alloc_error, Layout};
+use rust_alloc::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 
 use crate::arena2::ArenaAllocError;
 
@@ -13,7 +16,10 @@ pub struct ArenaHeapItem<T> {
 
 impl<T> ArenaHeapItem<T> {
     fn new(next: *mut ErasedHeapItem, value: T) -> Self {
-        Self { next: TaggedPtr(next), value }
+        Self {
+            next: TaggedPtr(next),
+            value,
+        }
     }
 
     fn mark_dropped(&mut self) {
@@ -73,7 +79,7 @@ pub struct TaggedPtr<T>(*mut T);
 
 impl<T> TaggedPtr<T> {
     fn tag(&mut self) {
-       self.0 = self.0.map_addr(|addr| addr | MASK);
+        self.0 = self.0.map_addr(|addr| addr | MASK);
     }
 
     fn is_tagged(self) -> bool {
@@ -101,7 +107,7 @@ impl<'arena, T> ArenaPtr<'arena, T> {
 
     pub fn as_ref(self) -> &'arena T {
         // SAFETY: HeapItem is non-null and valid for dereferencing.
-        unsafe { 
+        unsafe {
             let typed_ptr = self.0.as_ptr().cast::<ArenaHeapItem<T>>();
             &(*typed_ptr).value
         }
@@ -137,13 +143,13 @@ impl ArenaState {
 
 pub struct ArenaAllocationData {
     size: usize,
-    buffer_offset: usize, 
-    relative_offset: usize
+    buffer_offset: usize,
+    relative_offset: usize,
 }
 
 /// An `ArenaAllocator` written in Rust.
 ///
-/// This allocator takes advantage of the global Rust allocator to allow 
+/// This allocator takes advantage of the global Rust allocator to allow
 /// allocating objects into a contiguous block of memory, regardless of size
 /// or alignment.
 ///
@@ -178,7 +184,7 @@ impl<'arena> Arena<'arena> {
             last_allocation: core::ptr::null_mut::<ErasedHeapItem>(), // NOTE: watch this one.
             current_offset: 0,
             buffer: data,
-            _marker: PhantomData
+            _marker: PhantomData,
         })
     }
 
@@ -191,13 +197,16 @@ impl<'arena> Arena<'arena> {
     }
 
     /// Allocates
-    pub fn alloc_or_close<T>(&mut self, value: T) -> Result<Option<ArenaPtr<'arena, T>>, ArenaAllocError> {
+    pub fn alloc_or_close<T>(
+        &mut self,
+        value: T,
+    ) -> Result<Option<ArenaPtr<'arena, T>>, ArenaAllocError> {
         match self.try_alloc(value) {
             Ok(v) => Ok(Some(v)),
             Err(ArenaAllocError::OutOfMemory) => {
                 self.flags.set_full();
                 Ok(None)
-            },
+            }
             Err(e) => Err(e),
         }
     }
@@ -219,13 +228,19 @@ impl<'arena> Arena<'arena> {
         unsafe { Ok(self.alloc_unchecked(value, allocation_data)) }
     }
 
-    pub unsafe fn alloc_unchecked<T>(&mut self, value: T, allocation_data: ArenaAllocationData) -> ArenaPtr<'arena, T> {
+    pub unsafe fn alloc_unchecked<T>(
+        &mut self,
+        value: T,
+        allocation_data: ArenaAllocationData,
+    ) -> ArenaPtr<'arena, T> {
         unsafe {
             // Calculate required values
             self.current_offset += allocation_data.relative_offset + allocation_data.size;
 
             let buffer_ptr = self.buffer.as_ptr();
-            let dst = buffer_ptr.add(allocation_data.buffer_offset).cast::<ArenaHeapItem<T>>();
+            let dst = buffer_ptr
+                .add(allocation_data.buffer_offset)
+                .cast::<ArenaHeapItem<T>>();
             // NOTE: everyI recomm next begin by pointing back to the start of the buffer rather than null.
             let arena_heap_item = ArenaHeapItem::new(self.last_allocation, value);
             dst.write(arena_heap_item);
@@ -235,37 +250,38 @@ impl<'arena> Arena<'arena> {
         }
     }
 
-    pub fn get_allocation_data<T>(&self, value_ref: &T) -> Result<ArenaAllocationData, ArenaAllocError> {
+    pub fn get_allocation_data<T>(
+        &self,
+        value_ref: &T,
+    ) -> Result<ArenaAllocationData, ArenaAllocError> {
         let size = core::mem::size_of::<ArenaHeapItem<T>>();
         let alignment = core::mem::align_of_val(value_ref);
 
         assert!(alignment <= self.layout.align());
-        
+
         // Safety: This is safe as `current_offset` must be less then the length
         // of the buffer.
-        let current = unsafe {
-            self.buffer.add(self.current_offset)
-        };
+        let current = unsafe { self.buffer.add(self.current_offset) };
 
         // Determine the alignment offset needed to align.
         let relative_offset = current.align_offset(alignment);
 
         // Check for alignment failure case
         if relative_offset == usize::MAX {
-            return Err(ArenaAllocError::AlignmentNotPossible)
+            return Err(ArenaAllocError::AlignmentNotPossible);
         }
 
         let buffer_offset = self.current_offset + relative_offset;
 
         // Check that we won't overflow the memory block
-        if  buffer_offset + size > self.layout.size() {
-            return Err(ArenaAllocError::OutOfMemory)
+        if buffer_offset + size > self.layout.size() {
+            return Err(ArenaAllocError::OutOfMemory);
         }
 
         Ok(ArenaAllocationData {
             size,
             buffer_offset,
-            relative_offset
+            relative_offset,
         })
     }
 
@@ -275,7 +291,7 @@ impl<'arena> Arena<'arena> {
         while let Some(node) = NonNull::new(unchecked_ptr) {
             let item = unsafe { node.as_ref() };
             if !item.is_dropped() {
-                return false
+                return false;
             }
             unchecked_ptr = item.next.as_ptr() as *mut ErasedHeapItem
         }

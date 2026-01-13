@@ -1,7 +1,9 @@
 //! A finalizer trait to run cleanup of fields.
 
-
-use core::sync::atomic::{AtomicBool, AtomicI8, AtomicU8, AtomicI16, AtomicU16, AtomicI32, AtomicU32, AtomicI64, AtomicU64, AtomicIsize, AtomicUsize};
+use core::sync::atomic::{
+    AtomicBool, AtomicI8, AtomicI16, AtomicI32, AtomicI64, AtomicIsize, AtomicU8, AtomicU16,
+    AtomicU32, AtomicU64, AtomicUsize,
+};
 use rust_alloc::string::String;
 
 pub trait Finalize {
@@ -48,4 +50,3 @@ simple_empty_finalizer![
     AtomicI64,
     AtomicU64
 ];
-

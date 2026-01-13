@@ -8,7 +8,7 @@
 
 use core::{alloc::LayoutError, marker::PhantomData, ptr::NonNull};
 
-use rust_alloc::alloc::{alloc, dealloc, handle_alloc_error, Layout};
+use rust_alloc::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 
 use finalize::Finalize;
 
@@ -42,7 +42,7 @@ impl<'arena, T> ArenaPtr<'arena, T> {
 
 /// An `ArenaAllocator` written in Rust.
 ///
-/// This allocator takes advantage of the global Rust allocator to allow 
+/// This allocator takes advantage of the global Rust allocator to allow
 /// allocating objects into a contiguous block of memory, regardless of size
 /// or alignment.
 ///
@@ -74,7 +74,7 @@ impl<'arena> Arena<'arena> {
             previous_offset: 0,
             current_offset: 0,
             buffer: data,
-            _marker: PhantomData
+            _marker: PhantomData,
         })
     }
 
@@ -92,29 +92,30 @@ impl<'arena> Arena<'arena> {
     // Or maybe `try_alloc` and `alloc` should just be considered unsafe.
 
     /// Allocate a value and return that value.
-    pub fn try_alloc<T: Finalize>(&mut self, value: T) -> Result<ArenaPtr<'arena, T>, ArenaAllocError> {
+    pub fn try_alloc<T: Finalize>(
+        &mut self,
+        value: T,
+    ) -> Result<ArenaPtr<'arena, T>, ArenaAllocError> {
         let size = core::mem::size_of::<T>();
         let alignment = core::mem::align_of_val(&value);
-        
+
         // Safety: This is safe as `current_offset` must be less then the length
         // of the buffer.
-        let current = unsafe {
-            self.buffer.add(self.current_offset)
-        };
+        let current = unsafe { self.buffer.add(self.current_offset) };
 
         // Determine the alignment offset needed to align.
         let offset = current.align_offset(alignment);
 
         // Check for alignment failure case
         if offset == usize::MAX {
-            return Err(ArenaAllocError::AlignmentNotPossible)
+            return Err(ArenaAllocError::AlignmentNotPossible);
         }
 
         let new_buffer_offset = self.current_offset + offset;
 
         // Check that we won't overflow the memory block
-        if  new_buffer_offset + size > self.layout.size() {
-            return Err(ArenaAllocError::OutOfMemory)
+        if new_buffer_offset + size > self.layout.size() {
+            return Err(ArenaAllocError::OutOfMemory);
         }
 
         self.previous_offset = new_buffer_offset;
@@ -142,7 +143,7 @@ impl<'arena> Drop for Arena<'arena> {
 
 #[cfg(test)]
 mod tests {
-    use crate::arena::{boxed::Box, finalize::Finalize, Arena};
+    use crate::arena::{Arena, boxed::Box, finalize::Finalize};
 
     const DEFAULT_PAGE_SIZE: usize = 4096;
 
@@ -162,8 +163,8 @@ mod tests {
 
     #[test]
     fn arena_alloc_misc() {
-        use rust_alloc::collections::LinkedList;
         use rust_alloc::boxed::Box;
+        use rust_alloc::collections::LinkedList;
 
         // 32 byte struct (24 bytes + 8 padding) -> 128 fit inside a 4096 page
         struct MiscItem {
@@ -186,7 +187,6 @@ mod tests {
             let boxed = unsafe { Box::from_raw(pointer.0.as_ptr()) };
             list.push_back(boxed);
         }
-
 
         // Add 32 bytes of integers
         for i in 0..8 {
@@ -212,17 +212,16 @@ mod tests {
 
     #[test]
     fn test_arc_drop() {
-        use rust_alloc::rc::Rc;
         use core::sync::atomic::{AtomicBool, Ordering};
-        
+        use rust_alloc::rc::Rc;
+
         struct MyS {
             dropped: Rc<AtomicBool>,
         }
 
         impl Finalize for MyS {
             fn finalize(&self) {
-                self.dropped
-                    .store(true, Ordering::SeqCst);
+                self.dropped.store(true, Ordering::SeqCst);
             }
         }
 
@@ -252,4 +251,3 @@ mod tests {
         drop(arena);
     }
 }
-

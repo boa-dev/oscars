@@ -1,4 +1,3 @@
-
 use rust_alloc::vec::Vec;
 
 use super::ArenaAllocator;
@@ -7,8 +6,7 @@ use super::ArenaAllocator;
 #[test]
 fn alloc_dealloc() {
     // Let's just allocate with a half a Kb per arena
-    let mut allocator = ArenaAllocator::default()
-        .with_arena_size(512);
+    let mut allocator = ArenaAllocator::default().with_arena_size(512);
 
     // An Arena heap object has an overhead of 4-8 bytes, depending on the platform
 
@@ -37,26 +35,27 @@ fn alloc_dealloc() {
 
 #[test]
 fn arc_drop() {
-    use rust_alloc::rc::Rc;
     use core::sync::atomic::{AtomicBool, Ordering};
-    
+    use rust_alloc::rc::Rc;
+
     struct MyS {
         dropped: Rc<AtomicBool>,
     }
 
     impl Drop for MyS {
         fn drop(&mut self) {
-            self.dropped
-                .store(true, Ordering::SeqCst);
+            self.dropped.store(true, Ordering::SeqCst);
         }
     }
 
     let dropped = Rc::new(AtomicBool::new(false));
 
     let mut allocator = ArenaAllocator::default();
-    let a = allocator.try_alloc(MyS {
-        dropped: dropped.clone(),
-    }).unwrap();
+    let a = allocator
+        .try_alloc(MyS {
+            dropped: dropped.clone(),
+        })
+        .unwrap();
 
     assert_eq!(allocator.arenas_len(), 1);
 
@@ -70,5 +69,4 @@ fn arc_drop() {
     allocator.drop_dead_arenas();
 
     assert_eq!(allocator.arenas_len(), 0);
-
 }

@@ -2,12 +2,11 @@
 
 use core::marker::PhantomData;
 use core::mem;
-use core::ops::{DerefMut, Deref};
+use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
-use crate::arena::finalize::Finalize;
 use crate::arena::ArenaPtr;
-
+use crate::arena::finalize::Finalize;
 
 pub struct Box<'arena, T: Finalize>(NonNull<T>, PhantomData<&'arena ()>);
 
@@ -30,7 +29,7 @@ impl<'arena, T: Finalize> Finalize for Box<'arena, T> {
 
 impl<'arena, T: Finalize> Drop for Box<'arena, T> {
     fn drop(&mut self) {
-        // Run the finalizer on the fields of the box. 
+        // Run the finalizer on the fields of the box.
         Finalize::finalize(self);
         // TODO (nekevss): Can this cause a double free?
         //
@@ -60,5 +59,3 @@ impl<'arena, T: Finalize> Deref for Box<'arena, T> {
         unsafe { self.0.as_ref() }
     }
 }
-
-
