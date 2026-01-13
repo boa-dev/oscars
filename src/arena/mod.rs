@@ -35,7 +35,7 @@ impl<'arena, T> ArenaPtr<'arena, T> {
         Self(raw, PhantomData)
     }
 
-    fn to_non_null(self) -> NonNull<T> {
+    fn to_non_null(&self) -> NonNull<T> {
         self.0
     }
 }

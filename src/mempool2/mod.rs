@@ -206,5 +206,5 @@ fn aligned_chunk_size(size: usize, align: usize) -> usize {
     if modulo != 0 {
         aligned_size += align - modulo;
     }
-    return aligned_size;
+    aligned_size
 }

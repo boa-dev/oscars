@@ -77,7 +77,7 @@ impl<'alloc> ArenaAllocator<'alloc> {
                 let new_active = self.get_active_arena_mut().expect("must exist, ");
                 new_active.try_alloc(value)
             }
-            Err(e) => return Err(e),
+            Err(e) => Err(e),
         }
     }
 

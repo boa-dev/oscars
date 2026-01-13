@@ -71,7 +71,7 @@ impl ErasedHeapItem {
     }
 }
 
-const MASK: usize = 1usize << usize::BITS as usize - 1usize;
+const MASK: usize = 1usize << (usize::BITS as usize - 1usize);
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
@@ -82,7 +82,7 @@ impl<T> TaggedPtr<T> {
         self.0 = self.0.map_addr(|addr| addr | MASK);
     }
 
-    fn is_tagged(self) -> bool {
+    fn is_tagged(&self) -> bool {
         self.0 as usize & MASK == MASK
     }
 
@@ -105,7 +105,7 @@ impl<'arena, T> ArenaPtr<'arena, T> {
         Self(raw.cast::<ErasedHeapItem>(), PhantomData)
     }
 
-    pub fn as_ref(self) -> &'arena T {
+    pub fn as_ref(&self) -> &'arena T {
         // SAFETY: HeapItem is non-null and valid for dereferencing.
         unsafe {
             let typed_ptr = self.0.as_ptr().cast::<ArenaHeapItem<T>>();
@@ -133,7 +133,7 @@ pub struct ArenaState(u8);
 
 impl ArenaState {
     pub fn set_full(&mut self) {
-        self.0 = self.0 | FULL_MASK
+        self.0 |= FULL_MASK
     }
 
     pub fn is_full(&self) -> bool {
