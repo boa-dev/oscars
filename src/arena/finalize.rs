@@ -2,7 +2,7 @@
 
 
 use core::sync::atomic::{AtomicBool, AtomicI8, AtomicU8, AtomicI16, AtomicU16, AtomicI32, AtomicU32, AtomicI64, AtomicU64, AtomicIsize, AtomicUsize};
-use alloc::string::String;
+use rust_alloc::string::String;
 
 pub trait Finalize {
     fn finalize(&self) {}

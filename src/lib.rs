@@ -5,9 +5,10 @@
 
 #![no_std]
 
-extern crate alloc;
+extern crate alloc as rust_alloc;
 
 pub mod arena;
+pub mod arena2;
 pub mod mempool;
 pub mod mempool2;
 
