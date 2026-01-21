@@ -1,4 +1,5 @@
 use core::{
+    cell::Cell,
     marker::PhantomData,
     ptr::{NonNull, drop_in_place},
 };
@@ -9,36 +10,51 @@ use crate::alloc::arena2::ArenaAllocError;
 
 #[derive(Debug)]
 #[repr(C)]
-pub struct ArenaHeapItem<T> {
+pub struct ArenaHeapItem<T: ?Sized> {
     next: TaggedPtr<ErasedHeapItem>,
     value: T,
 }
 
-impl<T> ArenaHeapItem<T> {
-    fn new(next: *mut ErasedHeapItem, value: T) -> Self {
+impl<T: ?Sized> ArenaHeapItem<T> {
+    fn new(next: *mut ErasedHeapItem, value: T) -> Self
+    where
+        T: Sized,
+    {
         Self {
             next: TaggedPtr(next),
             value,
         }
     }
 
-    fn mark_dropped(&mut self) {
+    pub fn mark_dropped(&mut self) {
         if !self.next.is_tagged() {
             self.next.tag()
         }
     }
 
-    fn is_dropped(&self) -> bool {
+    pub fn is_dropped(&self) -> bool {
         self.next.is_tagged()
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub fn as_ptr(&mut self) -> *mut T {
+        &mut self.value as *mut T
+    }
+
+    pub(crate) fn value_mut(&mut self) -> &mut T {
+        &mut self.value
     }
 }
 
-impl<T> Drop for ArenaHeapItem<T> {
+impl<T: ?Sized> Drop for ArenaHeapItem<T> {
     fn drop(&mut self) {
         unsafe {
             if !self.is_dropped() {
                 self.mark_dropped();
-                drop_in_place(&mut self.value)
+                drop_in_place(self.value_mut())
             }
         }
     }
@@ -97,43 +113,78 @@ impl<T> TaggedPtr<T> {
 // serialization. That's because the underlying pointer is unreliable, so we
 // would always need to derive the actual pointer from the Arena's buffer pointer
 
+#[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct ArenaPtr<'arena, T>(NonNull<ErasedHeapItem>, PhantomData<&'arena T>);
+pub struct ErasedArenaPointer<'arena>(NonNull<ErasedHeapItem>, PhantomData<&'arena ()>);
 
-impl<'arena, T> ArenaPtr<'arena, T> {
-    unsafe fn from_raw(raw: NonNull<ArenaHeapItem<T>>) -> Self {
-        Self(raw.cast::<ErasedHeapItem>(), PhantomData)
+impl<'arena> ErasedArenaPointer<'arena> {
+    fn from_raw(raw: NonNull<ErasedHeapItem>) -> Self {
+        Self(raw, PhantomData)
     }
 
-    pub fn as_ref(&self) -> &'arena T {
-        // SAFETY: HeapItem is non-null and valid for dereferencing.
-        unsafe {
-            let typed_ptr = self.0.as_ptr().cast::<ArenaHeapItem<T>>();
-            &(*typed_ptr).value
-        }
+    pub fn as_non_null(&self) -> NonNull<ErasedHeapItem> {
+        self.0
+    }
+
+    pub fn as_raw_ptr(&self) -> *mut ErasedHeapItem {
+        self.0.as_ptr()
+    }
+
+    /// Returns an [`ArenaPointer`] for the current [`ErasedArenaPointer`]
+    ///
+    /// # Safety
+    ///
+    /// - `T` must be the correct type for the pointer. Casting to an invalid
+    ///   type may cause undefined behavior.
+    pub unsafe fn to_typed_arena_pointer<T>(self) -> ArenaPointer<'arena, T> {
+        ArenaPointer(self, PhantomData)
     }
 }
 
-impl<'arena, T> Drop for ArenaPtr<'arena, T> {
-    fn drop(&mut self) {
+#[derive(Debug, Clone, Copy)]
+#[repr(transparent)]
+pub struct ArenaPointer<'arena, T>(ErasedArenaPointer<'arena>, PhantomData<&'arena T>);
+
+impl<'arena, T> ArenaPointer<'arena, T> {
+    unsafe fn from_raw(raw: NonNull<ArenaHeapItem<T>>) -> Self {
+        Self(
+            ErasedArenaPointer::from_raw(raw.cast::<ErasedHeapItem>()),
+            PhantomData,
+        )
+    }
+
+    pub fn as_inner_ref(&self) -> &'arena T {
+        // SAFETY: HeapItem is non-null and valid for dereferencing.
         unsafe {
-            // Cast and drop inner value
-            let mut typed_ptr = self.0.cast::<ArenaHeapItem<T>>();
-            let inner = typed_ptr.as_mut();
-            drop_in_place(&mut inner.value);
-            inner.mark_dropped();
+            let typed_ptr = self.0.as_raw_ptr().cast::<ArenaHeapItem<T>>();
+            &(*typed_ptr).value
         }
+    }
+
+    /// Return a pointer to the inner T
+    ///
+    /// SAFETY:
+    ///
+    /// - Caller must ensure that T is not dropped
+    /// - Caller must ensure that the lifetime of T does not exceed it's Arena.
+    pub fn as_ptr(&self) -> NonNull<ArenaHeapItem<T>> {
+        self.0.as_non_null().cast::<ArenaHeapItem<T>>()
+    }
+
+    /// Convert the current ArenaPointer into an `ErasedArenaPointer`
+    pub fn to_erased(self) -> ErasedArenaPointer<'arena> {
+        self.0
     }
 }
 
 const FULL_MASK: u8 = 0b0100_0000;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct ArenaState(u8);
 
 impl ArenaState {
-    pub fn set_full(&mut self) {
-        self.0 |= FULL_MASK
+    pub fn full(&self) -> Self {
+        Self(self.0 | FULL_MASK)
     }
 
     pub fn is_full(&self) -> bool {
@@ -158,17 +209,20 @@ pub struct ArenaAllocationData {
 #[derive(Debug)]
 #[repr(C)]
 pub struct Arena<'arena> {
-    pub flags: ArenaState,
+    pub flags: Cell<ArenaState>,
     pub layout: Layout,
-    pub last_allocation: *mut ErasedHeapItem,
-    pub current_offset: usize,
+    pub last_allocation: Cell<*mut ErasedHeapItem>,
+    pub current_offset: Cell<usize>,
     pub buffer: NonNull<u8>,
     _marker: PhantomData<&'arena ()>,
 }
 
 impl<'arena> Arena<'arena> {
     // TODO: We need to account for minimum alignment on non x86 platforms
-    pub fn try_init(arena_size: usize, max_alignment: usize) -> Result<Self, ArenaAllocError> {
+    pub fn try_init(
+        arena_size: usize,
+        max_alignment: usize,
+    ) -> Result<Arena<'arena>, ArenaAllocError> {
         let layout = Layout::from_size_align(arena_size, max_alignment)?;
         let data = unsafe {
             let data = alloc(layout);
@@ -179,32 +233,33 @@ impl<'arena> Arena<'arena> {
         };
 
         Ok(Self {
-            flags: ArenaState::default(),
+            flags: Cell::new(ArenaState::default()),
             layout,
-            last_allocation: core::ptr::null_mut::<ErasedHeapItem>(), // NOTE: watch this one.
-            current_offset: 0,
+            last_allocation: Cell::new(core::ptr::null_mut::<ErasedHeapItem>()), // NOTE: watch this one.
+            current_offset: Cell::new(0),
             buffer: data,
             _marker: PhantomData,
         })
     }
 
-    pub fn close(&mut self) {
-        self.flags.set_full();
+    pub fn close(&self) {
+        self.flags.set(self.flags.get().full());
     }
 
-    pub fn alloc<T>(&mut self, value: T) -> ArenaPtr<'arena, T> {
+    pub fn alloc<T>(&self, value: T) -> ArenaPointer<'arena, T> {
         self.try_alloc(value).unwrap()
     }
 
     /// Allocates
     pub fn alloc_or_close<T>(
-        &mut self,
+        &self,
         value: T,
-    ) -> Result<Option<ArenaPtr<'arena, T>>, ArenaAllocError> {
-        match self.try_alloc(value) {
+    ) -> Result<Option<ArenaPointer<'arena, T>>, ArenaAllocError> {
+        let allocation = self.try_alloc(value);
+        match allocation {
             Ok(v) => Ok(Some(v)),
             Err(ArenaAllocError::OutOfMemory) => {
-                self.flags.set_full();
+                self.flags.set(self.flags.get().full());
                 Ok(None)
             }
             Err(e) => Err(e),
@@ -221,32 +276,33 @@ impl<'arena> Arena<'arena> {
     // Or maybe `try_alloc` and `alloc` should just be considered unsafe.
 
     /// Allocate a value and return that value.
-    pub fn try_alloc<T>(&mut self, value: T) -> Result<ArenaPtr<'arena, T>, ArenaAllocError> {
+    pub fn try_alloc<T>(&self, value: T) -> Result<ArenaPointer<'arena, T>, ArenaAllocError> {
         let allocation_data = self.get_allocation_data(&value)?;
-
         // SAFETY: We have checked that the allocation is valid.
         unsafe { Ok(self.alloc_unchecked(value, allocation_data)) }
     }
 
     pub unsafe fn alloc_unchecked<T>(
-        &mut self,
+        &self,
         value: T,
         allocation_data: ArenaAllocationData,
-    ) -> ArenaPtr<'arena, T> {
+    ) -> ArenaPointer<'arena, T> {
         unsafe {
             // Calculate required values
-            self.current_offset += allocation_data.relative_offset + allocation_data.size;
+            let new_current_offset =
+                self.current_offset.get() + allocation_data.relative_offset + allocation_data.size;
+            self.current_offset.set(new_current_offset);
 
             let buffer_ptr = self.buffer.as_ptr();
             let dst = buffer_ptr
                 .add(allocation_data.buffer_offset)
                 .cast::<ArenaHeapItem<T>>();
             // NOTE: everyI recomm next begin by pointing back to the start of the buffer rather than null.
-            let arena_heap_item = ArenaHeapItem::new(self.last_allocation, value);
+            let arena_heap_item = ArenaHeapItem::new(self.last_allocation.get(), value);
             dst.write(arena_heap_item);
             // We've written the last_allocation to the heap, so update with a pointer to dst
-            self.last_allocation = dst as *mut ErasedHeapItem;
-            ArenaPtr::from_raw(NonNull::new_unchecked(dst))
+            self.last_allocation.set(dst as *mut ErasedHeapItem);
+            ArenaPointer::from_raw(NonNull::new_unchecked(dst))
         }
     }
 
@@ -261,7 +317,7 @@ impl<'arena> Arena<'arena> {
 
         // Safety: This is safe as `current_offset` must be less then the length
         // of the buffer.
-        let current = unsafe { self.buffer.add(self.current_offset) };
+        let current = unsafe { self.buffer.add(self.current_offset.get()) };
 
         // Determine the alignment offset needed to align.
         let relative_offset = current.align_offset(alignment);
@@ -271,7 +327,7 @@ impl<'arena> Arena<'arena> {
             return Err(ArenaAllocError::AlignmentNotPossible);
         }
 
-        let buffer_offset = self.current_offset + relative_offset;
+        let buffer_offset = self.current_offset.get() + relative_offset;
 
         // Check that we won't overflow the memory block
         if buffer_offset + size > self.layout.size() {
@@ -286,8 +342,8 @@ impl<'arena> Arena<'arena> {
     }
 
     /// Walks the Arena allocations to determine if the arena is droppable
-    pub fn run_drop_check(&mut self) -> bool {
-        let mut unchecked_ptr = self.last_allocation;
+    pub fn run_drop_check(&self) -> bool {
+        let mut unchecked_ptr = self.last_allocation.get();
         while let Some(node) = NonNull::new(unchecked_ptr) {
             let item = unsafe { node.as_ref() };
             if !item.is_dropped() {
