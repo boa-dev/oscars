@@ -12,10 +12,4 @@ proc-macro2 = "1.0.105"
 quote = "1.0.43"
 syn = { version = "2.0.114", features = ["full", "visit-mut"] }
 synstructure = "0.13.2"
-# cfg-if.workspace = true
-# quote.workspace = true
-# syn = { workspace = true, features = ["full", "visit-mut"] }
-# proc-macro2.workspace = true
-# synstructure.workspace = true
-
 
