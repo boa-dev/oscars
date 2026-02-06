@@ -1,3 +1,5 @@
+use crate::{Finalize, Trace};
+
 use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
 
 use super::Gc;
@@ -50,3 +52,31 @@ fn nested_gc() {
     assert_eq!(collector.allocator.arenas_len(), 1);
     assert_eq!(*nested_gc.borrow(), 10);
 }
+
+#[test]
+fn gc_recursion() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(4096)
+        .with_heap_threshold(8_192);
+
+
+    #[derive(Debug, Finalize, Trace)]
+    struct S {
+        i: usize,
+        next: Option<Gc<S>>,
+    }
+
+    const COUNT: usize = 2_000;
+
+    let mut root = Gc::new_in(S { i: 0, next: None }, collector);
+    for i in 1..COUNT {
+        root = Gc::new_in(S {
+            i,
+            next: Some(root),
+        }, collector);
+    }
+
+    drop(root);
+    collector.collect();
+}
+

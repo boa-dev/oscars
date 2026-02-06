@@ -10,7 +10,7 @@ use syn::{
 use synstructure::{decl_derive, AddBounds, Structure};
 
 decl_derive! {
-    [Trace, attributes(boa_gc, unsafe_ignore_trace)] =>
+    [Trace, attributes(oscars_gc, unsafe_ignore_trace)] =>
     /// Derive the `Trace` trait.
     derive_trace
 }
@@ -44,7 +44,7 @@ fn derive_trace(mut s: Structure<'_>) -> proc_macro2::TokenStream {
     let mut drop = true;
 
     for attr in &s.ast().attrs {
-        if attr.path().is_ident("boa_gc") {
+        if attr.path().is_ident("oscars") {
             let trace = match attr.parse_args::<EmptyTrace>() {
                 Ok(t) => t,
                 Err(e) => return e.into_compile_error(),
@@ -60,15 +60,13 @@ fn derive_trace(mut s: Structure<'_>) -> proc_macro2::TokenStream {
             }
 
             return s.unsafe_bound_impl(
-                quote!(::boa_gc::Trace),
+                quote!(::oscars::Trace),
                 quote! {
                     #[inline(always)]
-                    unsafe fn trace(&self, _tracer: &mut ::boa_gc::Tracer) {}
-                    #[inline(always)]
-                    unsafe fn trace_non_roots(&self) {}
+                    unsafe fn trace(&self, _color: ::oscars::TraceColor) {}
                     #[inline]
                     fn run_finalizer(&self) {
-                        ::boa_gc::Finalize::finalize(self)
+                        ::oscars::Finalize::finalize(self)
                     }
                 },
             );
@@ -81,42 +79,30 @@ fn derive_trace(mut s: Structure<'_>) -> proc_macro2::TokenStream {
             .iter()
             .any(|attr| attr.path().is_ident("unsafe_ignore_trace"))
     });
-    let trace_body = s.each(|bi| quote!(::boa_gc::Trace::trace(#bi, tracer)));
+    let trace_body = s.each(|bi| quote!(::oscars::Trace::trace(#bi, color)));
     let trace_other_body = s.each(|bi| quote!(mark(#bi)));
 
     s.add_bounds(AddBounds::Fields);
     let trace_impl = s.unsafe_bound_impl(
-        quote!(::boa_gc::Trace),
+        quote!(::oscars::Trace),
         quote! {
             #[inline]
-            unsafe fn trace(&self, tracer: &mut ::boa_gc::Tracer) {
+            unsafe fn trace(&self, color: ::oscars::TraceColor) {
                 #[allow(dead_code)]
-                let mut mark = |it: &dyn ::boa_gc::Trace| {
-                    // SAFETY: The implementor must ensure that `trace` is correctly implemented.
+                fn mark<T: ::oscars::Trace + ?Sized>(it: &T, color: oscars::TraceColor) {
                     unsafe {
-                        ::boa_gc::Trace::trace(it, tracer);
+                        ::oscars::Trace::trace(it, color);
                     }
-                };
+                }
                 match *self { #trace_body }
             }
             #[inline]
-            unsafe fn trace_non_roots(&self) {
-                #[allow(dead_code)]
-                fn mark<T: ::boa_gc::Trace + ?Sized>(it: &T) {
-                    // SAFETY: The implementor must ensure that `trace_non_roots` is correctly implemented.
-                    unsafe {
-                        ::boa_gc::Trace::trace_non_roots(it);
-                    }
-                }
-                match *self { #trace_other_body }
-            }
-            #[inline]
             fn run_finalizer(&self) {
-                ::boa_gc::Finalize::finalize(self);
+                ::oscars::Finalize::finalize(self);
                 #[allow(dead_code)]
-                fn mark<T: ::boa_gc::Trace + ?Sized>(it: &T) {
+                fn mark<T: ::oscars::Trace + ?Sized>(it: &T) {
                     unsafe {
-                        ::boa_gc::Trace::run_finalizer(it);
+                        ::oscars::Trace::run_finalizer(it);
                     }
                 }
                 match *self { #trace_other_body }
@@ -134,9 +120,7 @@ fn derive_trace(mut s: Structure<'_>) -> proc_macro2::TokenStream {
                 #[allow(clippy::inline_always)]
                 #[inline(always)]
                 fn drop(&mut self) {
-                    if ::boa_gc::finalizer_safe() {
-                        ::boa_gc::Finalize::finalize(self);
-                    }
+                    ::oscars::Finalize::finalize(self);
                 }
             },
         )
@@ -159,5 +143,5 @@ decl_derive! {
 /// Derives the `Finalize` trait.
 #[allow(clippy::needless_pass_by_value)]
 fn derive_finalize(s: Structure<'_>) -> proc_macro2::TokenStream {
-    s.unbound_impl(quote!(::boa_gc::Finalize), quote!())
+    s.unbound_impl(quote!(::oscars::Finalize), quote!())
 }
