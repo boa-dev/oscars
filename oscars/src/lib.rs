@@ -5,10 +5,18 @@
 
 #![no_std]
 
+extern crate self as oscars;
+
 extern crate alloc as rust_alloc;
 
-//#[cfg(feature = "std")]
+#[cfg(feature = "std")]
 extern crate std;
+
+#[cfg(feature = "mark_sweep")]
+pub use crate::collectors::mark_sweep::*;
+#[cfg(feature = "mark_sweep")]
+pub use oscars_derive::{Trace, Finalize};
+
 
 pub mod alloc;
 pub mod collectors;

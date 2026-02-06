@@ -12,7 +12,7 @@ use crate::{
 use rust_alloc::vec::Vec;
 
 mod pointers;
-mod trace;
+pub(crate) mod trace;
 
 pub mod cell;
 
@@ -21,9 +21,7 @@ mod tests;
 
 pub(crate) mod internals;
 
-pub use trace::{Finalize, Trace, TraceColor};
-
-pub use oscars_derive::{Finalize, Trace};
+pub use trace::{Trace, Finalize, TraceColor};
 
 pub use pointers::{Gc, WeakGc};
 
