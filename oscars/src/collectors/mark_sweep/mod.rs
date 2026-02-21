@@ -11,6 +11,21 @@ use crate::{
 };
 use rust_alloc::vec::Vec;
 
+// track weak maps so we can prune them during GC
+struct WeakMapEntry {
+    ptr: *mut (), //ptr to weak_map
+    prune: unsafe fn(*mut ()), // fn to prune dead entries
+}
+
+impl core::fmt::Debug for WeakMapEntry {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WeakMapEntry")
+            .field("ptr", &self.ptr)
+            .field("prune", &(self.prune as *const ()))
+            .finish()
+    }
+}
+
 mod pointers;
 pub(crate) mod trace;
 
@@ -23,7 +38,7 @@ pub(crate) mod internals;
 
 pub use trace::{Trace, Finalize, TraceColor};
 
-pub use pointers::{Gc, WeakGc};
+pub use pointers::{Gc, WeakGc, WeakMap};
 
 type GcErasedPointer = NonNull<ArenaHeapItem<GcBox<NonTraceable>>>;
 type ErasedEphemeron = NonNull<ArenaHeapItem<Ephemeron<NonTraceable, NonTraceable>>>;
@@ -50,6 +65,7 @@ pub struct MarkSweepGarbageCollector {
     root_queue: Vec<GcErasedPointer>,
     ephemeron_queue: Vec<ErasedEphemeron>,
     state: CollectionState,
+    weak_map_registry: Vec<WeakMapEntry>, //weak maps to prune during GC
 }
 
 #[derive(Debug, Default)]
@@ -66,6 +82,16 @@ impl MarkSweepGarbageCollector {
     pub fn with_arena_size(mut self, arena_size: usize) -> Self {
         self.allocator = self.allocator.with_arena_size(arena_size);
         self
+    }
+
+    #[cfg(test)]
+    pub fn root_queue_len(&self) -> usize {
+        self.root_queue.len()
+    }
+
+    #[cfg(test)]
+    pub fn ephemeron_queue_len(&self) -> usize {
+        self.ephemeron_queue.len()
     }
 }
 
@@ -168,9 +194,47 @@ impl MarkSweepGarbageCollector {
         self.run_sweep_phase();
         // We've run a collection, so we switch the color.
         self.state.color = self.state.color.flip();
-        // NOTE: It would actually be interesting to reuse the arenas that are dead rather
+		// NOTE: It would actually be interesting to reuse the arenas that are dead rather
         // than drop the page and reallocate when a new page is needed ... TBD
+
+        // prune dead entries from weak maps before freeing memory
+        for entry in &self.weak_map_registry {
+            // SAFETY: pointer is valid until unregistration
+            unsafe { (entry.prune)(entry.ptr) };
+        }
+
         self.allocator.drop_dead_arenas();
+    }
+
+    // register a weak map for pruning during GC
+    pub fn register_weak_map<K, V>(&mut self, map: *mut crate::collectors::mark_sweep::pointers::WeakMap<K, V>)
+    where
+        K: crate::collectors::mark_sweep::trace::Trace + Clone + 'static,
+        V: crate::collectors::mark_sweep::trace::Trace + 'static,
+    {
+        unsafe fn prune_erased<K, V>(ptr: *mut ())
+        where
+            K: crate::collectors::mark_sweep::trace::Trace + Clone + 'static,
+            V: crate::collectors::mark_sweep::trace::Trace + 'static,
+        {
+            let map = ptr as *mut crate::collectors::mark_sweep::pointers::WeakMap<K, V>;
+            unsafe { (*map).prune_dead_entries() };
+        }
+        // Activate the debug registration guard inside the map.
+        unsafe { (*map).mark_registered() };
+        self.weak_map_registry.push(WeakMapEntry {
+            ptr: map as *mut (),
+            prune: prune_erased::<K, V>,
+        });
+    }
+
+    pub fn unregister_weak_map<K, V>(&mut self, map: *mut crate::collectors::mark_sweep::pointers::WeakMap<K, V>)
+    where
+        K: crate::collectors::mark_sweep::trace::Trace + Clone + 'static,
+        V: crate::collectors::mark_sweep::trace::Trace + 'static,
+    {
+        let addr = map as usize;
+        self.weak_map_registry.retain(|e| e.ptr as usize != addr);
     }
 
     pub fn run_mark_phase(&mut self) {
@@ -186,7 +250,11 @@ impl MarkSweepGarbageCollector {
 
         for ephemeron_heap_item in &self.ephemeron_queue {
             let ephemeron_ref = unsafe { ephemeron_heap_item.as_ref() };
-            if ephemeron_ref.value().is_reachable(self.state.color) {
+            // use the vtable to check if the key is still reachable
+            let is_reachable = unsafe {
+                ephemeron_ref.value().is_reachable_fn()(*ephemeron_heap_item, self.state.color)
+            };
+            if is_reachable {
                 unsafe { ephemeron_ref.value().trace_fn()(*ephemeron_heap_item, self.state.color) }
             }
         }
@@ -217,39 +285,54 @@ impl MarkSweepGarbageCollector {
         let ephemerons = self.ephemeron_queue.extract_if(.., |node| {
             let heap_item_ref = unsafe { node.as_ref() };
             let ephemeron = heap_item_ref.value();
+            let color = self.state.color;
 
-            if !ephemeron.is_reachable(self.state.color) {
-                ephemeron.finalize();
-                if ephemeron.is_reachable(self.state.color) {
-                    unsafe { ephemeron.trace_fn()(*node, self.state.color) };
+            // check if the key is reachable via the vtable
+            let is_reachable =
+                unsafe { ephemeron.is_reachable_fn()(*node, color) };
+
+            if !is_reachable {
+                unsafe { ephemeron.finalize_fn()(*node) };
+                // check if key was revived by finalizer
+                let revived = unsafe { ephemeron.is_reachable_fn()(*node, color) };
+                if revived {
+                    unsafe { ephemeron.trace_fn()(*node, color) };
                 }
             }
 
-            // Check whether the ephemeron is reachable
-            !heap_item_ref.value().is_reachable(self.state.color)
+            // sweep if key is still dead after finalization
+            !unsafe { ephemeron.is_reachable_fn()(*node, color) }
         });
 
         let mut still_alive = Vec::default();
-        for mut node in droppables {
-            let heap_item_mut = unsafe { node.as_mut() };
+        for node in droppables {
+            // copy ptrs for aliasing safety
+            let (is_rooted, drop_fn) = {
+                let r = unsafe { node.as_ref() };
+                (r.value().is_rooted(), r.value().drop_fn())
+            };
             // Check one last time if the values are alive in case they were deemed
             // alive while checking the ephemerons.
-            if heap_item_mut.value().is_rooted() {
+            if is_rooted {
                 still_alive.push(node);
                 continue;
             }
-            unsafe { heap_item_mut.value().drop_fn()(node) }
+            unsafe { drop_fn(node) }
         }
         self.root_queue.extend(still_alive);
 
         let mut still_alive = Vec::default();
-        for mut ephemeron in ephemerons {
-            let heap_item_mut = unsafe { ephemeron.as_mut() };
-            if heap_item_mut.value().is_reachable(self.state.color) {
+        for ephemeron in ephemerons {
+            // copy ptrs for aliasing safety
+            let (is_reachable_fn, drop_fn) = {
+                let r = unsafe { ephemeron.as_ref() };
+                (r.value().is_reachable_fn(), r.value().drop_fn())
+            };
+            if unsafe { is_reachable_fn(ephemeron, self.state.color) } {
                 still_alive.push(ephemeron);
                 continue;
             }
-            unsafe { heap_item_mut.value().drop_fn()(ephemeron) }
+            unsafe { drop_fn(ephemeron) }
         }
         self.ephemeron_queue.extend(still_alive);
     }
