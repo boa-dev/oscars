@@ -6,7 +6,7 @@ use rust_alloc::collections::LinkedList;
 mod alloc;
 
 use alloc::Arena;
-pub use alloc::{ArenaAllocationData, ArenaHeapItem, ArenaPointer, ErasedArenaPointer};
+pub use alloc::{ArenaAllocationData, ArenaHeapItem, ArenaPointer, ErasedArenaPointer, ErasedHeapItem};
 
 #[cfg(test)]
 mod tests;
@@ -141,5 +141,14 @@ impl<'alloc> ArenaAllocator<'alloc> {
         for dead_arenas in self.arenas.extract_if(|a| a.run_drop_check()) {
             drop(dead_arenas)
         }
+    }
+
+    // checks dropped items across all arenas
+    #[cfg(test)]
+    pub fn arena_drop_states(&self) -> rust_alloc::vec::Vec<rust_alloc::vec::Vec<bool>> {
+        self.arenas
+            .iter()
+            .map(|arena| arena.item_drop_states())
+            .collect()
     }
 }

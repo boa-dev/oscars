@@ -26,45 +26,83 @@ unsafe impl Trace for NonTraceable {
 
 // NOTE: This may not be the best idea, but let's find out.
 //
-// If we spend too much time relying on this type, then we
-// may be able to remove the weak flag from GcHeader
-#[repr(transparent)]
-pub struct WeakGcBox<T: Trace + ?Sized + 'static>(GcBox<T>);
+use crate::alloc::arena2::{ErasedArenaPointer, ArenaHeapItem};
+use core::ptr::NonNull;
+use core::marker::PhantomData;
 
-impl<T: Trace + Finalize> WeakGcBox<T> {
-    pub fn new_in(value: T, collection_state: &CollectionState) -> Self {
-        Self(GcBox::new_typed_in::<true>(value, collection_state))
+#[repr(transparent)]
+pub struct WeakGcBox<T: Trace + ?Sized + 'static> {
+    pub(crate) inner_ptr: ErasedArenaPointer<'static>,
+    pub(crate) marker: PhantomData<T>,
+}
+
+impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
+    pub fn new(inner_ptr: ErasedArenaPointer<'static>) -> Self {
+        Self { inner_ptr, marker: PhantomData }
     }
 
-    pub fn value(&self) -> &T {
-        self.0.value()
+    pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
+        // SAFETY: `as_heap_ptr` returns a valid pointer to
+        // `ArenaHeapItem` whose lifetime is tied to the arena
+        let heap_item = unsafe { self.as_heap_ptr().as_mut() };
+        // SAFETY: We just removed this value from a NonNull
+        unsafe { NonNull::new_unchecked(heap_item.as_ptr()) }
+    }
+
+    pub(crate) fn as_heap_ptr(&self) -> NonNull<ArenaHeapItem<GcBox<NonTraceable>>> {
+        self.inner_ptr
+            .as_non_null()
+            .cast::<ArenaHeapItem<GcBox<NonTraceable>>>()
+    }
+
+    pub(crate) fn inner_ref(&self) -> &GcBox<NonTraceable> {
+        // SAFETY: `erased_inner_ptr` returns a valid pointer
+        // the pointed-to value lives for at least as long as `self`
+        unsafe { self.erased_inner_ptr().as_ref() }
     }
 
     pub fn is_reachable(&self, color: TraceColor) -> bool {
-        self.0.is_reachable(color)
+        self.inner_ref().is_reachable(color)
+    }
+
+    pub(crate) fn is_rooted(&self) -> bool {
+        self.inner_ref().is_rooted()
     }
 
     pub(crate) fn mark(&self, color: HeaderColor) {
-        self.0.header.mark(color);
+        self.inner_ref().header.mark(color);
     }
 
     pub(crate) fn set_unmarked(&self, state: &CollectionState) {
-        self.0.set_unmarked(state);
+        self.inner_ref().set_unmarked(state);
     }
 }
 
-impl<T: Trace> Finalize for WeakGcBox<T> {
+impl<T: Trace> WeakGcBox<T> {
+    pub(crate) fn inner_ptr(&self) -> crate::alloc::arena2::ArenaPointer<'static, GcBox<T>> {
+        // SAFETY: This pointer started out as a `GcBox<T>`, so it's safe to cast 
+        // it back, the `PhantomData` guarantees that the type `T` is still correct
+        unsafe { self.inner_ptr.to_typed_arena_pointer::<GcBox<T>>() }
+    }
+
+    pub fn value(&self) -> &T {
+        self.inner_ptr().as_inner_ref().value()
+    }
+}
+
+impl<T: Trace + ?Sized> Finalize for WeakGcBox<T> {
     #[inline]
     fn finalize(&self) {
-        self.0.finalize()
+        self.inner_ref().finalize()
     }
 }
 
 // NOTE: A weak gc box will mark the box, but it will not continue the trace forward.
-unsafe impl<T: Trace> Trace for WeakGcBox<T> {
+unsafe impl<T: Trace + ?Sized> Trace for WeakGcBox<T> {
     unsafe fn trace(&self, color: TraceColor) {
         unsafe {
-            self.0.trace(color);
+            let trace_fn = self.inner_ref().trace_fn();
+            trace_fn(self.as_heap_ptr(), color);
         }
     }
 
@@ -83,19 +121,21 @@ pub struct GcBox<T: Trace + ?Sized + 'static> {
 
 impl<T: Trace> GcBox<T> {
     // TODO (potentially): Fix alloc to be generic
-    pub(crate) fn new_in(value: T, collection_state: &CollectionState) -> Self {
-        Self::new_typed_in::<false>(value, collection_state)
+    #[inline]
+    pub fn new(value: T, collection_state: &CollectionState) -> Self {
+        Self::new_typed(value, collection_state)
     }
 
     // TODO (nekevss): What is the best function signature here?
-    pub(crate) fn new_typed_in<const IS_WEAK: bool>(
+    #[inline]
+    pub(crate) fn new_typed(
         value: T,
         collection_state: &CollectionState,
     ) -> Self {
-        extern crate std;
+        //check for color sync issue
         let header = match collection_state.color {
-            TraceColor::White => GcHeader::new_typed::<true, IS_WEAK>(),
-            TraceColor::Black => GcHeader::new_typed::<false, IS_WEAK>(),
+            TraceColor::White => GcHeader::new_typed::<true>(),
+            TraceColor::Black => GcHeader::new_typed::<false>(),
         };
         // Increment the root for this box.
         header.inc_roots();
@@ -184,22 +224,6 @@ impl<T: Trace> GcBox<T> {
                 }
                 // Mark the header once trace is completed.
                 self.header.mark(HeaderColor::Black);
-            }
-            // If the GcBox is marked as weak, and it is grey,
-            // then that means that we need to actually trace
-            // it's contents and mark it as alive.
-            //
-            // We are safe to do this, because Ephemeron prevents
-            // us from accessing the WeakGcBox early.
-            _ if self.header.is_weak() & self.header.is_grey() => {
-                unsafe {
-                    Trace::trace(&self.value, color);
-                }
-                let color = match color {
-                    TraceColor::Black => HeaderColor::Black,
-                    TraceColor::White => HeaderColor::White,
-                };
-                self.header.mark(color);
             }
             // We have a box that's already grey or marked, so we do not
             // need to continue on the trace

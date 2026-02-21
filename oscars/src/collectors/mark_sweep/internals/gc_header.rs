@@ -5,9 +5,6 @@ const WHITE_MARK_BITS: u8 = 0b0000_0000;
 const BLACK_MARK_BITS: u8 = 0b0000_0011;
 const GREY_MARK_BITS: u8 = 0b0000_0001;
 
-// Whether the box is weak or not;
-const IS_WEAK: u8 = 0b0001_0000;
-
 #[derive(Debug, Clone, Copy)]
 pub struct HeaderFlags(pub(crate) u8);
 
@@ -18,18 +15,6 @@ impl HeaderFlags {
 
     pub const fn new_black() -> Self {
         Self(BLACK_MARK_BITS)
-    }
-
-    pub const fn weak_white() -> Self {
-        Self(WHITE_MARK_BITS | IS_WEAK)
-    }
-
-    pub const fn weak_black() -> Self {
-        Self(BLACK_MARK_BITS | IS_WEAK)
-    }
-
-    pub const fn is_weak(self) -> bool {
-        self.0 & IS_WEAK == IS_WEAK
     }
 
     pub const fn is_white(self) -> bool {
@@ -101,37 +86,17 @@ impl GcHeader {
         }
     }
 
-    /// Create a `NeoGcHeader` that is flagged as weak.
-    pub const fn weak_white() -> Self {
-        Self {
-            flags: Cell::new(HeaderFlags::weak_white()),
-            root_count: Cell::new(0),
-        }
-    }
-
-    pub const fn weak_black() -> Self {
-        Self {
-            flags: Cell::new(HeaderFlags::weak_black()),
-            root_count: Cell::new(0),
-        }
-    }
-
-    pub const fn new_typed<const IS_WHITE: bool, const IS_WEAK: bool>() -> Self {
+    pub const fn new_typed<const IS_WHITE: bool>() -> Self {
         // NOTE: We inverse the color when initializing the header. Because if the
         // target TraceColor is white, then the unmarked objects are white will be
         // made black
         const {
-            match (IS_WHITE, IS_WEAK) {
-                (true, false) => Self::new_black(),
-                (false, false) => Self::new_white(),
-                (true, true) => Self::weak_black(),
-                (false, true) => Self::weak_white(),
+            if IS_WHITE {
+                Self::new_black()
+            } else {
+                Self::new_white()
             }
         }
-    }
-
-    pub const fn is_weak(&self) -> bool {
-        self.flags.get().is_weak()
     }
 
     pub fn inc_roots(&self) {
