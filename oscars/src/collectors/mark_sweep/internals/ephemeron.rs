@@ -13,18 +13,12 @@ use crate::{
 
 use crate::collectors::mark_sweep::Finalize;
 
-// TODO: key's GcBox should be notably a weak box
 pub struct Ephemeron<K: Trace + ?Sized + 'static, V: Trace + 'static> {
     pub(crate) value: GcBox<V>,
     vtable: &'static EphemeronVTable,
     pub(crate) key: WeakGcBox<K>,
 }
 
-// NOTE: There is going to be an issue here in that we initialize the GC
-// box to the wrong state.
-//
-// So we either need the color to be global that is provided to the allocation
-// or we need state access
 impl<K: Trace, V: Trace> Ephemeron<K, V> {
     pub fn new_in(key: K, value: V, collector: &mut MarkSweepGarbageCollector) -> Self
     where
@@ -51,6 +45,16 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
     pub(crate) fn set_unmarked(&self, state: &CollectionState) {
         self.key.set_unmarked(state);
     }
+
+    pub fn set_value(&mut self, value: V, state: &CollectionState) {
+        self.value.dec_roots();
+        self.value = GcBox::new_in(value, state);
+    }
+
+    // checks if the key is still alive
+    pub fn is_reachable_by_roots(&self) -> bool {
+        self.key.is_rooted()
+    }
 }
 
 impl<K: Trace, V: Trace> Ephemeron<K, V> {
@@ -60,6 +64,18 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
 
     pub(crate) fn drop_fn(&self) -> EphemeronDropFn {
         self.vtable.drop_fn
+    }
+
+    pub(crate) fn is_reachable_fn(&self) -> EphemeronIsReachableFn {
+        self.vtable.is_reachable_fn
+    }
+
+    pub(crate) fn set_unmarked_fn(&self) -> EphemeronSetUnmarkedFn {
+        self.vtable.set_unmarked_fn
+    }
+	
+    pub(crate) fn finalize_fn(&self) -> EphemeronFinalizeFn {
+        self.vtable.finalize_fn
     }
 }
 
@@ -120,12 +136,52 @@ pub(crate) const fn vtable_of<K: Trace + 'static, V: Trace + 'static>() -> &'sta
             // SAFETY: The caller must ensure the erased pointer is not dropped or deallocated.
             unsafe { this.as_mut().mark_dropped() };
         }
+
+        // SAFETY: Cast back to concrete types to check reachability
+        unsafe fn is_reachable_fn<K: Trace + 'static, V: Trace + 'static>(
+            this: ErasedEphemeron,
+            color: TraceColor,
+        ) -> bool {
+            let ephemeron = unsafe {
+                this.cast::<ArenaHeapItem<Ephemeron<K, V>>>()
+                    .as_ref()
+                    .value()
+            };
+            ephemeron.is_reachable(color)
+        }
+
+        // SAFETY: Cast back to concrete types to unmark the key
+        unsafe fn set_unmarked_fn<K: Trace + 'static, V: Trace + 'static>(
+            this: ErasedEphemeron,
+            state: &CollectionState,
+        ) {
+            let ephemeron = unsafe {
+                this.cast::<ArenaHeapItem<Ephemeron<K, V>>>()
+                    .as_ref()
+                    .value()
+            };
+            ephemeron.set_unmarked(state);
+        }
+
+        // SAFETY: Cast back to concrete types to run finalizers
+        unsafe fn finalize_fn<K: Trace + 'static, V: Trace + 'static>(this: ErasedEphemeron) {
+            let ephemeron = unsafe {
+                this.cast::<ArenaHeapItem<Ephemeron<K, V>>>()
+                    .as_ref()
+                    .value()
+            };
+            Finalize::finalize(ephemeron.key());
+            Finalize::finalize(ephemeron.value());
+        }
     }
 
     impl<K: Trace + 'static, V: Trace + 'static> HasVTable for EphemeronMarker<K, V> {
         const VTABLE: &'static EphemeronVTable = &EphemeronVTable {
             trace_fn: EphemeronMarker::<K, V>::trace_fn::<K, V>,
             drop_fn: EphemeronMarker::<K, V>::drop_fn::<K, V>,
+            is_reachable_fn: EphemeronMarker::<K, V>::is_reachable_fn::<K, V>,
+            set_unmarked_fn: EphemeronMarker::<K, V>::set_unmarked_fn::<K, V>,
+            finalize_fn: EphemeronMarker::<K, V>::finalize_fn::<K, V>,
             _key_type_id: TypeId::of::<K>(),
             _key_size: size_of::<WeakGcBox<K>>(),
             _value_type_id: TypeId::of::<V>(),
@@ -138,10 +194,16 @@ pub(crate) const fn vtable_of<K: Trace + 'static, V: Trace + 'static>() -> &'sta
 
 type EphemeronTraceFn = unsafe fn(this: ErasedEphemeron, color: TraceColor);
 type EphemeronDropFn = unsafe fn(this: ErasedEphemeron);
+type EphemeronIsReachableFn = unsafe fn(this: ErasedEphemeron, color: TraceColor) -> bool;
+type EphemeronSetUnmarkedFn = unsafe fn(this: ErasedEphemeron, state: &CollectionState);
+type EphemeronFinalizeFn = unsafe fn(this: ErasedEphemeron);
 
 pub struct EphemeronVTable {
     trace_fn: EphemeronTraceFn,
     drop_fn: EphemeronDropFn,
+    is_reachable_fn: EphemeronIsReachableFn,
+    set_unmarked_fn: EphemeronSetUnmarkedFn,
+    finalize_fn: EphemeronFinalizeFn,
     _key_type_id: TypeId,
     _key_size: usize,
     _value_type_id: TypeId,

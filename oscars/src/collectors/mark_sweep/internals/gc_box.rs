@@ -28,6 +28,7 @@ unsafe impl Trace for NonTraceable {
 //
 // If we spend too much time relying on this type, then we
 // may be able to remove the weak flag from GcHeader
+
 #[repr(transparent)]
 pub struct WeakGcBox<T: Trace + ?Sized + 'static>(GcBox<T>);
 
@@ -42,6 +43,10 @@ impl<T: Trace + Finalize> WeakGcBox<T> {
 
     pub fn is_reachable(&self, color: TraceColor) -> bool {
         self.0.is_reachable(color)
+    }
+
+    pub(crate) fn is_rooted(&self) -> bool {
+        self.0.is_rooted()
     }
 
     pub(crate) fn mark(&self, color: HeaderColor) {

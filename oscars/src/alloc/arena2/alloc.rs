@@ -161,6 +161,19 @@ impl<'arena, T> ArenaPointer<'arena, T> {
         }
     }
 
+    /// Returns a mutable reference to the inner value
+    ///
+    /// SAFETY:
+    ///
+    /// - Caller must ensure that no other references to the value exist
+    /// - Caller must ensure that `T` is the correct type for the pointer
+    pub unsafe fn as_inner_mut(&mut self) -> &'arena mut T {
+        unsafe {
+            let typed_ptr = self.0.as_raw_ptr().cast::<ArenaHeapItem<T>>();
+            &mut (*typed_ptr).value
+        }
+    }
+
     /// Return a pointer to the inner T
     ///
     /// SAFETY:
@@ -352,6 +365,19 @@ impl<'arena> Arena<'arena> {
             unchecked_ptr = item.next.as_ptr() as *mut ErasedHeapItem
         }
         true
+    }
+
+    // checks dropped items in this arena
+    #[cfg(test)]
+    pub fn item_drop_states(&self) -> rust_alloc::vec::Vec<bool> {
+        let mut result = rust_alloc::vec::Vec::new();
+        let mut unchecked_ptr = self.last_allocation.get();
+        while let Some(node) = NonNull::new(unchecked_ptr) {
+            let item = unsafe { node.as_ref() };
+            result.push(item.is_dropped());
+            unchecked_ptr = item.next.as_ptr() as *mut ErasedHeapItem
+        }
+        result
     }
 }
 

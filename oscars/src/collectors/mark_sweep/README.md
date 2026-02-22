@@ -4,8 +4,8 @@ This is a basic mark-sweep collector using an underlying arena allocator.
 
 ## TODO list
 
-- [ ] Support weak maps
-- [ ] Add Tests
+- [x] Support weak maps
+- [x] Add Tests
 
 
 ## Areas of improvement
