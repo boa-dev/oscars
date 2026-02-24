@@ -13,11 +13,11 @@ fn basic_gc() {
 
     let gc = Gc::new_in(GcRefCell::new(10), collector);
 
-    assert_eq!(collector.allocator.arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
 
     collector.collect();
 
-    assert_eq!(collector.allocator.arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
 
     assert_eq!(*gc.borrow(), 10);
 }
@@ -39,17 +39,17 @@ fn nested_gc() {
 
     collector.collect();
 
-    assert_eq!(collector.allocator.arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
     assert_eq!(*nested_gc.borrow(), 10);
 
     let new_gc = Gc::new_in(GcRefCell::new(8), collector);
 
-    assert_eq!(collector.allocator.arenas_len(), 2);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 2);
 
     drop(new_gc);
     collector.collect();
 
-    assert_eq!(collector.allocator.arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
     assert_eq!(*nested_gc.borrow(), 10);
 }
 

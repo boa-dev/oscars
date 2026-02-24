@@ -1,6 +1,7 @@
 //! An Arena allocator that manages multiple backing arenas
 
-use rust_alloc::alloc::LayoutError;
+use core::ptr::NonNull;
+use rust_alloc::alloc::{Layout, LayoutError};
 use rust_alloc::collections::LinkedList;
 
 mod alloc;
@@ -137,6 +138,31 @@ impl<'alloc> ArenaAllocator<'alloc> {
 
     pub fn get_active_arena(&self) -> Option<&Arena<'alloc>> {
         self.arenas.front()
+    }
+
+    /// Bump-allocate raw bytes matching `layout`, creating a new arena
+    /// page if needed. See [`Arena::try_alloc_bytes`] for details.
+    pub fn try_alloc_bytes(
+        &mut self,
+        layout: Layout,
+    ) -> Result<NonNull<[u8]>, ArenaAllocError> {
+        let active = match self.get_active_arena() {
+            Some(arena) => arena,
+            None => {
+                self.initialize_new_arena()?;
+                self.get_active_arena().expect("must exist, we just set it")
+            }
+        };
+
+        match active.try_alloc_bytes(layout) {
+            Ok(ptr) => Ok(ptr),
+            Err(ArenaAllocError::OutOfMemory) => {
+                self.initialize_new_arena()?;
+                let new_active = self.get_active_arena().expect("must exist");
+                new_active.try_alloc_bytes(layout)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub fn drop_dead_arenas(&mut self) {

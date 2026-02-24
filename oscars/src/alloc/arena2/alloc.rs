@@ -309,6 +309,48 @@ impl<'arena> Arena<'arena> {
         }
     }
 
+    /// Bump-allocate a raw byte region matching `layout`.
+    ///
+    /// Unlike `try_alloc`, this does **not** wrap the allocation in an
+    /// `ArenaHeapItem` and does not touch the `last_allocation` linked
+    /// list. The caller is responsible for lifetime tracking.
+    ///
+    /// Returns a `NonNull<[u8]>` slice covering exactly `layout.size()`
+    /// bytes, aligned to at least `layout.align()`.
+    pub fn try_alloc_bytes(
+        &self,
+        layout: Layout,
+    ) -> Result<NonNull<[u8]>, ArenaAllocError> {
+        let size = layout.size();
+        let align = layout.align();
+
+        if align > self.layout.align() {
+            return Err(ArenaAllocError::AlignmentNotPossible);
+        }
+
+        // current bump pointer
+        let current = unsafe { self.buffer.add(self.current_offset.get()) };
+
+        let padding = current.align_offset(align);
+        if padding == usize::MAX {
+            return Err(ArenaAllocError::AlignmentNotPossible);
+        }
+
+        let buffer_offset = self.current_offset.get() + padding;
+
+        if buffer_offset + size > self.layout.size() {
+            return Err(ArenaAllocError::OutOfMemory);
+        }
+
+        // advance the bump pointer past padding + payload
+        self.current_offset.set(buffer_offset + size);
+
+        let ptr = unsafe { self.buffer.as_ptr().add(buffer_offset) };
+        // safety: ptr is non-null (derived from NonNull buffer) and within bounds
+        let nn = unsafe { NonNull::new_unchecked(ptr) };
+        Ok(NonNull::slice_from_raw_parts(nn, size))
+    }
+
     pub fn get_allocation_data<T>(
         &self,
         value_ref: &T,

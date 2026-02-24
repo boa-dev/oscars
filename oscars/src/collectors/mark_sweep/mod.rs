@@ -190,12 +190,35 @@ impl MarkSweepGarbageCollector {
 
 // ==== Collection methods ====
 
+// RAII guard that clears `is_collecting` even if a Trace or Finalize impl panics
+// without this, a panic inside run_mark_phase / run_sweep_phase would leave
+// is_collecting == true forever, silently disabling the deferred collect
+// trigger in alloc_gc_node
+struct CollectingGuard<'a>(&'a Cell<bool>);
+
+impl Drop for CollectingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
 impl MarkSweepGarbageCollector {
-    pub fn collect(&mut self) {
+    // trigger a full collection cycle
+    //
+    // exposes `&self` to run without borrow conflicts when live collections exist
+    pub fn collect(&self) {
+        // lock the main queues so allocations buffer into pending queues
+        // the guard resets is_collecting even if a Trace/Finalize impl panics
+        self.is_collecting.set(true);
+        let _guard = CollectingGuard(&self.is_collecting);
+
         self.run_mark_phase();
         self.run_sweep_phase();
-        // We've run a collection, so we switch the color.
-        self.state.color = self.state.color.flip();
+
+        // derive updated color locally to prevent overlapping mutable borrow
+        let new_color = self.trace_color.get().flip();
+        self.trace_color.set(new_color);
+
         // NOTE: It would actually be interesting to reuse the arenas that are dead rather
         // than drop the page and reallocate when a new page is needed ... TBD
 
@@ -208,18 +231,19 @@ impl MarkSweepGarbageCollector {
         self.allocator.drop_dead_arenas();
     }
 
-    pub fn run_mark_phase(&mut self) {
+    pub fn run_mark_phase(&self) {
+        let color = self.trace_color.get();
         // Run marks through the roots
-        for heap_item in &self.root_queue {
+        for heap_item in self.root_queue.borrow().iter() {
             let heap_item_ref = unsafe { heap_item.as_ref() };
             if heap_item_ref.value().is_rooted() {
                 unsafe {
-                    heap_item_ref.value().trace_fn()(*heap_item, self.state.color);
+                    heap_item_ref.value().trace_fn()(*heap_item, color);
                 }
             }
         }
 
-        for ephemeron_heap_item in &self.ephemeron_queue {
+        for ephemeron_heap_item in self.ephemeron_queue.borrow().iter() {
             let ephemeron_ref = unsafe { ephemeron_heap_item.as_ref() };
             // use the vtable to check if the key is still reachable
             let is_reachable = unsafe {
@@ -233,25 +257,31 @@ impl MarkSweepGarbageCollector {
         // At this point, all objects should be marked.
     }
 
-    pub fn run_sweep_phase(&mut self) {
-        // NOTE: it is important here to only extract after attemmpting to finalize. This is
+    pub fn run_sweep_phase(&self) {
+        let color = self.trace_color.get();
+
+        // NOTE: it is important here to only extract after attempting to finalize, this is
         // so that our queues ideally maintain the insertion order for so that they are cache
         // friendly.
-        let droppables = self.root_queue.extract_if(.., |node| {
-            let heap_item_ref = unsafe { node.as_ref() };
-            let gc_box = heap_item_ref.value();
-            // Check if the value is not reachable, i.e. dead.
-            if !gc_box.is_reachable(self.state.color) {
-                // Finalize the dead item
-                gc_box.finalize();
-                // Recheck if the value is now rooted again after finalization.
-                if gc_box.is_rooted() {
-                    unsafe { gc_box.trace_fn()(*node, self.state.color) };
+        let droppables = self
+            .root_queue
+            .borrow_mut()
+            .extract_if(.., |node| {
+                let heap_item_ref = unsafe { node.as_ref() };
+                let gc_box = heap_item_ref.value();
+                // Check if the value is not reachable, i.e. dead.
+                if !gc_box.is_reachable(color) {
+                    // Finalize the dead item
+                    gc_box.finalize();
+                    // Recheck if the value is now rooted again after finalization.
+                    if gc_box.is_rooted() {
+                        unsafe { gc_box.trace_fn()(*node, color) };
+                    }
                 }
-            }
-            // Extract if the value is still no longer reachable.
-            !heap_item_ref.value().is_reachable(self.state.color)
-        });
+                // Extract if the value is still no longer reachable.
+                !heap_item_ref.value().is_reachable(color)
+            })
+            .collect::<Vec<_>>();
 
         let ephemerons = self.ephemeron_queue.extract_if(.., |node| {
             let heap_item_ref = unsafe { node.as_ref() };
@@ -289,7 +319,7 @@ impl MarkSweepGarbageCollector {
             }
             unsafe { drop_fn(node) }
         }
-        self.root_queue.extend(still_alive);
+        self.root_queue.borrow_mut().extend(still_alive);
 
         let mut still_alive = Vec::default();
         for ephemeron in ephemerons {
