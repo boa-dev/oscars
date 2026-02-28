@@ -72,10 +72,6 @@ impl ErasedHeapItem {
         self.buf.cast::<T>()
     }
 
-    pub fn as_ref<T>(&self) -> &T {
-        unsafe { self.get().as_ref() }
-    }
-
     pub fn mark_dropped(&mut self) {
         if !self.next.is_tagged() {
             self.next.tag()
@@ -84,6 +80,13 @@ impl ErasedHeapItem {
 
     pub fn is_dropped(&self) -> bool {
         self.next.is_tagged()
+    }
+}
+
+impl<T> core::convert::AsRef<T> for ErasedHeapItem {
+    fn as_ref(&self) -> &T {
+        // SAFETY: TODO
+        unsafe { self.get().as_ref() }
     }
 }
 

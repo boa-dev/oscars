@@ -26,9 +26,9 @@ unsafe impl Trace for NonTraceable {
 
 // NOTE: This may not be the best idea, but let's find out.
 //
-use crate::alloc::arena2::{ErasedArenaPointer, ArenaHeapItem};
-use core::ptr::NonNull;
+use crate::alloc::arena2::{ArenaHeapItem, ErasedArenaPointer};
 use core::marker::PhantomData;
+use core::ptr::NonNull;
 
 #[repr(transparent)]
 pub struct WeakGcBox<T: Trace + ?Sized + 'static> {
@@ -38,7 +38,10 @@ pub struct WeakGcBox<T: Trace + ?Sized + 'static> {
 
 impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
     pub fn new(inner_ptr: ErasedArenaPointer<'static>) -> Self {
-        Self { inner_ptr, marker: PhantomData }
+        Self {
+            inner_ptr,
+            marker: PhantomData,
+        }
     }
 
     pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
@@ -65,10 +68,6 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
         self.inner_ref().is_reachable(color)
     }
 
-    pub(crate) fn is_rooted(&self) -> bool {
-        self.inner_ref().is_rooted()
-    }
-
     pub(crate) fn mark(&self, color: HeaderColor) {
         self.inner_ref().header.mark(color);
     }
@@ -80,7 +79,7 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
 
 impl<T: Trace> WeakGcBox<T> {
     pub(crate) fn inner_ptr(&self) -> crate::alloc::arena2::ArenaPointer<'static, GcBox<T>> {
-        // SAFETY: This pointer started out as a `GcBox<T>`, so it's safe to cast 
+        // SAFETY: This pointer started out as a `GcBox<T>`, so it's safe to cast
         // it back, the `PhantomData` guarantees that the type `T` is still correct
         unsafe { self.inner_ptr.to_typed_arena_pointer::<GcBox<T>>() }
     }
@@ -128,10 +127,7 @@ impl<T: Trace> GcBox<T> {
 
     // TODO (nekevss): What is the best function signature here?
     #[inline]
-    pub(crate) fn new_typed(
-        value: T,
-        collection_state: &CollectionState,
-    ) -> Self {
+    pub(crate) fn new_typed(value: T, collection_state: &CollectionState) -> Self {
         //check for color sync issue
         let header = match collection_state.color {
             TraceColor::White => GcHeader::new_typed::<true>(),

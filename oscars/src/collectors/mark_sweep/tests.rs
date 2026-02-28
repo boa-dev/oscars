@@ -60,7 +60,6 @@ fn gc_recursion() {
         .with_arena_size(4096)
         .with_heap_threshold(8_192);
 
-
     #[derive(Debug, Finalize, Trace)]
     struct S {
         i: usize,
@@ -71,10 +70,13 @@ fn gc_recursion() {
 
     let mut root = Gc::new_in(S { i: 0, next: None }, collector);
     for i in 1..COUNT {
-        root = Gc::new_in(S {
+        root = Gc::new_in(
+            S {
                 i,
                 next: Some(root),
-        }, collector);
+            },
+            collector,
+        );
     }
 
     drop(root);
@@ -96,7 +98,7 @@ fn drop_gc() {
     drop(gc);
     collector.collect();
 
-	// TODO: don't drop an active arena
+    // TODO: don't drop an active arena
     assert_eq!(collector.allocator.arenas_len(), 0, "arena not freed");
 }
 
@@ -237,7 +239,11 @@ fn update_wm() {
     drop(key);
     collector.collect();
 
-    assert_eq!(collector.allocator.arenas_len(), 0, "arena leaked after update");
+    assert_eq!(
+        collector.allocator.arenas_len(),
+        0,
+        "arena leaked after update"
+    );
 }
 
 #[test]
@@ -330,7 +336,11 @@ fn remove_then_collect() {
     drop(key);
     collector.collect();
 
-    assert_eq!(collector.allocator.arenas_len(), 0, "ephemeron leaked after remove");
+    assert_eq!(
+        collector.allocator.arenas_len(),
+        0,
+        "ephemeron leaked after remove"
+    );
 }
 
 #[test]

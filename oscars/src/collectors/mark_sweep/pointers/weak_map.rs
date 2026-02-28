@@ -3,9 +3,7 @@ use hashbrown::HashMap;
 use crate::{
     alloc::arena2::{ArenaPointer, ErasedHeapItem},
     collectors::mark_sweep::{
-        Finalize, MarkSweepGarbageCollector, TraceColor,
-        internals::Ephemeron,
-        trace::Trace,
+        Finalize, MarkSweepGarbageCollector, TraceColor, internals::Ephemeron, trace::Trace,
     },
 };
 
@@ -25,15 +23,12 @@ struct WeakMapInner<K: Trace + 'static, V: Trace + 'static> {
 
 impl<K: Trace, V: Trace> WeakMapInner<K, V> {
     fn new() -> Self {
-        Self { entries: HashMap::new() }
+        Self {
+            entries: HashMap::new(),
+        }
     }
 
-    fn insert(
-        &mut self,
-        key: &Gc<K>,
-        value: V,
-        collector: &mut MarkSweepGarbageCollector,
-    ) {
+    fn insert(&mut self, key: &Gc<K>, value: V, collector: &mut MarkSweepGarbageCollector) {
         let key_addr = key.inner_ptr.as_non_null().as_ptr() as usize;
 
         // Drop the old entry before allocating a new one to prevent the old
@@ -77,9 +72,7 @@ impl<K: Trace, V: Trace> ErasedWeakMap for WeakMapInner<K, V> {
         self.entries.retain(|_, ephemeron_ptr| {
             // SAFETY: Memory is valid until next collector step
             // We only read the dropped flag
-            let heap_item = unsafe {
-                ephemeron_ptr.as_ptr().cast::<ErasedHeapItem>().as_ref()
-            };
+            let heap_item = unsafe { ephemeron_ptr.as_ptr().cast::<ErasedHeapItem>().as_ref() };
             !heap_item.is_dropped()
         });
     }
@@ -90,7 +83,7 @@ impl<K: Trace, V: Trace> ErasedWeakMap for WeakMapInner<K, V> {
 // the collector owns the actual data, this is just a thin pointer
 // wrapper that stays valid as long as the collector does
 pub struct WeakMap<K: Trace + 'static, V: Trace + 'static> {
-    // raw pointer to collector owned memory 
+    // raw pointer to collector owned memory
     inner: *mut WeakMapInner<K, V>,
 }
 
@@ -102,7 +95,8 @@ impl<K: Trace, V: Trace> WeakMap<K, V> {
         // get a raw pointer that stays valid even after the box is moved
         let inner: *mut WeakMapInner<K, V> = rust_alloc::boxed::Box::into_raw(boxed);
         // SAFETY: we just got this from into_raw, and we are giving ownership to the collector
-        let erased: rust_alloc::boxed::Box<dyn ErasedWeakMap> = unsafe { rust_alloc::boxed::Box::from_raw(inner) };
+        let erased: rust_alloc::boxed::Box<dyn ErasedWeakMap> =
+            unsafe { rust_alloc::boxed::Box::from_raw(inner) };
         collector.weak_maps.push(erased);
         Self { inner }
     }
