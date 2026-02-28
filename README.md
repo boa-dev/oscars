@@ -13,6 +13,11 @@ management and garbage collection experiments for Boa.
  - How should memory allocation be handled?
      - What is best for JavaScript performances?
 
+## GC API investigation
+
+The current API model investigation for Boa issue #2631 is documented in
+[`notes/gc_api_models.md`](./notes/gc_api_models.md).
+
 ## Project structure
 
 The current project structure is as follows.
