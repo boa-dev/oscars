@@ -353,6 +353,19 @@ impl<'arena> Arena<'arena> {
         }
         true
     }
+
+    // checks dropped items in this arena
+    #[cfg(test)]
+    pub fn item_drop_states(&self) -> rust_alloc::vec::Vec<bool> {
+        let mut result = rust_alloc::vec::Vec::new();
+        let mut unchecked_ptr = self.last_allocation.get();
+        while let Some(node) = NonNull::new(unchecked_ptr) {
+            let item = unsafe { node.as_ref() };
+            result.push(item.is_dropped());
+            unchecked_ptr = item.next.as_ptr() as *mut ErasedHeapItem
+        }
+        result
+    }
 }
 
 impl<'arena> Drop for Arena<'arena> {

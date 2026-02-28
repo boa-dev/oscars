@@ -9,9 +9,7 @@ pub struct WeakGc<T: Trace + 'static> {
 }
 
 impl<T: Trace> WeakGc<T> {
-    pub fn new_in(value: T, collector: &mut MarkSweepGarbageCollector) -> Self
-    where
-        T: Sized,
+    pub fn new_in(value: &super::Gc<T>, collector: &mut MarkSweepGarbageCollector) -> Self
     {
         let ephemeron = Ephemeron::new_in(value, (), collector);
         let inner_ptr = collector.alloc_epemeron_with_collection(ephemeron);

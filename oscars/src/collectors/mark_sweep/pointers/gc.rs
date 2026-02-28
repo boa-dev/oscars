@@ -19,7 +19,7 @@ impl<T: Trace> Gc<T> {
     #[must_use]
     pub fn new_in(value: T, collector: &mut MarkSweepGarbageCollector) -> Self {
         // Create GcBox
-        let gc_box = GcBox::new_in(value, &collector.state);
+        let gc_box = GcBox::new(value, &collector.state);
         let inner_ptr = collector.alloc_with_collection(gc_box).to_erased();
 
         Self {
@@ -34,7 +34,7 @@ impl<T: Trace> Gc<T> {
 }
 
 impl<T: Trace + ?Sized> Gc<T> {
-    pub(crate) fn as_sized_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
+    pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
         let heap_item = unsafe { self.as_heap_ptr().as_mut() };
         // SAFETY: We just removed this value from a NonNull.
         unsafe { NonNull::new_unchecked(heap_item.as_ptr()) }
@@ -47,7 +47,7 @@ impl<T: Trace + ?Sized> Gc<T> {
     }
 
     pub(crate) fn inner_ref(&self) -> &GcBox<NonTraceable> {
-        unsafe { self.as_sized_inner_ptr().as_ref() }
+        unsafe { self.erased_inner_ptr().as_ref() }
     }
 
     pub fn size(&self) -> usize {
@@ -66,14 +66,14 @@ impl<T: Trace + ?Sized> Gc<T> {
 impl<T: Trace + ?Sized> Finalize for Gc<T> {
     fn finalize(&self) {
         unsafe {
-            self.as_sized_inner_ptr().as_ref().dec_roots();
+            self.erased_inner_ptr().as_ref().dec_roots();
         };
     }
 }
 
 unsafe impl<T: Trace + ?Sized> Trace for Gc<T> {
     unsafe fn trace(&self, color: crate::collectors::mark_sweep::TraceColor) {
-        let trace_fn = unsafe { self.as_sized_inner_ptr().as_ref().trace_fn() };
+        let trace_fn = unsafe { self.erased_inner_ptr().as_ref().trace_fn() };
         unsafe { trace_fn(self.as_heap_ptr(), color) }
     }
 
