@@ -17,8 +17,8 @@ use rust_alloc::vec::Vec;
 
 #[cfg(feature = "std")]
 use std::collections::{HashMap, HashSet};
-#[cfg(feature = "std")]
-use std::path::{Path, PathBuf};
+//#[cfg(feature = "std")]
+//use std::path::{Path, PathBuf};
 
 /// Substitute for the [`Drop`] trait for garbage collected types.
 pub trait Finalize {
@@ -292,6 +292,20 @@ unsafe impl<T: Trace> Trace for Box<[T]> {
 impl<T: Trace> Finalize for Vec<T> {}
 // SAFETY: All the inner elements of the `Vec` are correctly marked.
 unsafe impl<T: Trace> Trace for Vec<T> {
+    custom_trace!(this, mark, {
+        for e in this {
+            mark(e);
+        }
+    });
+}
+
+#[cfg(feature = "gc_allocator")]
+impl<T: Trace, C: allocator_api2::alloc::Allocator> Finalize for allocator_api2::vec::Vec<T, C> {}
+#[cfg(feature = "gc_allocator")]
+// SAFETY: All the inner elements of the `Vec` are correctly marked
+unsafe impl<T: Trace, C: allocator_api2::alloc::Allocator> Trace
+    for allocator_api2::vec::Vec<T, C>
+{
     custom_trace!(this, mark, {
         for e in this {
             mark(e);

@@ -2,8 +2,8 @@
 
 use core::any::TypeId;
 
+use crate::collectors::mark_sweep::Finalize;
 use crate::collectors::mark_sweep::internals::gc_header::{GcHeader, HeaderColor};
-use crate::collectors::mark_sweep::{CollectionState, Finalize};
 use crate::collectors::mark_sweep::{Trace, TraceColor};
 
 use super::{DropFn, TraceFn, VTable, vtable_of};
@@ -36,26 +36,9 @@ pub struct WeakGcBox<T: Trace + ?Sized + 'static> {
     pub(crate) marker: PhantomData<T>,
 }
 
-impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
-    pub fn new(inner_ptr: ErasedArenaPointer<'static>) -> Self {
-        Self {
-            inner_ptr,
-            marker: PhantomData,
-        }
-    }
-
-    pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
-        // SAFETY: `as_heap_ptr` returns a valid pointer to
-        // `ArenaHeapItem` whose lifetime is tied to the arena
-        let heap_item = unsafe { self.as_heap_ptr().as_mut() };
-        // SAFETY: We just removed this value from a NonNull
-        unsafe { NonNull::new_unchecked(heap_item.as_ptr()) }
-    }
-
-    pub(crate) fn as_heap_ptr(&self) -> NonNull<ArenaHeapItem<GcBox<NonTraceable>>> {
-        self.inner_ptr
-            .as_non_null()
-            .cast::<ArenaHeapItem<GcBox<NonTraceable>>>()
+impl<T: Trace + Finalize> WeakGcBox<T> {
+    pub fn new_in(value: T, color: TraceColor) -> Self {
+        Self(GcBox::new_typed_in::<true>(value, color))
     }
 
     pub(crate) fn inner_ref(&self) -> &GcBox<NonTraceable> {
@@ -72,8 +55,8 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
         self.inner_ref().header.mark(color);
     }
 
-    pub(crate) fn set_unmarked(&self, state: &CollectionState) {
-        self.inner_ref().set_unmarked(state);
+    pub(crate) fn set_unmarked(&self, color: TraceColor) {
+        self.0.set_unmarked(color);
     }
 }
 
@@ -120,21 +103,20 @@ pub struct GcBox<T: Trace + ?Sized + 'static> {
 
 impl<T: Trace> GcBox<T> {
     // TODO (potentially): Fix alloc to be generic
-    #[inline]
-    pub fn new(value: T, collection_state: &CollectionState) -> Self {
-        Self::new_typed(value, collection_state)
+    // TODO: after weak map integration, change `color: TraceColor` back to `state: &CollectionState`
+    // so `WeakMap::insert` can push allocations into the GC queues
+    pub(crate) fn new_in(value: T, color: TraceColor) -> Self {
+        Self::new_typed_in::<false>(value, color)
     }
 
     // TODO (nekevss): What is the best function signature here?
-    #[inline]
-    pub(crate) fn new_typed(value: T, collection_state: &CollectionState) -> Self {
-        //check for color sync issue
-        let header = match collection_state.color {
-            TraceColor::White => GcHeader::new_typed::<true>(),
-            TraceColor::Black => GcHeader::new_typed::<false>(),
+    pub(crate) fn new_typed_in<const IS_WEAK: bool>(value: T, color: TraceColor) -> Self {
+        // new objects get the current epoch color so they aren't swept immediately
+        // the root count starts at 0;,`Root::new_in` increments it to 1
+        let header = match color {
+            TraceColor::White => GcHeader::new_typed::<true, IS_WEAK>(),
+            TraceColor::Black => GcHeader::new_typed::<false, IS_WEAK>(),
         };
-        // Increment the root for this box.
-        header.inc_roots();
 
         let vtable = vtable_of::<T>();
         Self {
@@ -146,8 +128,8 @@ impl<T: Trace> GcBox<T> {
 
     /// This function ensures the GcBox is unmarked by setting it to the opposite
     /// of the collection state.
-    pub(crate) fn set_unmarked(&self, state: &CollectionState) {
-        match state.color {
+    pub(crate) fn set_unmarked(&self, color: TraceColor) {
+        match color {
             TraceColor::White => self.header.mark(HeaderColor::Black),
             TraceColor::Black => self.header.mark(HeaderColor::White),
         }

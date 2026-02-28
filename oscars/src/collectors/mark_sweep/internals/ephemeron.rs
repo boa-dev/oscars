@@ -5,7 +5,7 @@ use core::{any::TypeId, marker::PhantomData};
 use crate::{
     alloc::arena2::ArenaHeapItem,
     collectors::mark_sweep::{
-        CollectionState, ErasedEphemeron, MarkSweepGarbageCollector, TraceColor,
+        ErasedEphemeron, TraceColor,
         internals::{GcBox, WeakGcBox, gc_header::HeaderColor},
         pointers::Gc,
         trace::Trace,
@@ -21,12 +21,15 @@ pub struct Ephemeron<K: Trace + ?Sized + 'static, V: Trace + 'static> {
 }
 
 impl<K: Trace, V: Trace> Ephemeron<K, V> {
-    // Creates a new [`Ephemeron`] with given key and value
-    //
-    // The [`WeakGcBox`] for the key is created internally from the provided [`Gc`] pointer
-    pub fn new_in(key: &Gc<K>, value: V, collector: &mut MarkSweepGarbageCollector) -> Self {
-        let weak_key = WeakGcBox::new(key.inner_ptr);
-        let value = GcBox::new(value, &collector.state);
+    // create an Ephemeron with the given GC trace color
+    // TODO: after weak map integration, change `color: TraceColor` back to `collector: &MarkSweepGarbageCollector`
+    // so `WeakMap::insert` can push it into the GC queues
+    pub(crate) fn new(key: K, value: V, color: TraceColor) -> Self
+    where
+        K: Sized,
+    {
+        let key = WeakGcBox::new_in(key, color);
+        let value = GcBox::new_in(value, color);
         let vtable = vtable_of::<K, V>();
         Self {
             key: weak_key,
@@ -47,8 +50,12 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
         self.key.is_reachable(color)
     }
 
-    pub(crate) fn set_unmarked(&self, state: &CollectionState) {
-        self.key.set_unmarked(state);
+    pub(crate) fn set_unmarked(&self, color: TraceColor) {
+        // both the key and value boxes must be flipped to the opposite of the
+        // current epoch color so the upcoming sweep does not mistake them for
+        // already traced objects
+        self.key.set_unmarked(color);
+        self.value.set_unmarked(color);
     }
 }
 
@@ -72,17 +79,18 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
 
 impl<K: Trace, V: Trace> Finalize for Ephemeron<K, V> {}
 
+// NOTE on Trace for Ephemeron:
+// this impl just satisfies `Trace` bounds for the allocator framework
+// actual GC tracing routes through the `EphemeronVTable`.
+// do not add logic here as it panics if called directly
 unsafe impl<K: Trace, V: Trace> Trace for Ephemeron<K, V> {
-    unsafe fn trace(&self, color: TraceColor) {
-        // If object is not marked reachable, mark it as such.
-        if !self.is_reachable(color) {
-            self.key.mark(HeaderColor::Grey);
-        }
+    unsafe fn trace(&self, _color: TraceColor) {
+        panic!("Trace::trace called on Ephemeron directly; must be dispatched via vtable");
     }
 
     fn run_finalizer(&self) {
-        Finalize::finalize(self.key());
-        Finalize::finalize(self.value());
+        Finalize::finalize(&self.key);
+        Finalize::finalize(&self.value);
     }
 }
 
@@ -121,39 +129,12 @@ pub(crate) const fn vtable_of<K: Trace + 'static, V: Trace + 'static>() -> &'sta
 
         // SAFETY: The caller must ensure that the passed erased pointer is `GcBox<Self>`.
         unsafe fn drop_fn<K: Trace + 'static, V: Trace + 'static>(this: ErasedEphemeron) {
-            // SAFETY: The caller must ensure that the passed erased pointer is `GcBox<Self>`.
+            // SAFETY: The caller must ensure that the passed erased pointer is `ArenaHeapItem<Ephemeron<K, V>>`.
             let mut this = this.cast::<ArenaHeapItem<Ephemeron<K, V>>>();
 
-            // SAFETY: The caller must ensure the erased pointer is not dropped or deallocated.
-            unsafe { this.as_mut().mark_dropped() };
-        }
-
-        // SAFETY: Cast back to concrete types to check reachability
-        unsafe fn is_reachable_fn<K: Trace + 'static, V: Trace + 'static>(
-            this: ErasedEphemeron,
-            color: TraceColor,
-        ) -> bool {
-            // SAFETY: The caller must ensure that the passed erased pointer is
-            // `ArenaHeapItem<Ephemeron<K, V>>`
-            let ephemeron = unsafe {
-                this.cast::<ArenaHeapItem<Ephemeron<K, V>>>()
-                    .as_ref()
-                    .value()
-            };
-            ephemeron.is_reachable(color)
-        }
-
-        // SAFETY: Cast back to concrete types to run finalizers
-        unsafe fn finalize_fn<K: Trace + 'static, V: Trace + 'static>(this: ErasedEphemeron) {
-            // SAFETY: The caller must ensure that the passed erased pointer is
-            // `ArenaHeapItem<Ephemeron<K, V>>`
-            let ephemeron = unsafe {
-                this.cast::<ArenaHeapItem<Ephemeron<K, V>>>()
-                    .as_ref()
-                    .value()
-            };
-            Finalize::finalize(ephemeron.key());
-            Finalize::finalize(ephemeron.value());
+            // drop the Ephemeron value in place, the arena bitmap is cleared
+            // by the sweep loop after this function returns
+            unsafe { core::ptr::drop_in_place(this.as_mut()) };
         }
     }
 

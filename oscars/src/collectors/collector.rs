@@ -1,30 +1,71 @@
-// exploring `trait Collector: Allocator`
+// `trait Collector: Allocator` supertrait
 //
-// the limitations:
-//-  since rust won't let us cfg-gate a supertrait bound 
-//    directly, so we define `Collector` twice
-//- the borrow wall: `Allocator` uses `&self` but `collect()` needs `&mut self`. 
-//    if a collection is live, calling `collect(&mut self)` fails to compile
-// - fix: change to `collect(&self)` and put the gc state in a `RefCell`
-// - if allocating triggers a gc cycle, we double borrow 
-//    the arena and panic. we need to separate allocation from collection triggers
-// - `Allocator` isn't object-safe, so `dyn Collector` won't work
+// key design decisions:
+// - `collect()` takes `&self` so it can run while collections borrow the collector
+// - alloc methods accept raw values so the `GcBox` header gets its color
+//   after any GC collections happen, preventing tracing bugs
 
+use crate::alloc::arena2::ArenaPointer;
+use crate::collectors::mark_sweep::{
+    TraceColor,
+    internals::{Ephemeron, GcBox},
+    trace::Trace,
+};
 
-// when `gc_allocator` is on, third-party collections can use the gc's arena directly
-//
-// warning:
-//
-// this compiles, but triggering a collection while holding an allocation
-// causes a borrow conflict
+// when `gc_allocator` is on, collections can use the GC's arena directly
 #[cfg(feature = "gc_allocator")]
 pub trait Collector: allocator_api2::alloc::Allocator {
     // trigger a full collection cycle
-    fn collect(&mut self);
+    fn collect(&self);
+
+    // returns the current trace color for newly allocated objects
+    fn gc_color(&self) -> TraceColor;
+
+    // Allocates a standard GC node for `value`, wrapping it in a `GcBox`
+    //
+    // SAFETY:
+    // the `'static` pointer is only valid while the collector is alive, do not leak it
+    fn alloc_gc_node<T: Trace + 'static>(
+        &self,
+        value: T,
+    ) -> Result<ArenaPointer<'static, GcBox<T>>, allocator_api2::alloc::AllocError>;
+
+    // Allocates an ephemeron node for a `(key, value)` pair
+    //
+    // SAFETY:
+    // the `'static` pointer is only valid while the collector is alive, do not leak it
+    fn alloc_ephemeron_node<K: Trace + 'static, V: Trace + 'static>(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<ArenaPointer<'static, Ephemeron<K, V>>, allocator_api2::alloc::AllocError>;
 }
 
-//used when `gc_allocator` is off
+//used when `gc_allocator` feature is off
 #[cfg(not(feature = "gc_allocator"))]
 pub trait Collector {
-    fn collect(&mut self);
+    // trigger a full collection cycle
+    fn collect(&self);
+
+    // returns the current trace color for newly allocated objects
+    fn gc_color(&self) -> TraceColor;
+
+    // Allocates a standard GC node for `value`, wrapping it in a `GcBox`
+    //
+    // SAFETY:
+    // the `'static` pointer is only valid while the collector is alive, do not leak it
+    fn alloc_gc_node<T: Trace + 'static>(
+        &self,
+        value: T,
+    ) -> Result<ArenaPointer<'static, GcBox<T>>, crate::alloc::arena2::ArenaAllocError>;
+
+    // Allocates an ephemeron node for a (key, value) pair
+    //
+    // SAFETY:
+    // the `'static` pointer is only valid while the collector is alive, do not leak it
+    fn alloc_ephemeron_node<K: Trace + 'static, V: Trace + 'static>(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<ArenaPointer<'static, Ephemeron<K, V>>, crate::alloc::arena2::ArenaAllocError>;
 }

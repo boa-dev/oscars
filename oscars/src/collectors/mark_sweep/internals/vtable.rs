@@ -25,7 +25,7 @@ pub(crate) const fn vtable_of<T: Trace + 'static>() -> &'static VTable {
             let mut this = this.cast::<ArenaHeapItem<GcBox<Self>>>();
 
             // SAFETY: The caller must ensure the erased pointer is not dropped or deallocated.
-            unsafe { this.as_mut().mark_dropped() };
+            unsafe { core::ptr::drop_in_place(this.as_mut()) };
         }
     }
 
