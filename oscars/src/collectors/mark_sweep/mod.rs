@@ -19,7 +19,7 @@ pub(crate) mod trace;
 
 pub mod cell;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mark_sweep"))]
 mod tests;
 
 pub(crate) mod internals;

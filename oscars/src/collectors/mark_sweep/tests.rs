@@ -1,5 +1,4 @@
-use crate::{Finalize, Trace};
-
+use crate::{Trace, Finalize};
 use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
 
 use super::Gc;
