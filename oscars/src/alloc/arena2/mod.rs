@@ -6,7 +6,9 @@ use rust_alloc::collections::LinkedList;
 mod alloc;
 
 use alloc::Arena;
-pub use alloc::{ArenaAllocationData, ArenaHeapItem, ArenaPointer, ErasedArenaPointer, ErasedHeapItem};
+pub use alloc::{
+    ArenaAllocationData, ArenaHeapItem, ArenaPointer, ErasedArenaPointer, ErasedHeapItem,
+};
 
 #[cfg(test)]
 mod tests;

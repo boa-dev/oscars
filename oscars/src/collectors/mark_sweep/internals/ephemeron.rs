@@ -24,12 +24,15 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
     // Creates a new [`Ephemeron`] with given key and value
     //
     // The [`WeakGcBox`] for the key is created internally from the provided [`Gc`] pointer
-    pub fn new_in(key: &Gc<K>, value: V, collector: &mut MarkSweepGarbageCollector) -> Self
-    {
+    pub fn new_in(key: &Gc<K>, value: V, collector: &mut MarkSweepGarbageCollector) -> Self {
         let weak_key = WeakGcBox::new(key.inner_ptr);
         let value = GcBox::new(value, &collector.state);
         let vtable = vtable_of::<K, V>();
-        Self { key: weak_key, value, vtable }
+        Self {
+            key: weak_key,
+            value,
+            vtable,
+        }
     }
 
     pub fn key(&self) -> &K {
@@ -61,7 +64,7 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
     pub(crate) fn is_reachable_fn(&self) -> EphemeronIsReachableFn {
         self.vtable.is_reachable_fn
     }
-	
+
     pub(crate) fn finalize_fn(&self) -> EphemeronFinalizeFn {
         self.vtable.finalize_fn
     }

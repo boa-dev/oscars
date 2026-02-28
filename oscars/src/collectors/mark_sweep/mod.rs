@@ -19,12 +19,12 @@ pub(crate) mod trace;
 
 pub mod cell;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mark_sweep"))]
 mod tests;
 
 pub(crate) mod internals;
 
-pub use trace::{Trace, Finalize, TraceColor};
+pub use trace::{Finalize, Trace, TraceColor};
 
 pub use pointers::{Gc, WeakGc, WeakMap};
 
@@ -196,7 +196,7 @@ impl MarkSweepGarbageCollector {
         self.run_sweep_phase();
         // We've run a collection, so we switch the color.
         self.state.color = self.state.color.flip();
-		// NOTE: It would actually be interesting to reuse the arenas that are dead rather
+        // NOTE: It would actually be interesting to reuse the arenas that are dead rather
         // than drop the page and reallocate when a new page is needed ... TBD
 
         // prune dead entries from each collector owned weak map before freeing
@@ -259,8 +259,7 @@ impl MarkSweepGarbageCollector {
             let color = self.state.color;
 
             // check if the key is reachable via the vtable
-            let is_reachable =
-                unsafe { ephemeron.is_reachable_fn()(*node, color) };
+            let is_reachable = unsafe { ephemeron.is_reachable_fn()(*node, color) };
 
             if !is_reachable {
                 unsafe { ephemeron.finalize_fn()(*node) };

@@ -15,8 +15,7 @@ extern crate std;
 #[cfg(feature = "mark_sweep")]
 pub use crate::collectors::mark_sweep::*;
 #[cfg(feature = "mark_sweep")]
-pub use oscars_derive::{Trace, Finalize};
-
+pub use oscars_derive::{Finalize, Trace};
 
 pub mod alloc;
 pub mod collectors;
