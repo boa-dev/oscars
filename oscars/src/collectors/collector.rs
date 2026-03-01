@@ -5,7 +5,7 @@
 // - alloc methods accept raw values so the `GcBox` header gets its color
 //   after any GC collections happen, preventing tracing bugs
 
-use crate::alloc::arena2::ArenaPointer;
+use crate::alloc::arena3::ArenaPointer;
 use crate::collectors::mark_sweep::{
     TraceColor,
     internals::{Ephemeron, GcBox},
@@ -30,18 +30,18 @@ pub trait Collector: allocator_api2::alloc::Allocator {
         value: T,
     ) -> Result<ArenaPointer<'static, GcBox<T>>, allocator_api2::alloc::AllocError>;
 
-    // Allocates an ephemeron node for a `(key, value)` pair
+    // Allocates an ephemeron node pointing to an existing GC key, and a new value
     //
     // SAFETY:
     // the `'static` pointer is only valid while the collector is alive, do not leak it
     fn alloc_ephemeron_node<K: Trace + 'static, V: Trace + 'static>(
         &self,
-        key: K,
+        key: &crate::collectors::mark_sweep::Gc<K>,
         value: V,
     ) -> Result<ArenaPointer<'static, Ephemeron<K, V>>, allocator_api2::alloc::AllocError>;
 }
 
-//used when `gc_allocator` feature is off
+// used when `gc_allocator` feature is off
 #[cfg(not(feature = "gc_allocator"))]
 pub trait Collector {
     // trigger a full collection cycle
@@ -57,15 +57,15 @@ pub trait Collector {
     fn alloc_gc_node<T: Trace + 'static>(
         &self,
         value: T,
-    ) -> Result<ArenaPointer<'static, GcBox<T>>, crate::alloc::arena2::ArenaAllocError>;
+    ) -> Result<ArenaPointer<'static, GcBox<T>>, crate::alloc::arena3::ArenaAllocError>;
 
-    // Allocates an ephemeron node for a (key, value) pair
+    // Allocates an ephemeron node pointing to an existing GC key, and a new value
     //
     // SAFETY:
     // the `'static` pointer is only valid while the collector is alive, do not leak it
     fn alloc_ephemeron_node<K: Trace + 'static, V: Trace + 'static>(
         &self,
-        key: K,
+        key: &crate::collectors::mark_sweep::Gc<K>,
         value: V,
-    ) -> Result<ArenaPointer<'static, Ephemeron<K, V>>, crate::alloc::arena2::ArenaAllocError>;
+    ) -> Result<ArenaPointer<'static, Ephemeron<K, V>>, crate::alloc::arena3::ArenaAllocError>;
 }

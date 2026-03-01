@@ -1,10 +1,9 @@
 use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
 use crate::{Finalize, Trace};
 
-use super::Gc;
 use super::WeakMap;
 use super::cell::GcRefCell;
-use crate::Root;
+use super::{Gc, Root};
 
 #[test]
 fn basic_gc() {
@@ -26,49 +25,31 @@ fn basic_gc() {
 #[test]
 fn nested_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(128)
-        .with_heap_threshold(512);
+        .with_arena_size(80)
+        .with_heap_threshold(128);
 
-    // With size-class routing, objects of different types may land in different
-    // arenas, we assert at least one arena not an exact count
+    // We are allocating 32 bytes, per GC, which with the linked list pointer should be
+    // 36 or 40 bytes depending on the system.
 
-    let gc_root = Root::new_in(GcRefCell::new(10), collector);
-    let gc = gc_root.into_gc();
+    let gc = Root::new_in(GcRefCell::new(10), collector);
 
     let nested_gc = Root::new_in(gc.clone(), collector);
-    let initial_arenas = collector.allocator.borrow().arenas_len();
-    assert!(initial_arenas >= 1);
 
-    drop(gc_root);
+    drop(gc);
+
     collector.collect();
 
-    // after collecting dead gc_root, arena count must not grow
-    // freed slots are returned to the free list, not removed as separate arenas
-    let after_collect_arenas = collector.allocator.borrow().arenas_len();
-    assert!(
-        after_collect_arenas <= initial_arenas,
-        "arenas must not grow after collecting dead objects"
-    );
+    assert_eq!(collector.allocator.borrow().arenas_len(), 2);
     assert_eq!(*nested_gc.borrow(), 10);
 
     let new_gc = Root::new_in(GcRefCell::new(8), collector);
 
-    // one more live object may reuse a free list slot or add to an existing arena.
-    let after_second_alloc = collector.allocator.borrow().arenas_len();
-    assert!(
-        after_second_alloc >= after_collect_arenas,
-        "arena count must not decrease on allocation"
-    );
+    assert_eq!(collector.allocator.borrow().arenas_len(), 2);
 
     drop(new_gc);
     collector.collect();
 
-    // after collecting new_gc, arena count must not exceed
-    let final_arenas = collector.allocator.borrow().arenas_len();
-    assert!(
-        final_arenas <= after_second_alloc,
-        "dead objects must not keep arenas alive"
-    );
+    assert_eq!(collector.allocator.borrow().arenas_len(), 2);
     assert_eq!(*nested_gc.borrow(), 10);
 }
 
@@ -84,20 +65,24 @@ fn gc_recursion() {
         next: Option<Gc<S>>,
     }
 
+    #[cfg(miri)]
+    const COUNT: usize = 20;
+
+    #[cfg(not(miri))]
     const COUNT: usize = 2_000;
 
-    let mut root_handle = Root::new_in(S { i: 0, next: None }, collector);
+    let mut root = Root::new_in(S { i: 0, next: None }, collector);
     for i in 1..COUNT {
-        root_handle = Root::new_in(
+        root = Root::new_in(
             S {
                 i,
-                next: Some(root_handle.into_gc()),
+                next: Some(root.into_gc()),
             },
             collector,
         );
     }
 
-    drop(root_handle);
+    drop(root);
     collector.collect();
 }
 
@@ -116,8 +101,12 @@ fn drop_gc() {
     drop(gc);
     collector.collect();
 
-    // TODO: don't drop an active arena
-    assert_eq!(collector.allocator.borrow().arenas_len(), 0, "arena not freed");
+    // after collecting a dead Gc, its slot is freed and the arena page dropped
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        0,
+        "arena not freed"
+    );
 }
 
 #[test]
@@ -151,7 +140,11 @@ fn multi_gc() {
         drop(objects);
         collector.collect();
 
-        assert_eq!(collector.allocator.borrow().arenas_len(), 0, "arenas not reclaimed");
+        assert_eq!(
+            collector.allocator.borrow().arenas_len(),
+            0,
+            "arenas not reclaimed"
+        );
     }
 }
 
@@ -213,112 +206,211 @@ fn basic_wm() {
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
-    let key = Gc::new_in(42u64, collector);
+    let key = Root::new_in(42u64, collector);
 
-    map.insert(&key, 100u64, collector);
+    map.insert(&key.into_gc(), 100u64, collector);
 
-    assert_eq!(map.get(&key), Some(&100u64));
-    assert!(map.is_key_alive(&key));
+    assert_eq!(map.get(&key.into_gc()), Some(&100u64));
+    assert!(map.is_key_alive(&key.into_gc()));
 }
 
-    #[test]
-    fn basic_alloc() {
-        let gc = MarkSweepGarbageCollector::default();
-        let layout = Layout::from_size_align(32, 8).unwrap();
-        let block = gc.allocate(layout).expect("allocation should succeed");
-        assert_eq!(block.len(), 32);
-        // deallocate does nothing but should not crash
-        unsafe { gc.deallocate(block.cast(), layout) };
+#[test]
+fn dead_wm() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
+
+    let mut map = WeakMap::new(collector);
+    let key = Root::new_in(42u64, collector);
+
+    map.insert(&key.into_gc(), 100u64, collector);
+    assert_eq!(map.get(&key.into_gc()), Some(&100u64));
+
+    drop(key);
+    collector.collect();
+
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        0,
+        "ephemeron not swept"
+    );
+}
+
+#[test]
+fn update_wm() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
+
+    let mut map = WeakMap::new(collector);
+    let key = Root::new_in(1u64, collector);
+
+    // insert then update so that old value doesn't leak
+    map.insert(&key.into_gc(), 10u64, collector);
+    map.insert(&key.into_gc(), 20u64, collector);
+
+    assert_eq!(map.get(&key.into_gc()), Some(&20u64), "value not updated");
+
+    drop(key);
+    collector.collect();
+
+    // both ephemerons (old invalidated, new key-dead) should be freed
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        0,
+        "arena leaked after update"
+    );
+
+    // both ephemerons (old invalidated, new key-dead) should be freed
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        0,
+        "arena leaked after update"
+    );
+}
+
+#[test]
+fn trace_wm() {
+    // weak_map must implement Trace to be embeddable in traced structs
+    #[derive(Finalize, Trace)]
+    struct Container {
+        _map: WeakMap<u64, u64>,
     }
 
-    // vec can use the gc reference as its allocator
-    #[test]
-    fn vec_alloc() {
-        let gc = MarkSweepGarbageCollector::default();
-        let mut v: GcVec<u64, &MarkSweepGarbageCollector> = GcVec::new_in(&gc);
-        for i in 0..8u64 {
-            v.push(i);
-        }
-        assert_eq!(v.len(), 8);
-        assert_eq!(v[7], 7);
-        // v and gc use the same arena
-        assert!(gc.allocator.borrow().arenas_len() > 0);
-    }
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
 
-    // skipping the borrow checker with unsafe
-    //
-    // we use a raw pointer to bypass the compiler rules
-    // Warning: if collect() frees memory you are still using, it will crash.
-    #[test]
-    fn unsafe_collect() {
-        let gc = MarkSweepGarbageCollector::default();
-        let mut v: GcVec<u64, &MarkSweepGarbageCollector> = GcVec::new_in(&gc);
-        v.push(1u64);
+    let container = Root::new_in(
+        Container {
+            _map: WeakMap::new(collector),
+        },
+        collector,
+    );
 
-        // bypass borrow checker with a raw pointer
-        unsafe {
-            // we use a raw pointer to satisfy the mutable call
-            let ptr = &gc as *const _ as *mut MarkSweepGarbageCollector;
-            (*ptr).collect();
-        }
+    collector.collect();
 
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0], 1);
-        drop(v);
-    }
+    drop(container);
+}
 
-    // check alignment limits
-    #[test]
-    fn over_aligned_succeeds() {
-        let gc = MarkSweepGarbageCollector::default();
-        let layout = Layout::from_size_align(64, 32).unwrap();
-        assert!(gc.allocate(layout).is_ok(), "alignment > 16 should succeed now");
-    }
+#[test]
+fn remove_wm() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
 
-    #[test]
-    fn zst_alloc() {
-        let gc = MarkSweepGarbageCollector::default();
-        let layout = Layout::new::<()>();
-        let block = gc.allocate(layout).expect("zst alloc should work");
-        assert_eq!(block.len(), 0);
-        unsafe { gc.deallocate(block.cast(), layout) };
-    }
+    let mut map = WeakMap::new(collector);
+    let key = Root::new_in(1u64, collector);
 
-    #[test]
-    fn vec_grow_reclaims_memory() {
-        let gc = MarkSweepGarbageCollector::default().with_arena_size(1024).with_heap_threshold(10240);
-        
-        let mut v: GcVec<u64, &MarkSweepGarbageCollector> = GcVec::new_in(&gc);
-        
-        // push items to force vector reallocations
-        // old buffers should be deallocated as it grows
-        for i in 0..100u64 {
-            v.push(i);
-        }
-        
-        drop(v);
+    map.insert(&key.into_gc(), 99u64, collector);
+    assert_eq!(map.get(&key.into_gc()), Some(&99u64));
 
-        gc.collect();
-        
-        // typed arenas may persist for the size-class pool, but raw arenas must be 0
-        let raw_arena_count = gc.allocator.borrow().raw_arenas.len();
-        assert_eq!(
-            raw_arena_count, 0,
-            "Raw arenas were not reclaimed after Vector was dropped. Memory leak!"
-        );
-    }
+    // remove should return true and leave map empty
+    let removed = map.remove(&key.into_gc());
+    assert_eq!(removed, true, "remove returned wrong value");
+    assert_eq!(
+        map.get(&key.into_gc()),
+        None,
+        "entry still present after remove"
+    );
 
-    #[test]
-    fn vec_triggers_gc_threshold() {
-        let gc = MarkSweepGarbageCollector::default().with_arena_size(256).with_heap_threshold(1024);
-        
-        let mut v: GcVec<u64, &MarkSweepGarbageCollector> = GcVec::new_in(&gc);
-        
-        // force allocations exceeding the threshold to trigger collect_needed
-        for i in 0..500u64 {
-            v.push(i);
-        }
-        
-        assert!(v.len() > 0);
-    }
+    drop(key);
+    collector.collect();
+}
+
+#[test]
+fn prune_wm() {
+    //  dangling pointer fix
+    // ensure insert doesn't read freed memory on dead entries
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
+
+    let mut map = WeakMap::new(collector);
+
+    let key1 = Root::new_in(1u64, collector);
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        1,
+        "after key1 alloc"
+    );
+    map.insert(&key1.into_gc(), 10u64, collector);
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        2,
+        "after insert key1"
+    );
+    drop(key1);
+    collector.collect();
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        0,
+        "after first collect"
+    );
+
+    let key2 = Root::new_in(2u64, collector);
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        1,
+        "after key2 alloc"
+    );
+    map.insert(&key2.into_gc(), 20u64, collector);
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        2,
+        "after insert key2"
+    );
+
+    assert_eq!(map.get(&key2.into_gc()), Some(&20u64));
+
+    drop(key2);
+    collector.collect();
+    assert_eq!(collector.allocator.borrow().arenas_len(), 0);
+}
+
+#[test]
+fn remove_then_collect() {
+    // ensure remove() doesn't leak the backing ephemeron after key is gone
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
+
+    let mut map = WeakMap::new(collector);
+    let key = Root::new_in(1u64, collector);
+
+    map.insert(&key.into_gc(), 99u64, collector);
+    let removed = map.remove(&key.into_gc());
+    assert_eq!(removed, true);
+
+    // the ephemeron stays in the queue until the key is collected
+    drop(key);
+    collector.collect();
+
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        0,
+        "ephemeron leaked after remove"
+    );
+}
+
+#[test]
+fn alive_wm() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
+
+    let mut map = WeakMap::new(collector);
+    let key = Root::new_in(42u64, collector);
+
+    map.insert(&key.into_gc(), 100u64, collector);
+    assert_eq!(map.get(&key.into_gc()), Some(&100u64));
+
+    collector.collect();
+
+    // alive keys persist
+    assert_eq!(
+        map.get(&key.into_gc()),
+        Some(&100u64),
+        "ephemeron swept prematurely"
+    );
 }

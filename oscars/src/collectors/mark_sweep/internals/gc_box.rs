@@ -26,19 +26,35 @@ unsafe impl Trace for NonTraceable {
 
 // NOTE: This may not be the best idea, but let's find out.
 //
-use crate::alloc::arena2::{ArenaHeapItem, ErasedArenaPointer};
+use crate::alloc::arena3::{ArenaHeapItem, ErasedArenaPointer};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
-#[repr(transparent)]
 pub struct WeakGcBox<T: Trace + ?Sized + 'static> {
     pub(crate) inner_ptr: ErasedArenaPointer<'static>,
     pub(crate) marker: PhantomData<T>,
 }
 
-impl<T: Trace + Finalize> WeakGcBox<T> {
-    pub fn new_in(value: T, color: TraceColor) -> Self {
-        Self(GcBox::new_typed_in::<true>(value, color))
+impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
+    pub fn new(inner_ptr: ErasedArenaPointer<'static>) -> Self {
+        Self {
+            inner_ptr,
+            marker: PhantomData,
+        }
+    }
+
+    pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
+        // SAFETY: `as_heap_ptr` returns a valid pointer to
+        // `ArenaHeapItem` whose lifetime is tied to the arena
+        let heap_item = unsafe { self.as_heap_ptr().as_mut() };
+        // SAFETY: We just removed this value from a NonNull
+        unsafe { NonNull::new_unchecked(heap_item.as_ptr()) }
+    }
+
+    pub(crate) fn as_heap_ptr(&self) -> NonNull<ArenaHeapItem<GcBox<NonTraceable>>> {
+        self.inner_ptr
+            .as_non_null()
+            .cast::<ArenaHeapItem<GcBox<NonTraceable>>>()
     }
 
     pub(crate) fn inner_ref(&self) -> &GcBox<NonTraceable> {
@@ -50,18 +66,10 @@ impl<T: Trace + Finalize> WeakGcBox<T> {
     pub fn is_reachable(&self, color: TraceColor) -> bool {
         self.inner_ref().is_reachable(color)
     }
-
-    pub(crate) fn mark(&self, color: HeaderColor) {
-        self.inner_ref().header.mark(color);
-    }
-
-    pub(crate) fn set_unmarked(&self, color: TraceColor) {
-        self.0.set_unmarked(color);
-    }
 }
 
 impl<T: Trace> WeakGcBox<T> {
-    pub(crate) fn inner_ptr(&self) -> crate::alloc::arena2::ArenaPointer<'static, GcBox<T>> {
+    pub(crate) fn inner_ptr(&self) -> crate::alloc::arena3::ArenaPointer<'static, GcBox<T>> {
         // SAFETY: This pointer started out as a `GcBox<T>`, so it's safe to cast
         // it back, the `PhantomData` guarantees that the type `T` is still correct
         unsafe { self.inner_ptr.to_typed_arena_pointer::<GcBox<T>>() }
@@ -102,41 +110,23 @@ pub struct GcBox<T: Trace + ?Sized + 'static> {
 }
 
 impl<T: Trace> GcBox<T> {
-    // TODO (potentially): Fix alloc to be generic
-    // TODO: after weak map integration, change `color: TraceColor` back to `state: &CollectionState`
-    // so `WeakMap::insert` can push allocations into the GC queues
+    // new objects get the opposite of the current live epoch color so they
+    // survive the current sweep cycle
+    // root_count starts at 0, `Root::new_in` increments it to 1
     pub(crate) fn new_in(value: T, color: TraceColor) -> Self {
-        Self::new_typed_in::<false>(value, color)
-    }
-
-    // TODO (nekevss): What is the best function signature here?
-    pub(crate) fn new_typed_in<const IS_WEAK: bool>(value: T, color: TraceColor) -> Self {
-        // new objects get the current epoch color so they aren't swept immediately
-        // the root count starts at 0;,`Root::new_in` increments it to 1
         let header = match color {
-            TraceColor::White => GcHeader::new_typed::<true, IS_WEAK>(),
-            TraceColor::Black => GcHeader::new_typed::<false, IS_WEAK>(),
+            TraceColor::White => GcHeader::new_typed::<true>(),
+            TraceColor::Black => GcHeader::new_typed::<false>(),
         };
-
-        let vtable = vtable_of::<T>();
         Self {
             header,
-            vtable,
+            vtable: vtable_of::<T>(),
             value,
-        }
-    }
-
-    /// This function ensures the GcBox is unmarked by setting it to the opposite
-    /// of the collection state.
-    pub(crate) fn set_unmarked(&self, color: TraceColor) {
-        match color {
-            TraceColor::White => self.header.mark(HeaderColor::Black),
-            TraceColor::Black => self.header.mark(HeaderColor::White),
         }
     }
 }
 
-impl<T: Trace> GcBox<T> {
+impl<T: Trace + ?Sized> GcBox<T> {
     pub fn value(&self) -> &T {
         &self.value
     }

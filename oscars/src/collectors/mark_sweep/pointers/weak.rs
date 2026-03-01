@@ -2,7 +2,7 @@
 // per weak pointer. This overhead is acceptable for now but could be 
 // optimized in the future
 use crate::{
-    alloc::arena2::ArenaPointer,
+    alloc::arena3::ArenaPointer,
     collectors::collector::Collector,
     collectors::mark_sweep::{Trace, internals::Ephemeron},
 };
@@ -13,7 +13,7 @@ pub struct WeakGc<T: Trace + 'static> {
 }
 
 impl<T: Trace> WeakGc<T> {
-    pub fn new_in<C: Collector>(value: T, collector: &C) -> Self
+    pub fn new_in<C: Collector>(value: &super::Gc<T>, collector: &C) -> Self
     where
         T: Sized,
     {

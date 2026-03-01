@@ -1,6 +1,6 @@
 use core::any::TypeId;
 
-use crate::alloc::arena2::ArenaHeapItem;
+use crate::alloc::arena3::ArenaHeapItem;
 
 use crate::collectors::mark_sweep::{GcBox, GcErasedPointer, Trace, TraceColor};
 

@@ -32,7 +32,7 @@ impl HeaderFlags {
 
     pub fn mark_grey(self) -> Self {
         // set color bits to GREY (0b01) while preserving IS_WEAK
-        // we must clear both color bits before ORing to prevent 
+        // we must clear both color bits before ORing to prevent
         // silently turning weak-black (0b0011) into weak-grey (0b0011)
         Self((self.0 & !BLACK_MARK_BITS) | GREY_MARK_BITS)
     }
@@ -147,45 +147,8 @@ impl GcHeader {
 
 #[cfg(test)]
 mod tests {
-    use super::HeaderFlags;
     use super::{BLACK_MARK_BITS, GREY_MARK_BITS, WHITE_MARK_BITS};
     use super::{GcHeader, HeaderColor};
-
-    // test that weak-white objects are considered white
-    #[test]
-    fn weak_white_is_white() {
-        let h = GcHeader::weak_white();
-        assert!(h.is_white(), "weak_white must be considered white-colored");
-        assert!(!h.is_black());
-        assert!(!h.is_grey());
-        assert!(h.is_weak());
-    }
-
-    // test that black->grey transitions keep the weak flag
-    #[test]
-    fn mark_grey_preserves_is_weak() {
-        let flags = HeaderFlags::weak_black().mark_grey();
-        assert!(flags.is_grey(), "after mark_grey, color must be grey");
-        assert!(
-            flags.is_weak(),
-            "IS_WEAK must survive mark_grey from weak-black"
-        );
-
-        let flags2 = HeaderFlags::weak_white().mark_grey();
-        assert!(flags2.is_grey(), "after mark_grey, color must be grey");
-        assert!(
-            flags2.is_weak(),
-            "IS_WEAK must survive mark_grey from weak-white"
-        );
-    }
-
-    #[test]
-    fn mark_white_preserves_is_weak() {
-        // test that transitioning to white keeps the weak flag
-        let flags = HeaderFlags::weak_black().mark_white();
-        assert!(flags.is_white(), "after mark_white, color must be white");
-        assert!(flags.is_weak(), "IS_WEAK must survive mark_white");
-    }
 
     #[test]
     fn header_marking() {

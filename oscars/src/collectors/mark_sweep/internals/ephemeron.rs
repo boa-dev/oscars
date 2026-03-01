@@ -1,12 +1,12 @@
 //! An Ephemeron implementation
 
-use core::{any::TypeId, marker::PhantomData};
+use core::marker::PhantomData;
 
 use crate::{
-    alloc::arena2::ArenaHeapItem,
+    alloc::arena3::ArenaHeapItem,
     collectors::mark_sweep::{
         ErasedEphemeron, TraceColor,
-        internals::{GcBox, WeakGcBox, gc_header::HeaderColor},
+        internals::{GcBox, WeakGcBox},
         pointers::Gc,
         trace::Trace,
     },
@@ -18,23 +18,20 @@ pub struct Ephemeron<K: Trace + ?Sized + 'static, V: Trace + 'static> {
     pub(crate) value: GcBox<V>,
     vtable: &'static EphemeronVTable,
     pub(crate) key: WeakGcBox<K>,
+    pub(crate) active: core::cell::Cell<bool>,
 }
 
 impl<K: Trace, V: Trace> Ephemeron<K, V> {
     // create an Ephemeron with the given GC trace color
-    // TODO: after weak map integration, change `color: TraceColor` back to `collector: &MarkSweepGarbageCollector`
-    // so `WeakMap::insert` can push it into the GC queues
-    pub(crate) fn new(key: K, value: V, color: TraceColor) -> Self
-    where
-        K: Sized,
-    {
-        let key = WeakGcBox::new_in(key, color);
+    pub(crate) fn new(key: &Gc<K>, value: V, color: TraceColor) -> Self {
+        let weak_key = WeakGcBox::new(key.inner_ptr);
         let value = GcBox::new_in(value, color);
         let vtable = vtable_of::<K, V>();
         Self {
             key: weak_key,
             value,
             vtable,
+            active: core::cell::Cell::new(true),
         }
     }
 
@@ -47,15 +44,11 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
     }
 
     pub fn is_reachable(&self, color: TraceColor) -> bool {
-        self.key.is_reachable(color)
+        self.active.get() && self.key.is_reachable(color)
     }
 
-    pub(crate) fn set_unmarked(&self, color: TraceColor) {
-        // both the key and value boxes must be flipped to the opposite of the
-        // current epoch color so the upcoming sweep does not mistake them for
-        // already traced objects
-        self.key.set_unmarked(color);
-        self.value.set_unmarked(color);
+    pub(crate) fn invalidate(&self) {
+        self.active.set(false);
     }
 }
 
@@ -64,16 +57,18 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
         self.vtable.trace_fn
     }
 
-    pub(crate) fn drop_fn(&self) -> EphemeronDropFn {
-        self.vtable.drop_fn
-    }
-
-    pub(crate) fn is_reachable_fn(&self) -> EphemeronIsReachableFn {
+    pub(crate) fn is_reachable_fn(
+        &self,
+    ) -> unsafe fn(this: ErasedEphemeron, color: TraceColor) -> bool {
         self.vtable.is_reachable_fn
     }
 
-    pub(crate) fn finalize_fn(&self) -> EphemeronFinalizeFn {
+    pub(crate) fn finalize_fn(&self) -> unsafe fn(this: ErasedEphemeron) {
         self.vtable.finalize_fn
+    }
+
+    pub(crate) fn drop_fn(&self) -> EphemeronDropFn {
+        self.vtable.drop_fn
     }
 }
 
@@ -142,12 +137,20 @@ pub(crate) const fn vtable_of<K: Trace + 'static, V: Trace + 'static>() -> &'sta
         const VTABLE: &'static EphemeronVTable = &EphemeronVTable {
             trace_fn: EphemeronMarker::<K, V>::trace_fn::<K, V>,
             drop_fn: EphemeronMarker::<K, V>::drop_fn::<K, V>,
-            is_reachable_fn: EphemeronMarker::<K, V>::is_reachable_fn::<K, V>,
-            finalize_fn: EphemeronMarker::<K, V>::finalize_fn::<K, V>,
-            _key_type_id: TypeId::of::<K>(),
-            _key_size: size_of::<WeakGcBox<K>>(),
-            _value_type_id: TypeId::of::<V>(),
-            _value_size: size_of::<GcBox<V>>(),
+            is_reachable_fn: |this, color| unsafe {
+                let ephemeron = this
+                    .cast::<ArenaHeapItem<Ephemeron<K, V>>>()
+                    .as_ref()
+                    .value();
+                ephemeron.active.get() && ephemeron.key.is_reachable(color)
+            },
+            finalize_fn: |this| unsafe {
+                let ephemeron = this
+                    .cast::<ArenaHeapItem<Ephemeron<K, V>>>()
+                    .as_ref()
+                    .value();
+                Finalize::finalize(ephemeron);
+            },
         };
     }
 
@@ -156,16 +159,10 @@ pub(crate) const fn vtable_of<K: Trace + 'static, V: Trace + 'static>() -> &'sta
 
 type EphemeronTraceFn = unsafe fn(this: ErasedEphemeron, color: TraceColor);
 type EphemeronDropFn = unsafe fn(this: ErasedEphemeron);
-type EphemeronIsReachableFn = unsafe fn(this: ErasedEphemeron, color: TraceColor) -> bool;
-type EphemeronFinalizeFn = unsafe fn(this: ErasedEphemeron);
 
 pub struct EphemeronVTable {
     trace_fn: EphemeronTraceFn,
     drop_fn: EphemeronDropFn,
-    is_reachable_fn: EphemeronIsReachableFn,
-    finalize_fn: EphemeronFinalizeFn,
-    _key_type_id: TypeId,
-    _key_size: usize,
-    _value_type_id: TypeId,
-    _value_size: usize,
+    is_reachable_fn: unsafe fn(this: ErasedEphemeron, color: TraceColor) -> bool,
+    finalize_fn: unsafe fn(this: ErasedEphemeron),
 }

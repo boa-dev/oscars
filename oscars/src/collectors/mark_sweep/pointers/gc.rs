@@ -1,4 +1,4 @@
-use crate::alloc::arena2::{ArenaHeapItem, ArenaPointer, ErasedArenaPointer};
+use crate::alloc::arena3::{ArenaHeapItem, ArenaPointer, ErasedArenaPointer};
 use crate::collectors::collector::Collector;
 use crate::collectors::mark_sweep::Finalize;
 use crate::collectors::mark_sweep::internals::NonTraceable;
@@ -158,7 +158,7 @@ impl<T: Trace + ?Sized> Root<T> {
 impl<T: Trace + ?Sized> Finalize for Root<T> {
     fn finalize(&self) {
         unsafe {
-            self.erased_inner_ptr().as_ref().dec_roots();
+            self.as_sized_inner_ptr().as_ref().dec_roots();
         };
     }
 }
@@ -166,7 +166,7 @@ impl<T: Trace + ?Sized> Finalize for Root<T> {
 // Root acts as a handle from the stack, so tracing it traces the inner pointer.
 unsafe impl<T: Trace + ?Sized> Trace for Root<T> {
     unsafe fn trace(&self, color: crate::collectors::mark_sweep::TraceColor) {
-        let trace_fn = unsafe { self.erased_inner_ptr().as_ref().trace_fn() };
+        let trace_fn = unsafe { self.as_sized_inner_ptr().as_ref().trace_fn() };
         unsafe { trace_fn(self.as_heap_ptr(), color) }
     }
 
