@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+allocator-api2 = "0.2"
 hashbrown = "0.16.1"
 oscars_derive = { path = "../oscars_derive", version = "0.1.0" }
 

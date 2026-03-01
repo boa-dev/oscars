@@ -49,7 +49,7 @@ type ErasedEphemeron = NonNull<ArenaHeapItem<Ephemeron<NonTraceable, NonTraceabl
 
 #[derive(Default)]
 pub struct MarkSweepGarbageCollector {
-    allocator: ArenaAllocator<'static>, // TODO: Cell or refcell
+    pub(crate) allocator: ArenaAllocator<'static>, // TODO: Cell or refcell
     root_queue: Vec<GcErasedPointer>,
     ephemeron_queue: Vec<ErasedEphemeron>,
     state: CollectionState,

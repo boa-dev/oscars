@@ -17,5 +17,10 @@ pub use crate::collectors::mark_sweep::*;
 #[cfg(feature = "mark_sweep")]
 pub use oscars_derive::{Finalize, Trace};
 
+#[cfg(feature = "mark_sweep")]
+pub mod collector;
+#[cfg(feature = "mark_sweep")]
+pub use collector::{Collector, GcAllocator};
+
 pub mod alloc;
 pub mod collectors;
