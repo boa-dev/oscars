@@ -41,6 +41,7 @@ dependencies = [
 name = "oscars"
 version = "0.1.0"
 dependencies = [
+ "allocator-api2",
  "hashbrown",
  "oscars_derive",
 ]
