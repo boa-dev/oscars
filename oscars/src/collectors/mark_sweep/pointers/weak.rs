@@ -1,5 +1,5 @@
 // `WeakGc<T>` uses `Ephemeron<T, ()>`, this allocates two GcBox headers
-// per weak pointer. This overhead is acceptable for now but could be 
+// per weak pointer. This overhead is acceptable for now but could be
 // optimized in the future
 use crate::{
     alloc::arena3::ArenaPointer,
