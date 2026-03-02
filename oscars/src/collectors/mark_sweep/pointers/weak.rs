@@ -1,6 +1,10 @@
+// `WeakGc<T>` uses `Ephemeron<T, ()>`, this allocates two GcBox headers
+// per weak pointer. This overhead is acceptable for now but could be
+// optimized in the future
 use crate::{
-    alloc::arena2::ArenaPointer,
-    collectors::mark_sweep::{MarkSweepGarbageCollector, Trace, internals::Ephemeron},
+    alloc::arena3::ArenaPointer,
+    collectors::collector::Collector,
+    collectors::mark_sweep::{Trace, internals::Ephemeron},
 };
 
 #[repr(transparent)]
@@ -9,9 +13,13 @@ pub struct WeakGc<T: Trace + 'static> {
 }
 
 impl<T: Trace> WeakGc<T> {
-    pub fn new_in(value: &super::Gc<T>, collector: &mut MarkSweepGarbageCollector) -> Self {
-        let ephemeron = Ephemeron::new_in(value, (), collector);
-        let inner_ptr = collector.alloc_epemeron_with_collection(ephemeron);
+    pub fn new_in<C: Collector>(value: &super::Gc<T>, collector: &C) -> Self
+    where
+        T: Sized,
+    {
+        let inner_ptr = collector
+            .alloc_ephemeron_node(value, ())
+            .expect("Failed to allocate Ephemeron node");
         Self { inner_ptr }
     }
 }
