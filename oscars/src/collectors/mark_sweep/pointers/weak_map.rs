@@ -4,7 +4,7 @@ use crate::{
     alloc::arena3::ArenaPointer,
     collectors::collector::Collector,
     collectors::mark_sweep::{
-        Finalize, MarkSweepGarbageCollector, TraceColor, internals::Ephemeron, trace::Trace,
+        Finalize, TraceColor, internals::Ephemeron, trace::Trace,
     },
 };
 use core::ptr::NonNull;
@@ -100,7 +100,7 @@ pub struct WeakMap<K: Trace + 'static, V: Trace + 'static> {
 
 impl<K: Trace, V: Trace> WeakMap<K, V> {
     // create a new map and give the collector ownership of its memory
-    pub fn new(collector: &MarkSweepGarbageCollector) -> Self {
+    pub fn new<C: Collector>(collector: &C) -> Self {
         let boxed: rust_alloc::boxed::Box<WeakMapInner<K, V>> =
             rust_alloc::boxed::Box::new(WeakMapInner::<K, V>::new());
 
@@ -109,11 +109,11 @@ impl<K: Trace, V: Trace> WeakMap<K, V> {
         // SAFETY: pointer returned from `Box::into_raw` is non-null
         let inner = unsafe { NonNull::new_unchecked(inner_ptr) };
 
-        collector.weak_maps.borrow_mut().push(inner);
+        collector.track_weak_map(inner);
         Self { inner }
     }
 
-    pub fn insert(&mut self, key: &Gc<K>, value: V, collector: &MarkSweepGarbageCollector) {
+    pub fn insert<C: Collector>(&mut self, key: &Gc<K>, value: V, collector: &C) {
         let key_addr = key.inner_ptr.as_non_null().as_ptr() as usize;
 
         // remove and invalidate any existing ephemeron for this key

@@ -10,7 +10,6 @@ use crate::{
     alloc::arena3::{ArenaAllocator, ArenaHeapItem, ArenaPointer},
     collectors::mark_sweep::{
         internals::{Ephemeron, GcBox, NonTraceable},
-        pointers::weak_map::ErasedWeakMap,
     },
 };
 use rust_alloc::vec::Vec;
@@ -26,6 +25,7 @@ mod tests;
 pub(crate) mod internals;
 
 pub use pointers::weak_map::WeakMap;
+pub(crate) use pointers::weak_map::ErasedWeakMap;
 pub use pointers::{Gc, Root, WeakGc};
 pub use trace::{Finalize, Trace, TraceColor};
 
@@ -157,7 +157,7 @@ impl MarkSweepGarbageCollector {
     // them without regard for reachability.
     fn sweep_all_queues(&self) {
         let ephemerons = core::mem::take(&mut *self.ephemeron_queue.borrow_mut());
-        for mut ephemeron in ephemerons {
+        for ephemeron in ephemerons {
             let ephemeron_ref = unsafe { ephemeron.as_ref() };
             unsafe { ephemeron_ref.value().drop_fn()(ephemeron) };
             self.allocator
@@ -173,7 +173,7 @@ impl MarkSweepGarbageCollector {
         }
 
         let pending_e = core::mem::take(&mut *self.pending_ephemeron_queue.borrow_mut());
-        for mut ephemeron in pending_e {
+        for ephemeron in pending_e {
             let ephemeron_ref = unsafe { ephemeron.as_ref() };
             unsafe { ephemeron_ref.value().drop_fn()(ephemeron) };
             self.allocator
@@ -315,7 +315,7 @@ impl MarkSweepGarbageCollector {
         let mut still_alive_roots = Vec::default();
 
         let mut still_alive = Vec::default();
-        for mut ephemeron in ephemerons {
+        for ephemeron in ephemerons {
             let ephemeron_ref = unsafe { ephemeron.as_ref() };
             // If it's reachable according to the color, and it's active
             // (both are checked inside the vtable-dispatched is_reachable_fn)
@@ -420,6 +420,16 @@ unsafe impl allocator_api2::alloc::Allocator for MarkSweepGarbageCollector {
             new_layout.size() >= old_layout.size(),
             "grow called with smaller new_layout"
         );
+
+        // if this is the last allocation in its arena and there is space, 
+        // we can just bump the pointer for a zero copy O(1) grow
+        let grew_in_place = self
+            .allocator
+            .borrow_mut()
+            .grow_bytes_in_place(ptr, old_layout, new_layout);
+        if grew_in_place {
+            return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+        }
 
         // SAFETY:
         // `allocate` may trigger a deferred GC collection, but that is safe here
@@ -583,6 +593,10 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
 
         Ok(inner_ptr)
     }
+
+    fn track_weak_map(&self, map: core::ptr::NonNull<dyn crate::collectors::mark_sweep::pointers::weak_map::ErasedWeakMap>) {
+        self.weak_maps.borrow_mut().push(map);
+    }
 }
 
 #[cfg(not(feature = "gc_allocator"))]
@@ -668,5 +682,9 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
         }
 
         Ok(inner_ptr)
+    }
+
+    fn track_weak_map(&self, map: core::ptr::NonNull<dyn crate::collectors::mark_sweep::pointers::weak_map::ErasedWeakMap>) {
+        self.weak_maps.borrow_mut().push(map);
     }
 }

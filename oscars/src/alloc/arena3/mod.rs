@@ -257,6 +257,37 @@ impl<'alloc> ArenaAllocator<'alloc> {
         false
     }
 
+    // try to grow a raw allocation in place
+    pub fn grow_bytes_in_place(
+        &mut self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> bool {
+        let target = ptr.as_ptr() as usize;
+        for arena in self.raw_arenas.iter().rev() {
+            let start = arena.buffer.as_ptr() as usize;
+            let end = start + arena.layout.size();
+
+            if target >= start && target < end {
+                let current_bump = arena.bump.get();
+                let allocation_end = target - start + old_layout.size();
+
+                if allocation_end == current_bump {
+                    let new_allocation_end = target - start + new_layout.size();
+                    if new_allocation_end <= arena.layout.size() {
+                        arena.bump.set(new_allocation_end);
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+        }
+
+        false
+    }
+
     // drop empty typed and raw arenas
     pub fn drop_dead_arenas(&mut self) {
         self.typed_arenas.retain(|a| {
