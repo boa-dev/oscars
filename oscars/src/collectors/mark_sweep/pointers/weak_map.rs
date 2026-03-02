@@ -3,9 +3,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     alloc::arena3::ArenaPointer,
     collectors::collector::Collector,
-    collectors::mark_sweep::{
-        Finalize, TraceColor, internals::Ephemeron, trace::Trace,
-    },
+    collectors::mark_sweep::{Finalize, TraceColor, internals::Ephemeron, trace::Trace},
 };
 use core::ptr::NonNull;
 

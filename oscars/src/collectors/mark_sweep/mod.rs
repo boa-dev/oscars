@@ -8,9 +8,7 @@ use core::ptr::NonNull;
 
 use crate::{
     alloc::arena3::{ArenaAllocator, ArenaHeapItem, ArenaPointer},
-    collectors::mark_sweep::{
-        internals::{Ephemeron, GcBox, NonTraceable},
-    },
+    collectors::mark_sweep::internals::{Ephemeron, GcBox, NonTraceable},
 };
 use rust_alloc::vec::Vec;
 
@@ -24,8 +22,8 @@ mod tests;
 
 pub(crate) mod internals;
 
-pub use pointers::weak_map::WeakMap;
 pub(crate) use pointers::weak_map::ErasedWeakMap;
+pub use pointers::weak_map::WeakMap;
 pub use pointers::{Gc, Root, WeakGc};
 pub use trace::{Finalize, Trace, TraceColor};
 
@@ -421,7 +419,7 @@ unsafe impl allocator_api2::alloc::Allocator for MarkSweepGarbageCollector {
             "grow called with smaller new_layout"
         );
 
-        // if this is the last allocation in its arena and there is space, 
+        // if this is the last allocation in its arena and there is space,
         // we can just bump the pointer for a zero copy O(1) grow
         let grew_in_place = self
             .allocator
@@ -594,7 +592,12 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
         Ok(inner_ptr)
     }
 
-    fn track_weak_map(&self, map: core::ptr::NonNull<dyn crate::collectors::mark_sweep::pointers::weak_map::ErasedWeakMap>) {
+    fn track_weak_map(
+        &self,
+        map: core::ptr::NonNull<
+            dyn crate::collectors::mark_sweep::pointers::weak_map::ErasedWeakMap,
+        >,
+    ) {
         self.weak_maps.borrow_mut().push(map);
     }
 }
@@ -684,7 +687,12 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
         Ok(inner_ptr)
     }
 
-    fn track_weak_map(&self, map: core::ptr::NonNull<dyn crate::collectors::mark_sweep::pointers::weak_map::ErasedWeakMap>) {
+    fn track_weak_map(
+        &self,
+        map: core::ptr::NonNull<
+            dyn crate::collectors::mark_sweep::pointers::weak_map::ErasedWeakMap,
+        >,
+    ) {
         self.weak_maps.borrow_mut().push(map);
     }
 }
