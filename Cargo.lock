@@ -44,6 +44,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "boa_gc"
 version = "1.0.0-dev"
+source = "git+https://github.com/boa-dev/boa?branch=main#6ec44883afffa6edbc4df7df35925a6ef888543d"
 dependencies = [
  "boa_macros",
  "hashbrown",
@@ -52,6 +53,7 @@ dependencies = [
 [[package]]
 name = "boa_macros"
 version = "1.0.0-dev"
+source = "git+https://github.com/boa-dev/boa?branch=main#6ec44883afffa6edbc4df7df35925a6ef888543d"
 dependencies = [
  "cfg-if",
  "cow-utils",
