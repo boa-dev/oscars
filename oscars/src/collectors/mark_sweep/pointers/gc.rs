@@ -29,6 +29,9 @@ impl<T: Trace> Root<T> {
             .expect("Failed to allocate Gc node")
             .to_erased();
 
+        // SAFETY: safe because the gc tracks this
+        let inner_ptr = unsafe { inner_ptr.extend_lifetime() };
+
         let root = Self {
             inner_ptr,
             marker: PhantomData,

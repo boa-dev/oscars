@@ -20,5 +20,8 @@ pub use oscars_derive::{Finalize, Trace};
 #[cfg(feature = "mark_sweep")]
 pub use crate::collectors::collector::Collector;
 
+#[cfg(feature = "gc_allocator")]
+pub use crate::collectors::mark_sweep::{GcAllocBox, GcAllocVec};
+
 pub mod alloc;
 pub mod collectors;

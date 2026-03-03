@@ -20,6 +20,10 @@ impl<T: Trace> WeakGc<T> {
         let inner_ptr = collector
             .alloc_ephemeron_node(value, ())
             .expect("Failed to allocate Ephemeron node");
+
+        // SAFETY: safe because the gc tracks this
+        let inner_ptr = unsafe { inner_ptr.extend_lifetime() };
+
         Self { inner_ptr }
     }
 }

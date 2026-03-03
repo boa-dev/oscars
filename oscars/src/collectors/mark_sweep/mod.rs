@@ -22,10 +22,16 @@ mod tests;
 
 pub(crate) mod internals;
 
+#[cfg(feature = "gc_allocator")]
+pub mod gc_collections;
+
 pub(crate) use pointers::weak_map::ErasedWeakMap;
 pub use pointers::weak_map::WeakMap;
 pub use pointers::{Gc, Root, WeakGc};
 pub use trace::{Finalize, Trace, TraceColor};
+
+#[cfg(feature = "gc_allocator")]
+pub use gc_collections::{GcAllocBox, GcAllocVec};
 
 type GcErasedPointer = NonNull<ArenaHeapItem<GcBox<NonTraceable>>>;
 pub(crate) type ErasedEphemeron = NonNull<ArenaHeapItem<Ephemeron<NonTraceable, NonTraceable>>>;
@@ -62,6 +68,9 @@ pub struct MarkSweepGarbageCollector {
     pending_root_queue: RefCell<Vec<GcErasedPointer>>,
     pending_ephemeron_queue: RefCell<Vec<ErasedEphemeron>>,
     pub(crate) weak_maps: RefCell<Vec<NonNull<dyn ErasedWeakMap>>>,
+    // debug only: track raw byte allocations from the Allocator impl for leak detection
+    #[cfg(all(debug_assertions, feature = "gc_allocator"))]
+    debug_raw_allocs: RefCell<hashbrown::HashSet<core::ptr::NonNull<u8>>>,
 }
 
 impl MarkSweepGarbageCollector {
@@ -86,6 +95,25 @@ impl MarkSweepGarbageCollector {
 
 impl Drop for MarkSweepGarbageCollector {
     fn drop(&mut self) {
+        // debug only: check for leaked raw allocations
+        #[cfg(all(debug_assertions, feature = "gc_allocator", feature = "std"))]
+        {
+            let leaked_count = self.debug_raw_allocs.borrow().len();
+            if leaked_count > 0 {
+                std::eprintln!(
+                    "WARNING: {} raw byte allocations were not deallocated before collector drop",
+                    leaked_count
+                );
+                std::eprintln!(
+                    "this indicates Vec/Box/etc created with the collector as allocator"
+                );
+                std::eprintln!(
+                    "but not stored inside a traced GC object (e.g., Gc<GcAllocVec<T>>),"
+                );
+                std::eprintln!("use GcAllocVec and GcAllocBox wrappers for safe usage.");
+            }
+        }
+
         // Reclaim all collector-owned weak maps.
         // Single-threaded, so this is safe.
         for &map_ptr in self.weak_maps.borrow().iter() {
@@ -388,6 +416,18 @@ unsafe impl allocator_api2::alloc::Allocator for MarkSweepGarbageCollector {
             return Ok(NonNull::slice_from_raw_parts(dangling, 0));
         }
 
+        // panic in debug mode if trying to allocate during collection
+        // raw allocations during sweeping could be problematic
+        #[cfg(debug_assertions)]
+        {
+            if self.is_collecting.get() {
+                panic!(
+                    "attempted to allocate raw bytes during GC collection cycle \
+                     this is unsafe and may cause memory corruption"
+                );
+            }
+        }
+
         // run any deferred collection before allocating
         if self.collect_needed.get() && !self.is_collecting.get() {
             self.collect_needed.set(false);
@@ -396,16 +436,32 @@ unsafe impl allocator_api2::alloc::Allocator for MarkSweepGarbageCollector {
 
         // raw byte allocations skip ensure_capacity
         // and go straight to try_alloc_bytes
-        self.allocator
+        let result = self
+            .allocator
             .borrow_mut()
             .try_alloc_bytes(layout)
-            .map_err(|_| allocator_api2::alloc::AllocError)
+            .map_err(|_| allocator_api2::alloc::AllocError)?;
+
+        // debug only: track raw allocations for leak detection
+        #[cfg(all(debug_assertions, feature = "gc_allocator"))]
+        {
+            let ptr = result.cast::<u8>();
+            self.debug_raw_allocs.borrow_mut().insert(ptr);
+        }
+
+        Ok(result)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, _layout: allocator_api2::alloc::Layout) {
         // decrements active_raw_allocs for the arena containing ptr
         // allowing drop_dead_arenas to reclaim the page when it reaches zero
         self.allocator.borrow_mut().dealloc_bytes(ptr);
+
+        // debug only: remove from tracking
+        #[cfg(all(debug_assertions, feature = "gc_allocator"))]
+        {
+            self.debug_raw_allocs.borrow_mut().remove(&ptr);
+        }
     }
 
     unsafe fn grow(
@@ -516,12 +572,12 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
 
     // Allocates a standard GC node for `value`, wrapping it in a `GcBox`
     //
-    // SAFETY:
-    // the `'static` pointer is only valid while the collector is alive, do not leak it
-    fn alloc_gc_node<T: Trace + 'static>(
-        &self,
+    // the returned pointer is only valid while the collector (`&self`) is alive
+    // the lifetime ties the pointer to the collector
+    fn alloc_gc_node<'gc, T: Trace + 'static>(
+        &'gc self,
         value: T,
-    ) -> Result<ArenaPointer<'static, GcBox<T>>, allocator_api2::alloc::AllocError> {
+    ) -> Result<ArenaPointer<'gc, GcBox<T>>, allocator_api2::alloc::AllocError> {
         if self.collect_needed.get() && !self.is_collecting.get() {
             self.collect_needed.set(false);
             self.collect();
@@ -554,13 +610,13 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
 
     // Allocates an ephemeron node for a (key, value) pair
     //
-    // SAFETY:
-    // the `'static` pointer is only valid while the collector is alive, do not leak it
-    fn alloc_ephemeron_node<K: Trace + 'static, V: Trace + 'static>(
-        &self,
+    // the returned pointer is only valid while the collector (`&self`) is alive
+    // the lifetime ties the pointer to the collector
+    fn alloc_ephemeron_node<'gc, K: Trace + 'static, V: Trace + 'static>(
+        &'gc self,
         key: &crate::collectors::mark_sweep::pointers::Gc<K>,
         value: V,
-    ) -> Result<ArenaPointer<'static, Ephemeron<K, V>>, allocator_api2::alloc::AllocError> {
+    ) -> Result<ArenaPointer<'gc, Ephemeron<K, V>>, allocator_api2::alloc::AllocError> {
         if self.collect_needed.get() && !self.is_collecting.get() {
             self.collect_needed.set(false);
             self.collect();
@@ -614,12 +670,12 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
 
     // Allocates a standard GC node for `value`, wrapping it in a `GcBox`
     //
-    // SAFETY:
-    // the `'static` pointer is only valid while the collector is alive, do not leak it
-    fn alloc_gc_node<T: Trace + 'static>(
-        &self,
+    // the returned pointer is only valid while the collector (`&self`) is alive
+    // the lifetime ties the pointer to the collector
+    fn alloc_gc_node<'gc, T: Trace + 'static>(
+        &'gc self,
         value: T,
-    ) -> Result<ArenaPointer<'static, GcBox<T>>, crate::alloc::arena3::ArenaAllocError> {
+    ) -> Result<ArenaPointer<'gc, GcBox<T>>, crate::alloc::arena3::ArenaAllocError> {
         if self.collect_needed.get() && !self.is_collecting.get() {
             self.collect_needed.set(false);
             self.collect();
@@ -650,13 +706,13 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
 
     // Allocates an ephemeron node for a (key, value) pair
     //
-    // SAFETY:
-    // the `'static` pointer is only valid while the collector is alive, do not leak it
-    fn alloc_ephemeron_node<K: Trace + 'static, V: Trace + 'static>(
-        &self,
+    // the returned pointer is only valid while the collector (`&self`) is alive
+    // the lifetime ties the pointer to the collector
+    fn alloc_ephemeron_node<'gc, K: Trace + 'static, V: Trace + 'static>(
+        &'gc self,
         key: &crate::collectors::mark_sweep::pointers::Gc<K>,
         value: V,
-    ) -> Result<ArenaPointer<'static, Ephemeron<K, V>>, crate::alloc::arena3::ArenaAllocError> {
+    ) -> Result<ArenaPointer<'gc, Ephemeron<K, V>>, crate::alloc::arena3::ArenaAllocError> {
         if self.collect_needed.get() && !self.is_collecting.get() {
             self.collect_needed.set(false);
             self.collect();

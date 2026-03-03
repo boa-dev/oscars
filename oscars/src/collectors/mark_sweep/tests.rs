@@ -260,13 +260,6 @@ fn update_wm() {
         0,
         "arena leaked after update"
     );
-
-    // both ephemerons (old invalidated, new key-dead) should be freed
-    assert_eq!(
-        collector.allocator.borrow().arenas_len(),
-        0,
-        "arena leaked after update"
-    );
 }
 
 #[test]
@@ -288,9 +281,29 @@ fn trace_wm() {
         collector,
     );
 
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        1,
+        "container should be allocated"
+    );
+
     collector.collect();
 
+    // container is still live, arena should survive the collect
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        1,
+        "container incorrectly swept while live"
+    );
+
     drop(container);
+    collector.collect();
+
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        0,
+        "container not freed after drop"
+    );
 }
 
 #[test]
@@ -307,7 +320,7 @@ fn remove_wm() {
 
     // remove should return true and leave map empty
     let removed = map.remove(&key.into_gc());
-    assert_eq!(removed, true, "remove returned wrong value");
+    assert!(removed, "remove returned wrong value");
     assert_eq!(
         map.get(&key.into_gc()),
         None,
@@ -316,6 +329,12 @@ fn remove_wm() {
 
     drop(key);
     collector.collect();
+
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        0,
+        "arenas not freed after remove+collect"
+    );
 }
 
 #[test]

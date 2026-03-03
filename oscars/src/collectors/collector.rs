@@ -23,22 +23,20 @@ pub trait Collector: allocator_api2::alloc::Allocator {
 
     // Allocates a standard GC node for `value`, wrapping it in a `GcBox`
     //
-    // SAFETY:
-    // the `'static` pointer is only valid while the collector is alive, do not leak it
-    fn alloc_gc_node<T: Trace + 'static>(
-        &self,
+    // the returned pointer is tied to the collector's lifetime
+    fn alloc_gc_node<'gc, T: Trace + 'static>(
+        &'gc self,
         value: T,
-    ) -> Result<ArenaPointer<'static, GcBox<T>>, allocator_api2::alloc::AllocError>;
+    ) -> Result<ArenaPointer<'gc, GcBox<T>>, allocator_api2::alloc::AllocError>;
 
     // Allocates an ephemeron node pointing to an existing GC key, and a new value
     //
-    // SAFETY:
-    // the `'static` pointer is only valid while the collector is alive, do not leak it
-    fn alloc_ephemeron_node<K: Trace + 'static, V: Trace + 'static>(
-        &self,
+    // The returned pointer is tied to the collector's lifetime
+    fn alloc_ephemeron_node<'gc, K: Trace + 'static, V: Trace + 'static>(
+        &'gc self,
         key: &crate::collectors::mark_sweep::Gc<K>,
         value: V,
-    ) -> Result<ArenaPointer<'static, Ephemeron<K, V>>, allocator_api2::alloc::AllocError>;
+    ) -> Result<ArenaPointer<'gc, Ephemeron<K, V>>, allocator_api2::alloc::AllocError>;
 
     // register a weak map with the GC so it can prune dead entries
     fn track_weak_map(
@@ -58,22 +56,20 @@ pub trait Collector {
 
     // Allocates a standard GC node for `value`, wrapping it in a `GcBox`
     //
-    // SAFETY:
-    // the `'static` pointer is only valid while the collector is alive, do not leak it
-    fn alloc_gc_node<T: Trace + 'static>(
-        &self,
+    // the returned pointer is tied to the collector's lifetime.
+    fn alloc_gc_node<'gc, T: Trace + 'static>(
+        &'gc self,
         value: T,
-    ) -> Result<ArenaPointer<'static, GcBox<T>>, crate::alloc::arena3::ArenaAllocError>;
+    ) -> Result<ArenaPointer<'gc, GcBox<T>>, crate::alloc::arena3::ArenaAllocError>;
 
     // Allocates an ephemeron node pointing to an existing GC key, and a new value
     //
-    // SAFETY:
-    // the `'static` pointer is only valid while the collector is alive, do not leak it
-    fn alloc_ephemeron_node<K: Trace + 'static, V: Trace + 'static>(
-        &self,
+    // the returned pointer is tied to the collector's lifetime
+    fn alloc_ephemeron_node<'gc, K: Trace + 'static, V: Trace + 'static>(
+        &'gc self,
         key: &crate::collectors::mark_sweep::Gc<K>,
         value: V,
-    ) -> Result<ArenaPointer<'static, Ephemeron<K, V>>, crate::alloc::arena3::ArenaAllocError>;
+    ) -> Result<ArenaPointer<'gc, Ephemeron<K, V>>, crate::alloc::arena3::ArenaAllocError>;
 
     // Register a weak map with the GC so it can prune dead entries
     fn track_weak_map(

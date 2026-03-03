@@ -1,11 +1,3 @@
-//! core arena data structures
-//!
-//! `Arena` is a fixed size buffer split into slots,
-//! bitmap tracks occupied slots, freed slots store a `next` pointer
-//! in their first 8 bytes
-//!
-//! overhead: 0 bytes per object
-
 use core::{cell::Cell, marker::PhantomData, ptr::NonNull};
 
 use rust_alloc::alloc::{Layout, alloc, dealloc, handle_alloc_error};
@@ -53,6 +45,13 @@ impl<'arena> ErasedArenaPointer<'arena> {
     pub fn as_non_null(&self) -> NonNull<u8> {
         self.0
     }
+
+    // extend the lifetime of this erased arena pointer to 'static
+    //
+    // SAFETY: same as ArenaPointer::extend_lifetime
+    pub(crate) unsafe fn extend_lifetime(self) -> ErasedArenaPointer<'static> {
+        ErasedArenaPointer(self.0, PhantomData)
+    }
 }
 
 // typed pointer into an arena slot
@@ -76,6 +75,11 @@ impl<'arena, T> ArenaPointer<'arena, T> {
 
     pub fn to_erased(self) -> ErasedArenaPointer<'arena> {
         ErasedArenaPointer(self.0.cast::<u8>(), PhantomData)
+    }
+
+    // SAFETY: safe because the gc collector owns the arena and keeps it alive
+    pub(crate) unsafe fn extend_lifetime(self) -> ArenaPointer<'static, T> {
+        ArenaPointer(self.0, PhantomData)
     }
 }
 

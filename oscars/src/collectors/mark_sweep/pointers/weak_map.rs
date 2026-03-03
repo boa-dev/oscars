@@ -123,6 +123,9 @@ impl<K: Trace, V: Trace> WeakMap<K, V> {
             .alloc_ephemeron_node(key, value)
             .expect("Failed to allocate ephemeron");
 
+        // SAFETY: safe because the gc tracks this
+        let ephemeron_ptr = unsafe { ephemeron_ptr.extend_lifetime() };
+
         //insert the new node using another short lived mutable borrow
         // SAFETY: we have unique access to `self`
         unsafe { self.inner.as_mut().insert_ptr(key_addr, ephemeron_ptr) };

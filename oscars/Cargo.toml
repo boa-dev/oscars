@@ -9,6 +9,20 @@ hashbrown = "0.16.1"
 oscars_derive = { path = "../oscars_derive", version = "0.1.0" }
 rustc-hash = "2.1.1"
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+boa_gc = { path = "../../boa/core/gc" }
+
+[[bench]]
+name = "oscars_vs_boa_gc"
+harness = false
+required-features = ["gc_allocator"]
+
+[[bench]]
+name = "arena2_vs_arena3"
+harness = false
+
 [features]
 default = ["mark_sweep"]
 std = []
