@@ -1,22 +1,12 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
-// benchmark comparing arena2 (linked list + headers) vs arena3 (bitmap + size classes)
-// for Allocator supertrait
-//
-// arena3 trades allocation speed for memory efficiency, which is better for GC
-
-// allocation speed
-// arena2 is faster due to simpler linkedlist logic
 fn bench_alloc_speed(c: &mut Criterion) {
     let mut group = c.benchmark_group("1_allocation_speed");
     group.significance_level(0.05).sample_size(100);
 
-    eprintln!("\nallocation speed (arena2 is faster)");
-
     for num_objects in [100, 500, 1000].iter() {
-        // arena3 (bitmap, 0 byte overhead)
         group.bench_with_input(
-            BenchmarkId::new("arena3_bitmap_slower", num_objects),
+            BenchmarkId::new("arena3", num_objects),
             num_objects,
             |b, &num_objects| {
                 b.iter(|| {
@@ -34,9 +24,8 @@ fn bench_alloc_speed(c: &mut Criterion) {
             },
         );
 
-        // arena2 (linked list, 8 byte header overhead)
         group.bench_with_input(
-            BenchmarkId::new("arena2_faster_but_wasteful", num_objects),
+            BenchmarkId::new("arena2", num_objects),
             num_objects,
             |b, &num_objects| {
                 b.iter(|| {
@@ -58,13 +47,9 @@ fn bench_alloc_speed(c: &mut Criterion) {
     group.finish();
 }
 
-// small object overhead (16 byte objects)
-// arena2's 8 byte headers add 50% overhead to 16byte objects
 fn bench_small_objects(c: &mut Criterion) {
     let mut group = c.benchmark_group("2_small_object_overhead");
     group.significance_level(0.05).sample_size(100);
-
-    eprintln!("\nsmall object overhead (arena3 uses ~50% less memory)");
 
     #[derive(Clone, Copy)]
     struct SmallObject {
@@ -73,9 +58,8 @@ fn bench_small_objects(c: &mut Criterion) {
     }
 
     for num_objects in [100, 500, 1000].iter() {
-        // arena3 - 16 bytes per object (no header)
         group.bench_with_input(
-            BenchmarkId::new("arena3_0byte_headers", num_objects),
+            BenchmarkId::new("arena3", num_objects),
             num_objects,
             |b, &num_objects| {
                 b.iter(|| {
@@ -95,9 +79,8 @@ fn bench_small_objects(c: &mut Criterion) {
             },
         );
 
-        // arena2 - 24 bytes per object (50% overhead!)
         group.bench_with_input(
-            BenchmarkId::new("arena2_8byte_headers", num_objects),
+            BenchmarkId::new("arena2", num_objects),
             num_objects,
             |b, &num_objects| {
                 b.iter(|| {
@@ -121,19 +104,14 @@ fn bench_small_objects(c: &mut Criterion) {
     group.finish();
 }
 
-// mixed size allocations
-// shows how arena3 wastes less space when objects are different sizes.
 fn bench_mixed(c: &mut Criterion) {
-    let mut group = c.benchmark_group("3_size_class_fragmentation");
+    let mut group = c.benchmark_group("3_mixed_sizes");
 
-    eprintln!("\nMixed Size Allocations (arena3 reduces fragmentation)");
-
-    group.bench_function("arena3_size_classes", |b| {
+    group.bench_function("arena3", |b| {
         b.iter(|| {
             let mut allocator =
                 oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(65536);
 
-            // allocate various sizes that map to different size classes
             for _ in 0..50 {
                 let _ = allocator.try_alloc([0u8; 16]);
                 let _ = allocator.try_alloc([0u8; 32]);
@@ -145,7 +123,7 @@ fn bench_mixed(c: &mut Criterion) {
         });
     });
 
-    group.bench_function("arena2_no_size_classes", |b| {
+    group.bench_function("arena2", |b| {
         b.iter(|| {
             let mut allocator =
                 oscars::alloc::arena2::ArenaAllocator::default().with_arena_size(65536);
@@ -164,22 +142,16 @@ fn bench_mixed(c: &mut Criterion) {
     group.finish();
 }
 
-// allocation density
-// measures how many objects fit into a 4KB arena
-// this is the main metric for GC efficiency
+// measures how many 16-byte objects fit in a 4KB page before a new one is needed
 fn bench_density(c: &mut Criterion) {
     let mut group = c.benchmark_group("4_allocation_density");
 
-    eprintln!("\nallocation density (arena3 fits more objects)");
+    const PAGE_SIZE: usize = 4096;
 
-    const ARENA_SIZE: usize = 4096; // 4KB arena
-
-    // arena3: 16byte objects with 0 byte headers
-    // fits ~254 objects per arena
-    group.bench_function("arena3_FITS_254_OBJECTS", |b| {
+    group.bench_function("arena3", |b| {
         b.iter(|| {
             let mut allocator =
-                oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(ARENA_SIZE);
+                oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(PAGE_SIZE);
 
             let mut count = 0;
             loop {
@@ -187,7 +159,6 @@ fn bench_density(c: &mut Criterion) {
                     Ok(_) => count += 1,
                     Err(_) => break,
                 }
-                // stop after first arena fills
                 if allocator.arenas_len() > 1 {
                     break;
                 }
@@ -197,12 +168,10 @@ fn bench_density(c: &mut Criterion) {
         });
     });
 
-    // arena2: 16 byte objects + 8 byte headers = 24 bytes total
-    // fits ~170 objects per arena
-    group.bench_function("arena2_FITS_170_OBJECTS", |b| {
+    group.bench_function("arena2", |b| {
         b.iter(|| {
             let mut allocator =
-                oscars::alloc::arena2::ArenaAllocator::default().with_arena_size(ARENA_SIZE);
+                oscars::alloc::arena2::ArenaAllocator::default().with_arena_size(PAGE_SIZE);
 
             let mut count = 0;
             loop {
@@ -210,7 +179,6 @@ fn bench_density(c: &mut Criterion) {
                     Ok(_) => count += 1,
                     Err(_) => break,
                 }
-                // stop after first arena fills
                 if allocator.arenas_len() > 1 {
                     break;
                 }
@@ -223,22 +191,18 @@ fn bench_density(c: &mut Criterion) {
     group.finish();
 }
 
-// vec growth simulation
-// simulates Vec::push reallocations
+// simulates a Vec doubling from capacity 1 to 1024
 fn bench_vec_growth(c: &mut Criterion) {
-    let mut group = c.benchmark_group("5_vec_growth_pattern");
+    let mut group = c.benchmark_group("5_vec_growth");
 
-    eprintln!("\nvec growth simulation");
-
-    // simulate Vec growing from 1 to 1024 elements
-    group.bench_function("arena3_vec_pattern", |b| {
+    group.bench_function("arena3", |b| {
         b.iter(|| {
             let mut allocator =
                 oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(32768);
 
-            let mut current_cap = 1;
-            while current_cap <= 1024 {
-                match current_cap {
+            let mut cap = 1;
+            while cap <= 1024 {
+                match cap {
                     1 => {
                         let _ = allocator.try_alloc([0u64; 1]);
                     }
@@ -274,21 +238,21 @@ fn bench_vec_growth(c: &mut Criterion) {
                     }
                     _ => {}
                 }
-                current_cap *= 2;
+                cap *= 2;
             }
 
             black_box(allocator.arenas_len())
         });
     });
 
-    group.bench_function("arena2_vec_pattern", |b| {
+    group.bench_function("arena2", |b| {
         b.iter(|| {
             let mut allocator =
                 oscars::alloc::arena2::ArenaAllocator::default().with_arena_size(32768);
 
-            let mut current_cap = 1;
-            while current_cap <= 1024 {
-                match current_cap {
+            let mut cap = 1;
+            while cap <= 1024 {
+                match cap {
                     1 => {
                         let _ = allocator.try_alloc([0u64; 1]);
                     }
@@ -324,7 +288,7 @@ fn bench_vec_growth(c: &mut Criterion) {
                     }
                     _ => {}
                 }
-                current_cap *= 2;
+                cap *= 2;
             }
 
             black_box(allocator.arenas_len())
@@ -334,15 +298,11 @@ fn bench_vec_growth(c: &mut Criterion) {
     group.finish();
 }
 
-// sustained throughput
-// measures long term allocation rate (10k operations)
 fn bench_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("6_sustained_throughput");
     group.throughput(criterion::Throughput::Elements(10000));
 
-    eprintln!("\nallocation throughput");
-
-    group.bench_function("arena3_10k_allocs", |b| {
+    group.bench_function("arena3", |b| {
         b.iter(|| {
             let mut allocator =
                 oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(131072);
@@ -355,7 +315,7 @@ fn bench_throughput(c: &mut Criterion) {
         });
     });
 
-    group.bench_function("arena2_10k_allocs", |b| {
+    group.bench_function("arena2", |b| {
         b.iter(|| {
             let mut allocator =
                 oscars::alloc::arena2::ArenaAllocator::default().with_arena_size(131072);
@@ -369,28 +329,11 @@ fn bench_throughput(c: &mut Criterion) {
     });
 
     group.finish();
-
-    print_results_summary();
-}
-
-fn print_results_summary() {
-    eprintln!("\nresults summary:");
-    eprintln!("speed: arena2 is faster");
-    eprintln!("memory: arena3 fits ~49% more small objects");
-}
-
-fn bench_with_intro(c: &mut Criterion) {
-    static PRINTED: std::sync::Once = std::sync::Once::new();
-    PRINTED.call_once(|| {
-        eprintln!("\narena2 vs arena3 performance comparison\n");
-    });
-
-    bench_alloc_speed(c);
 }
 
 criterion_group!(
     benches,
-    bench_with_intro,
+    bench_alloc_speed,
     bench_small_objects,
     bench_mixed,
     bench_density,
