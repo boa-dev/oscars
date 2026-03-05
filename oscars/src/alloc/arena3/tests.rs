@@ -98,7 +98,6 @@ fn bitmap_drop_check() {
 
 #[test]
 fn arc_drop() {
-    use core::ptr::drop_in_place;
     use core::sync::atomic::{AtomicBool, Ordering};
     use rust_alloc::rc::Rc;
 
@@ -123,13 +122,11 @@ fn arc_drop() {
 
     assert_eq!(allocator.arenas_len(), 1);
 
-    // manually drop the value through the pointer, then free the slot
-    let mut heap_item_ptr = a.as_ptr();
+    // drop the inner value and return the slot to the allocator
+    let heap_item_ptr = a.as_ptr();
     unsafe {
-        // drop the inner value
-        drop_in_place(heap_item_ptr.as_mut().value_mut());
+        allocator.free_slot_typed(heap_item_ptr);
     }
-    allocator.free_slot(heap_item_ptr.cast::<u8>());
 
     assert!(dropped.load(Ordering::SeqCst), "destructor must have run");
     assert_eq!(allocator.arenas_len(), 1);

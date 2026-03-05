@@ -22,10 +22,6 @@ impl<T: ?Sized> ArenaHeapItem<T> {
         &self.0
     }
 
-    pub fn value_mut(&mut self) -> &mut T {
-        &mut self.0
-    }
-
     pub fn as_ptr(&mut self) -> *mut T {
         &mut self.0 as *mut T
     }

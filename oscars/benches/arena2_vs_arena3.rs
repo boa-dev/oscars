@@ -385,7 +385,7 @@ fn bench_dealloc_speed(c: &mut Criterion) {
                         for ptr in ptrs {
                             let mut heap_item_ptr = ptr.as_ptr();
                             unsafe {
-                                core::ptr::drop_in_place(heap_item_ptr.as_mut().value_mut());
+                                core::ptr::drop_in_place(heap_item_ptr.as_mut().as_ptr());
                                 heap_item_ptr.as_mut().mark_dropped();
                             }
                         }

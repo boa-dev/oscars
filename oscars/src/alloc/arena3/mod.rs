@@ -173,6 +173,17 @@ impl<'alloc> ArenaAllocator<'alloc> {
         }
     }
 
+    // drops the value at `ptr` and returns the slot to the allocator
+    //
+    // SAFETY:
+    // `ptr` must be a live `ArenaHeapItem<T>` allocated by this allocator,
+    // must not be used after this call
+    pub unsafe fn free_slot_typed<T>(&mut self, ptr: NonNull<ArenaHeapItem<T>>) {
+        // SAFETY: guaranteed by caller
+        unsafe { core::ptr::drop_in_place(ptr.as_ptr()) };
+        self.free_slot(ptr.cast::<u8>());
+    }
+
     pub fn free_slot(&mut self, ptr: NonNull<u8>) {
         let cached = self.free_cache.get();
         if cached < self.typed_arenas.len() {
