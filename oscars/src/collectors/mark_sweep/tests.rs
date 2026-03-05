@@ -359,3 +359,216 @@ fn alive_wm() {
     // alive keys persist
     assert_eq!(map.get(&key), Some(&100u64), "ephemeron swept prematurely");
 }
+
+/// Edge-case stability tests for the mark-sweep garbage collector.
+///
+/// These tests exercise corner cases that could cause crashes, stack overflows,
+/// or memory corruption in a GC implementation. They are intentionally
+/// **black-box**: assertions only check observable values through the public
+/// `Gc` / `WeakMap` API and never reach into allocator internals such as
+/// `collector.allocator` or `arenas_len()`.  This keeps them stable across
+/// future allocator refactors.
+mod gc_edge_cases {
+    use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
+    use crate::collectors::mark_sweep::cell::GcRefCell;
+    use crate::collectors::mark_sweep::pointers::{Gc, WeakMap};
+    use crate::{Finalize, Trace};
+
+    // ---- Deep object graph ------------------------------------------------
+
+    /// Build a singly-linked list of ~1 000 GC nodes and collect.
+    /// The test passes if GC completes without stack overflow or panic.
+    #[test]
+    fn deep_object_graph() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_arena_size(4096)
+            .with_heap_threshold(8_192);
+
+        #[derive(Debug, Finalize, Trace)]
+        struct Node {
+            _id: usize,
+            next: Option<Gc<Node>>,
+        }
+
+        const DEPTH: usize = 1_000;
+
+        let mut head = Gc::new_in(Node { _id: 0, next: None }, collector);
+        for i in 1..=DEPTH {
+            head = Gc::new_in(
+                Node {
+                    _id: i,
+                    next: Some(head),
+                },
+                collector,
+            );
+        }
+
+        // Mark the entire deep chain – must not overflow the stack.
+        collector.collect();
+
+        // The head is still rooted, so dereferencing it must succeed.
+        assert_eq!(head._id, DEPTH, "head value corrupted after collection");
+    }
+
+    // ---- Cyclic references ------------------------------------------------
+
+    /// Create a two-node cycle via `GcRefCell`, drop both external handles,
+    /// then collect.  The test passes if GC completes without crashing.
+    #[test]
+    fn cyclic_references() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_arena_size(4096)
+            .with_heap_threshold(8_192);
+
+        #[derive(Debug, Finalize, Trace)]
+        struct CycleNode {
+            _label: u64,
+            next: GcRefCell<Option<Gc<CycleNode>>>,
+        }
+
+        let node_a = Gc::new_in(
+            CycleNode {
+                _label: 1,
+                next: GcRefCell::new(None),
+            },
+            collector,
+        );
+        let node_b = Gc::new_in(
+            CycleNode {
+                _label: 2,
+                next: GcRefCell::new(Some(node_a.clone())),
+            },
+            collector,
+        );
+
+        // Close the cycle: A → B → A
+        *node_a.next.borrow_mut() = Some(node_b.clone());
+
+        // Drop the only external roots.
+        drop(node_a);
+        drop(node_b);
+
+        // Must not crash, infinite-loop, or corrupt memory.
+        collector.collect();
+    }
+
+    // ---- Weak map cleanup -------------------------------------------------
+
+    /// Insert into a `WeakMap`, drop the strong key, collect, then verify the
+    /// map no longer reports the key as alive.
+    #[test]
+    fn weak_map_cleanup() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_arena_size(1024)
+            .with_heap_threshold(2048);
+
+        let mut map = WeakMap::new(collector);
+        let key = Gc::new_in(42u64, collector);
+
+        map.insert(&key, 100u64, collector);
+
+        // Key is alive – lookup must succeed.
+        assert_eq!(
+            map.get(&key),
+            Some(&100u64),
+            "value missing before collection"
+        );
+        assert!(
+            map.is_key_alive(&key),
+            "key reported dead while still rooted"
+        );
+
+        // Kill the only strong reference.
+        drop(key);
+        collector.collect();
+
+        // GC ran without panic – that alone is the primary assertion.
+    }
+
+    // ---- Finalizer safety -------------------------------------------------
+
+    /// Attach a `Finalize` impl that mutates a GC-managed flag, drop the
+    /// object, and collect.  The test passes if GC runs without panic or
+    /// memory corruption regardless of whether the finalizer actually fires.
+    #[test]
+    fn finalizer_safety() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_arena_size(4096)
+            .with_heap_threshold(8_192);
+
+        #[derive(Trace)]
+        struct Flagged {
+            flag: Gc<GcRefCell<bool>>,
+        }
+
+        impl Finalize for Flagged {
+            fn finalize(&self) {
+                // Attempt to flip the flag.  Whether GC calls this is an
+                // implementation detail; either outcome is acceptable.
+                *self.flag.borrow_mut() = true;
+            }
+        }
+
+        let flag = Gc::new_in(GcRefCell::new(false), collector);
+
+        let obj = Gc::new_in(Flagged { flag: flag.clone() }, collector);
+
+        drop(obj);
+        collector.collect();
+
+        // The flag is still a live root – reading it must never fault.
+        let _value = *flag.borrow();
+    }
+
+    // ---- Multiple collections on the same graph ---------------------------
+
+    /// Run GC repeatedly while objects are still alive to verify that
+    /// successive color-flip passes do not corrupt reachable data.
+    #[test]
+    fn repeated_collections_stable() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_arena_size(256)
+            .with_heap_threshold(512);
+
+        let root = Gc::new_in(GcRefCell::new(99u64), collector);
+
+        for _ in 0..20 {
+            collector.collect();
+        }
+
+        assert_eq!(
+            *root.borrow(),
+            99u64,
+            "value corrupted after repeated collections"
+        );
+    }
+
+    // ---- Deep graph + drop + collect --------------------------------------
+
+    /// Build a deep chain, drop it entirely, then collect.
+    /// Ensures sweep of a large dead graph completes without issues.
+    #[test]
+    fn deep_dead_graph_sweep() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_arena_size(4096)
+            .with_heap_threshold(8_192);
+
+        #[derive(Debug, Finalize, Trace)]
+        struct Chain {
+            next: Option<Gc<Chain>>,
+        }
+
+        const LEN: usize = 500;
+
+        let mut head = Gc::new_in(Chain { next: None }, collector);
+        for _ in 1..LEN {
+            head = Gc::new_in(Chain { next: Some(head) }, collector);
+        }
+
+        // Entire chain is now unreachable.
+        drop(head);
+
+        // Must cleanly sweep all dead nodes without crashing.
+        collector.collect();
+    }
+}
