@@ -1,3 +1,6 @@
+#[cfg(feature = "std")]
+extern crate std;
+
 use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
 use crate::{Finalize, Trace};
 

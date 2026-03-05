@@ -100,8 +100,15 @@ impl GcHeader {
     }
 
     pub fn inc_roots(&self) {
-        // NOTE: This may panic or overflow after 2^16 - 1 roots
-        self.root_count.set(self.root_count.get() + 1);
+        // Prevent silent overflow of root_count.
+        // In release builds, `u16::MAX + 1` would wrap to 0 and break GC invariants,
+        // potentially allowing live objects to be collected incorrectly.
+        let current = self.root_count.get();
+        let new = current
+            .checked_add(1)
+            .expect("GcHeader root_count overflow");
+
+        self.root_count.set(new);
     }
 
     pub fn dec_roots(&self) {
@@ -169,5 +176,15 @@ mod tests {
         assert!(header.is_black());
         assert!(!header.is_white(), "failed to toggle black");
         assert!(!header.is_grey(), "failed to toggle black");
+    }
+
+    #[test]
+    #[should_panic(expected = "GcHeader root_count overflow")]
+    fn root_count_overflow_panics() {
+        let header = GcHeader::new_white();
+
+        for _ in 0..=u16::MAX {
+            header.inc_roots();
+        }
     }
 }
