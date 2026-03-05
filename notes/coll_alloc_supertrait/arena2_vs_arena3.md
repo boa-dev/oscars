@@ -84,6 +84,27 @@ doubling step since each new size lands in a different arena.
 arena2 is ~3x faster at a steady allocation rate, this is the biggest gap in
 the whole suite
 
+### deallocation speed
+
+time to free all objects and reclaim dead arenas:
+
+| objects | arena3  | arena2  |
+| 100     | 951 ns  | 665 ns  |
+| 500     | 2.57 µs | 2.11 µs |
+| 1000    | 4.65 µs | 4.97 µs |
+
+arena2 is ~30% faster at 100 objects and ~18% faster at 500. dealloc in arena2 is
+a single bit flip on the slot header, arena3 has to write a free list node into
+the slot and clear the bitmap bit
+
+at 1000 objects it flips: arena3 is ~6% faster, arena3 recycles freed slots via
+the free list so fewer pool pages accumulate and `drop_dead_arenas` has less to
+walk. arena2 cannot recycle slots so all pages stay alive until the whole arena
+is dropped
+
+the crossover is somewhere between 500 and 1000 objects, roughly where slot
+recycling starts paying back the per-free overhead
+
 ## what this means
 
 arena2 wins every timing number, but for a GC, allocation is only half the work, the other half is how

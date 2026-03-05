@@ -32,7 +32,7 @@ pub struct GcAllocVec<T> {
 
 impl<T> GcAllocVec<T> {
     #[inline]
-    pub fn new(collector: &MarkSweepGarbageCollector) -> Self {
+    pub fn new_in(collector: &MarkSweepGarbageCollector) -> Self {
         Self {
             // SAFETY: GcAllocVec must be stored in a Gc<T> which ties its lifetime to the collector
             inner: allocator_api2::vec::Vec::new_in(unsafe {
@@ -155,7 +155,7 @@ pub struct GcAllocBox<T: ?Sized> {
 
 impl<T> GcAllocBox<T> {
     #[inline]
-    pub fn new(value: T, collector: &MarkSweepGarbageCollector) -> Self {
+    pub fn new_in(value: T, collector: &MarkSweepGarbageCollector) -> Self {
         Self {
             inner: allocator_api2::boxed::Box::new_in(value, unsafe {
                 core::mem::transmute::<&MarkSweepGarbageCollector, &'static MarkSweepGarbageCollector>(
@@ -199,16 +199,14 @@ unsafe impl<T: Trace + ?Sized> Trace for GcAllocBox<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collectors::mark_sweep::{
-        MarkSweepGarbageCollector, cell::GcRefCell, pointers::Root,
-    };
+    use crate::collectors::mark_sweep::{MarkSweepGarbageCollector, cell::GcRefCell, pointers::Gc};
     use rust_alloc::vec::Vec;
 
     #[test]
     fn gc_alloc_vec_basic() {
         let collector = &MarkSweepGarbageCollector::default();
-        let vec = GcAllocVec::new(collector);
-        let gc_vec = Root::new_in(GcRefCell::new(vec), collector);
+        let vec = GcAllocVec::new_in(collector);
+        let gc_vec = Gc::new_in(GcRefCell::new(vec), collector);
 
         gc_vec.borrow_mut().push(1u64);
         gc_vec.borrow_mut().push(2u64);
@@ -227,7 +225,7 @@ mod tests {
             .with_heap_threshold(512);
 
         let vec = GcAllocVec::with_capacity(100, collector);
-        let gc_vec = Root::new_in(GcRefCell::new(vec), collector);
+        let gc_vec = Gc::new_in(GcRefCell::new(vec), collector);
 
         for i in 0..100u64 {
             gc_vec.borrow_mut().push(i);
@@ -242,8 +240,8 @@ mod tests {
     #[test]
     fn gc_alloc_box_basic() {
         let collector = &MarkSweepGarbageCollector::default();
-        let boxed = GcAllocBox::new(42u64, collector);
-        let gc_box = Root::new_in(GcRefCell::new(boxed), collector);
+        let boxed = GcAllocBox::new_in(42u64, collector);
+        let gc_box = Gc::new_in(GcRefCell::new(boxed), collector);
 
         assert_eq!(**gc_box.borrow(), 42);
     }
@@ -260,8 +258,8 @@ mod tests {
             v.push(5);
             v
         };
-        let boxed = GcAllocBox::new(data, collector);
-        let gc_box = Root::new_in(GcRefCell::new(boxed), collector);
+        let boxed = GcAllocBox::new_in(data, collector);
+        let gc_box = Gc::new_in(GcRefCell::new(boxed), collector);
 
         collector.collect();
 
@@ -272,14 +270,14 @@ mod tests {
     #[test]
     fn gc_alloc_vec_with_gc_pointers() {
         let collector = &MarkSweepGarbageCollector::default();
-        let vec = GcAllocVec::new(collector);
-        let gc_vec = Root::new_in(GcRefCell::new(vec), collector);
+        let vec = GcAllocVec::new_in(collector);
+        let gc_vec = Gc::new_in(GcRefCell::new(vec), collector);
 
-        let inner1 = Root::new_in(GcRefCell::new(100u64), collector);
-        let inner2 = Root::new_in(GcRefCell::new(200u64), collector);
+        let inner1 = Gc::new_in(GcRefCell::new(100u64), collector);
+        let inner2 = Gc::new_in(GcRefCell::new(200u64), collector);
 
-        gc_vec.borrow_mut().push(inner1.clone().into_gc());
-        gc_vec.borrow_mut().push(inner2.clone().into_gc());
+        gc_vec.borrow_mut().push(inner1.clone());
+        gc_vec.borrow_mut().push(inner2.clone());
 
         drop(inner1);
         drop(inner2);

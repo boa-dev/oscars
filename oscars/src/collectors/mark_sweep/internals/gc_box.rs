@@ -112,7 +112,7 @@ pub struct GcBox<T: Trace + ?Sized + 'static> {
 impl<T: Trace> GcBox<T> {
     // new objects get the opposite of the current live epoch color so they
     // survive the current sweep cycle
-    // root_count starts at 0, `Root::new_in` increments it to 1
+    // root_count starts at 0, `Gc::new_in` increments it to 1
     pub(crate) fn new_in(value: T, color: TraceColor) -> Self {
         let header = match color {
             TraceColor::White => GcHeader::new_typed::<true>(),

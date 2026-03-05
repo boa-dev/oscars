@@ -4,5 +4,5 @@ mod gc;
 mod weak;
 pub(crate) mod weak_map;
 
-pub use gc::{Gc, Root};
+pub use gc::Gc;
 pub use weak::WeakGc;

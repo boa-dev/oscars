@@ -10,7 +10,8 @@ use core::ptr::NonNull;
 use super::Gc;
 
 // type erased trait so the collector can prune any WeakMap without knowing K/V
-pub(crate) trait ErasedWeakMap {
+#[doc(hidden)]
+pub trait ErasedWeakMap {
     fn prune_dead_entries(&mut self, color: TraceColor);
     fn is_alive(&self) -> bool;
 }

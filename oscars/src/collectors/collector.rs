@@ -39,6 +39,7 @@ pub trait Collector: allocator_api2::alloc::Allocator {
     ) -> Result<ArenaPointer<'gc, Ephemeron<K, V>>, allocator_api2::alloc::AllocError>;
 
     // register a weak map with the GC so it can prune dead entries
+    #[doc(hidden)]
     fn track_weak_map(
         &self,
         map: core::ptr::NonNull<dyn crate::collectors::mark_sweep::ErasedWeakMap>,
@@ -72,6 +73,7 @@ pub trait Collector {
     ) -> Result<ArenaPointer<'gc, Ephemeron<K, V>>, crate::alloc::arena3::ArenaAllocError>;
 
     // Register a weak map with the GC so it can prune dead entries
+    #[doc(hidden)]
     fn track_weak_map(
         &self,
         map: core::ptr::NonNull<dyn crate::collectors::mark_sweep::ErasedWeakMap>,

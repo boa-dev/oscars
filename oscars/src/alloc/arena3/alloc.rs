@@ -4,8 +4,15 @@ use rust_alloc::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 
 use crate::alloc::arena3::ArenaAllocError;
 
+// ree slot pointing to the next free slot
+// `repr(C)` puts `next` exactly at the start of the slot
+#[repr(C)]
+pub(crate) struct FreeSlot {
+    next: *mut FreeSlot,
+}
+
 // transparent wrapper around a GC value
-// liveness is tracked by the arena bitmap.
+// liveness is tracked by the pool bitmap
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct ArenaHeapItem<T: ?Sized>(pub T);
@@ -24,8 +31,7 @@ impl<T: ?Sized> ArenaHeapItem<T> {
     }
 }
 
-// type erased pointer into an arena slot
-// points to the start of the slot.
+// type erased pointer into a pool slot
 // `'arena` prevents outliving the allocator
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
@@ -54,7 +60,7 @@ impl<'arena> ErasedArenaPointer<'arena> {
     }
 }
 
-// typed pointer into an arena slot
+// typed pointer into a pool slot
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
 pub struct ArenaPointer<'arena, T>(NonNull<ArenaHeapItem<T>>, PhantomData<&'arena T>);
@@ -83,50 +89,52 @@ impl<'arena, T> ArenaPointer<'arena, T> {
     }
 }
 
-impl core::fmt::Debug for Arena {
+/// SlotPool ///
+
+impl core::fmt::Debug for SlotPool {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Arena")
+        f.debug_struct("SlotPool")
             .field("slot_size", &self.slot_size)
             .field("slot_count", &self.slot_count)
             .field("layout", &self.layout)
             .field("bitmap_words", &self.bitmap_words)
             .field("bump", &self.bump.get())
             .field("live", &self.live.get())
-            .field("active_raw_allocs", &self.active_raw_allocs.get())
             .finish()
     }
 }
 
-// fixed size bump-allocator with bitmap tracking and an embedded free list
+// fixed size slot pool with the layout: `[ bitmap ][ slots ]`
+// bitmap tracks live slots, freed slots form a linked list to be reused
 //
-// buffer: `[ bitmap ][ slots ]`
-// bitmap bit `i` is 1 when occupied
-pub struct Arena {
+pub(crate) struct SlotPool {
     pub(crate) slot_size: usize,
     pub(crate) slot_count: usize,
     pub(crate) layout: Layout,
     pub(crate) buffer: NonNull<u8>,
     pub(crate) bitmap_words: usize,
     pub(crate) bump: Cell<usize>,
-    pub(crate) free_list: Cell<*mut u8>,
+    // head of the free list, None when empty
+    pub(crate) free_list: Cell<Option<NonNull<FreeSlot>>>,
+    // occupied slot count, kept in sync with the bitmap by alloc_slot/free_slot
     pub(crate) live: Cell<usize>,
-    pub(crate) active_raw_allocs: Cell<usize>,
 }
 
-// SAFETY: `Arena` is used only from a single threaded GC context
-unsafe impl Send for Arena {}
-
-impl Arena {
+impl SlotPool {
     pub fn try_init(
         slot_size: usize,
         total_capacity: usize,
         max_align: usize,
     ) -> Result<Self, ArenaAllocError> {
         assert!(
-            slot_size >= 8,
-            "slot_size must be >= 8 (for free-list pointer)"
+            slot_size >= core::mem::size_of::<FreeSlot>(),
+            "slot_size must fit a FreeSlot (needed for the intrusive free list)"
         );
 
+        // guess the slot count (ignoring bitmap size), size the bitmap based on that guess
+        // (rounded up to 64 bit words), then subtract the bitmap size from the total capacity to get the real slot count
+        // example (512 capacity, 16 slot size): guess 32 slots -> 8 byte bitmap, real 504 bytes left -> 31 slots
+        // layout: [ 8-byte bitmap ][ 31 x 16-byte slots ] = 504 bytes used
         let estimated = total_capacity / slot_size;
         let bitmap_words = (estimated + 63) / 64;
         let bitmap_bytes = bitmap_words * 8;
@@ -158,9 +166,8 @@ impl Arena {
             buffer,
             bitmap_words,
             bump: Cell::new(0),
-            free_list: Cell::new(core::ptr::null_mut()),
+            free_list: Cell::new(None),
             live: Cell::new(0),
-            active_raw_allocs: Cell::new(0),
         })
     }
 
@@ -211,12 +218,16 @@ impl Arena {
         word.set(word.get() & !(1u64 << (i % 64)));
     }
 
-    // prevent objects without GcHeader from being swept
+    // mark the slot as occupied outside of alloc_slot
     pub fn mark_slot(&self, ptr: NonNull<u8>) {
         let idx = self.slot_index(ptr);
         self.bitmap_set(idx);
     }
 
+    // returns true if the slot at `ptr` is marked as occupied in the bitmap
+    //
+    // TODO: for the planned bitmap based sweep, unused until then
+    #[allow(dead_code)]
     pub fn is_marked(&self, ptr: NonNull<u8>) -> bool {
         let i = self.slot_index(ptr);
         // SAFETY: pointer addition and cast are within the bitmap bounds
@@ -224,17 +235,16 @@ impl Arena {
         (word.get() & (1u64 << (i % 64))) != 0
     }
 
-    // allocate a typed slot. returns None if full.
+    // allocate a slot, returns None if full.
     pub fn alloc_slot(&self) -> Option<NonNull<u8>> {
         // pop from free list if available
-        let fl = self.free_list.get();
-        if !fl.is_null() {
-            // SAFETY: reading next pointer from a slot that was previously freed
-            let next = unsafe { (fl as *const *mut u8).read() };
-            self.free_list.set(next);
+        if let Some(head) = self.free_list.get() {
+            // SAFETY: `head` points to a FreeSlot we wrote in free_slot
+            // reading `next` is safe while the slot is in the free list
+            let next = unsafe { (*head.as_ptr()).next };
+            self.free_list.set(NonNull::new(next));
 
-            // SAFETY: free list pointer is checked against null
-            let nn = unsafe { NonNull::new_unchecked(fl) };
+            let nn = head.cast::<u8>();
             let idx = self.slot_index(nn);
             self.bitmap_set(idx);
             self.live.set(self.live.get() + 1);
@@ -252,21 +262,77 @@ impl Arena {
         Some(ptr)
     }
 
-    // release a slot back to the free list.
+    // return a slot to the free list
     pub fn free_slot(&self, ptr: NonNull<u8>) {
         let idx = self.slot_index(ptr);
         self.bitmap_clear(idx);
-        // SAFETY: writing next pointer to the start of the freed slot
+        // SAFETY: slot is large enough to hold a FreeSlot,
+        // we reinterpret the slot's memory as a free list node.
         unsafe {
-            (ptr.as_ptr() as *mut *mut u8).write(self.free_list.get());
+            let node = ptr.cast::<FreeSlot>();
+            node.as_ptr().write(FreeSlot {
+                next: self
+                    .free_list
+                    .get()
+                    .map(NonNull::as_ptr)
+                    .unwrap_or(core::ptr::null_mut()),
+            });
+            self.free_list.set(Some(node));
         }
-        self.free_list.set(ptr.as_ptr());
         self.live.set(self.live.get().saturating_sub(1));
     }
 
-    // try to allocate raw bytes. tracked only via active_raw_allocs.
-    // placed after the bitmap section to prevent corruption.
-    pub fn try_alloc_bytes(&self, layout: Layout) -> Result<NonNull<[u8]>, ArenaAllocError> {
+    // returns true when the pool is empty and safe to drop
+    // `live` tracks the count, so no bitmap scan is needed
+    pub fn run_drop_check(&self) -> bool {
+        self.live.get() == 0
+    }
+}
+
+impl Drop for SlotPool {
+    fn drop(&mut self) {
+        // SAFETY: buffer was allocated with the same layout by the global allocator
+        unsafe { dealloc(self.buffer.as_ptr(), self.layout) };
+    }
+}
+
+/// BumpPage ///
+
+// pure bump allocator for raw bytes with a linear pointer over a buffer
+// no per allocation tracking, the whole page is dropped when empty
+#[derive(Debug)]
+pub(crate) struct BumpPage {
+    pub(crate) layout: Layout,
+    pub(crate) buffer: NonNull<u8>,
+    pub(crate) bump: Cell<usize>,
+    // number of live allocations on this page, when hits 0 the page
+    // is eligible for reclamation by drop_dead_arenas
+    pub(crate) active_allocs: Cell<usize>,
+}
+
+impl BumpPage {
+    pub fn try_init(total_capacity: usize, max_align: usize) -> Result<Self, ArenaAllocError> {
+        let layout = Layout::from_size_align(total_capacity, max_align)
+            .map_err(ArenaAllocError::LayoutError)?;
+
+        // SAFETY: allocating with a valid Layout
+        let buffer = unsafe {
+            let ptr = alloc(layout);
+            let Some(nn) = NonNull::new(ptr) else {
+                handle_alloc_error(layout)
+            };
+            nn
+        };
+
+        Ok(Self {
+            layout,
+            buffer,
+            bump: Cell::new(0),
+            active_allocs: Cell::new(0),
+        })
+    }
+
+    pub fn try_alloc(&self, layout: Layout) -> Result<NonNull<[u8]>, ArenaAllocError> {
         let size = layout.size();
         let align = layout.align();
 
@@ -274,51 +340,75 @@ impl Arena {
             return Err(ArenaAllocError::AlignmentNotPossible);
         }
 
-        let base = self.bitmap_bytes().max(self.bump.get());
-        // SAFETY: base is within buffer bounds
-        let current_ptr = unsafe { self.buffer.as_ptr().add(base) };
+        // SAFETY: bump is within buffer bounds
+        let current_ptr = unsafe { self.buffer.as_ptr().add(self.bump.get()) };
         let padding = current_ptr.align_offset(align);
         if padding == usize::MAX {
             return Err(ArenaAllocError::AlignmentNotPossible);
         }
-        let offset = base + padding;
+        let offset = self.bump.get() + padding;
         if offset + size > self.layout.size() {
             return Err(ArenaAllocError::OutOfMemory);
         }
 
         self.bump.set(offset + size);
-        self.active_raw_allocs.set(self.active_raw_allocs.get() + 1);
+        self.active_allocs.set(self.active_allocs.get() + 1);
 
         // SAFETY: offset is within buffer bounds and derived from a NonNull base
         let ptr = unsafe { NonNull::new_unchecked(self.buffer.as_ptr().add(offset)) };
         Ok(NonNull::slice_from_raw_parts(ptr, size))
     }
 
-    pub fn dealloc_bytes(&self) {
-        self.active_raw_allocs
-            .set(self.active_raw_allocs.get().saturating_sub(1));
+    // decrements the live allocation count
+    // the page is freed by `drop_dead_arenas` when active_allocs hits zero
+    pub fn dealloc(&self) {
+        self.active_allocs
+            .set(self.active_allocs.get().saturating_sub(1));
     }
 
-    // returns true if drop is safe (all slots free & no raw allocs)
-    pub fn run_drop_check(&self) -> bool {
-        if self.active_raw_allocs.get() > 0 {
-            return false;
+    pub fn owns(&self, ptr: NonNull<u8>) -> bool {
+        let start = self.buffer.as_ptr() as usize;
+        let end = start + self.layout.size();
+        let addr = ptr.as_ptr() as usize;
+        addr >= start && addr < end
+    }
+
+    // try to shrink the most recent allocation in place by rewinding the bump
+    pub fn shrink_in_place(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> bool {
+        let offset = ptr.as_ptr() as usize - self.buffer.as_ptr() as usize;
+        if offset + old_layout.size() == self.bump.get() {
+            self.bump.set(offset + new_layout.size());
+            true
+        } else {
+            false
         }
-        if self.live.get() > 0 {
-            return false;
-        }
-        for word_idx in 0..self.bitmap_words {
-            // SAFETY: reading bitmap words is within buffer bounds
-            let word = unsafe { (self.buffer.as_ptr().add(word_idx * 8) as *const u64).read() };
-            if word != 0 {
-                return false;
+    }
+
+    // try to grow the most recent allocation in place by extending the bump
+    pub fn grow_in_place(&self, ptr: NonNull<u8>, old_layout: Layout, new_layout: Layout) -> bool {
+        let offset = ptr.as_ptr() as usize - self.buffer.as_ptr() as usize;
+        if offset + old_layout.size() == self.bump.get() {
+            let new_end = offset + new_layout.size();
+            if new_end <= self.layout.size() {
+                self.bump.set(new_end);
+                return true;
             }
         }
-        true
+        false
+    }
+
+    // returns true when all allocations on this page have been released.
+    pub fn run_drop_check(&self) -> bool {
+        self.active_allocs.get() == 0
     }
 }
 
-impl Drop for Arena {
+impl Drop for BumpPage {
     fn drop(&mut self) {
         // SAFETY: buffer was allocated with the same layout by the global allocator
         unsafe { dealloc(self.buffer.as_ptr(), self.layout) };

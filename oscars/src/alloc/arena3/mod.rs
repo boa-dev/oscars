@@ -1,7 +1,8 @@
-//! arena allocator managing multiple backing arenas
+//! size-class memory pool. typed GC objects go into per size class slot pools
+//! where freed slots are recycled via a free list, raw byte allocations use
+//! separate bump pages
 //!
-//! typed GC objects use arenas matching their size class, sharing pools for reuse.
-//! raw byte allocations live on separate pages
+//! TODO: move from `arena` to `mempool`
 
 use core::{cell::Cell, ptr::NonNull};
 use rust_alloc::alloc::{Layout, LayoutError};
@@ -9,8 +10,8 @@ use rust_alloc::vec::Vec;
 
 mod alloc;
 
-use alloc::Arena;
 pub use alloc::{ArenaHeapItem, ArenaPointer, ErasedArenaPointer};
+use alloc::{BumpPage, SlotPool};
 
 #[cfg(test)]
 mod tests;
@@ -49,11 +50,13 @@ pub struct ArenaAllocator<'alloc> {
     pub(crate) heap_threshold: usize,
     pub(crate) arena_size: usize,
     pub(crate) current_heap_size: usize,
-    // all typed GC arenas
-    pub(crate) typed_arenas: Vec<Arena>,
-    // arenas dedicated to raw byte allocations
-    pub(crate) raw_arenas: Vec<Arena>,
+    // per size-class slot pools
+    pub(crate) typed_arenas: Vec<SlotPool>,
+    // bump pages for raw byte allocs
+    pub(crate) raw_arenas: Vec<BumpPage>,
+    // cached index of the last pool used by free_slot
     pub(crate) free_cache: Cell<usize>,
+    // per size class cached index of the last pool used by alloc_slot
     pub(crate) alloc_cache: [Cell<usize>; 12],
     _marker: core::marker::PhantomData<&'alloc ()>,
 }
@@ -96,7 +99,7 @@ impl<'alloc> ArenaAllocator<'alloc> {
         self
     }
 
-    // total live arena count
+    // total live pool + page count
     pub fn arenas_len(&self) -> usize {
         self.typed_arenas.len() + self.raw_arenas.len()
     }
@@ -125,9 +128,9 @@ impl<'alloc> ArenaAllocator<'alloc> {
 
         let cached_idx = self.alloc_cache[sc_idx].get();
         if cached_idx < self.typed_arenas.len() {
-            let arena = &self.typed_arenas[cached_idx];
-            if arena.slot_size == slot_size {
-                if let Some(slot_ptr) = arena.alloc_slot() {
+            let pool = &self.typed_arenas[cached_idx];
+            if pool.slot_size == slot_size {
+                if let Some(slot_ptr) = pool.alloc_slot() {
                     // SAFETY: slot_ptr was successfully allocated for this size class
                     return unsafe {
                         let dst = slot_ptr.as_ptr() as *mut ArenaHeapItem<T>;
@@ -138,10 +141,10 @@ impl<'alloc> ArenaAllocator<'alloc> {
             }
         }
 
-        // try existing arenas with matching slot_size first
-        for (i, arena) in self.typed_arenas.iter().enumerate().rev() {
-            if arena.slot_size == slot_size {
-                if let Some(slot_ptr) = arena.alloc_slot() {
+        // try existing pools with matching slot_size first
+        for (i, pool) in self.typed_arenas.iter().enumerate().rev() {
+            if pool.slot_size == slot_size {
+                if let Some(slot_ptr) = pool.alloc_slot() {
                     self.alloc_cache[sc_idx].set(i);
                     // SAFETY: slot_ptr was successfully allocated for this size class
                     return unsafe {
@@ -153,13 +156,13 @@ impl<'alloc> ArenaAllocator<'alloc> {
             }
         }
 
-        // need a new arena for this size class
+        // need a new pool for this size class
         let total = self.arena_size.max(slot_size * 4);
-        let new_arena = Arena::try_init(slot_size, total, 16)?;
-        self.current_heap_size += new_arena.layout.size();
-        let slot_ptr = new_arena.alloc_slot().ok_or(ArenaAllocError::OutOfMemory)?;
+        let new_pool = SlotPool::try_init(slot_size, total, 16)?;
+        self.current_heap_size += new_pool.layout.size();
+        let slot_ptr = new_pool.alloc_slot().ok_or(ArenaAllocError::OutOfMemory)?;
         let insert_idx = self.typed_arenas.len();
-        self.typed_arenas.push(new_arena);
+        self.typed_arenas.push(new_pool);
         self.alloc_cache[sc_idx].set(insert_idx);
 
         // SAFETY: slot_ptr was successfully allocated for this size class
@@ -173,56 +176,53 @@ impl<'alloc> ArenaAllocator<'alloc> {
     pub fn free_slot(&mut self, ptr: NonNull<u8>) {
         let cached = self.free_cache.get();
         if cached < self.typed_arenas.len() {
-            let arena = &self.typed_arenas[cached];
-            if arena.owns(ptr) {
-                arena.free_slot(ptr);
+            let pool = &self.typed_arenas[cached];
+            if pool.owns(ptr) {
+                pool.free_slot(ptr);
                 return;
             }
         }
 
-        for (i, arena) in self.typed_arenas.iter().enumerate().rev() {
-            if arena.owns(ptr) {
-                arena.free_slot(ptr);
+        for (i, pool) in self.typed_arenas.iter().enumerate().rev() {
+            if pool.owns(ptr) {
+                pool.free_slot(ptr);
                 self.free_cache.set(i);
                 return;
             }
         }
         debug_assert!(
             false,
-            "free_slot called with pointer {ptr:p} not owned by any typed arena; \
-             possible double-free or pointer from a raw arena"
+            "free_slot called with pointer {ptr:p} not owned by any slot pool; \
+             possible double-free or pointer from a raw page"
         );
     }
 
-    // bump allocate raw bytes
+    // bump allocate raw bytes onto a BumpPage
     pub fn try_alloc_bytes(&mut self, layout: Layout) -> Result<NonNull<[u8]>, ArenaAllocError> {
-        // try the most recent raw arena first
-        if let Some(arena) = self.raw_arenas.last() {
-            if let Ok(ptr) = arena.try_alloc_bytes(layout) {
+        // try the most recent raw page first
+        if let Some(page) = self.raw_arenas.last() {
+            if let Ok(ptr) = page.try_alloc(layout) {
                 return Ok(ptr);
             }
         }
         // allocate a new raw page with margin for padding
-        let margin = 64; // ~4 bitmap words + alignment gaps
+        let margin = 64;
         let total = self.arena_size.max(layout.size() + layout.align() + margin);
         let max_align = layout.align().max(16);
-        let raw_arena = Arena::try_init(8, total, max_align)?;
-        self.current_heap_size += raw_arena.layout.size();
-        let ptr = raw_arena
-            .try_alloc_bytes(layout)
+        let page = BumpPage::try_init(total, max_align)?;
+        self.current_heap_size += page.layout.size();
+        let ptr = page
+            .try_alloc(layout)
             .map_err(|_| ArenaAllocError::OutOfMemory)?;
-        self.raw_arenas.push(raw_arena);
+        self.raw_arenas.push(page);
         Ok(ptr)
     }
 
-    // decrement raw allocation counter for the arena owning ptr
+    // decrement live allocation count for the page owning ptr
     pub fn dealloc_bytes(&mut self, ptr: NonNull<u8>) {
-        let target = ptr.as_ptr() as usize;
-        for arena in self.raw_arenas.iter().rev() {
-            let start = arena.buffer.as_ptr() as usize;
-            let end = start + arena.layout.size();
-            if target >= start && target < end {
-                arena.dealloc_bytes();
+        for page in self.raw_arenas.iter().rev() {
+            if page.owns(ptr) {
+                page.dealloc();
                 return;
             }
         }
@@ -235,25 +235,11 @@ impl<'alloc> ArenaAllocator<'alloc> {
         old_layout: Layout,
         new_layout: Layout,
     ) -> bool {
-        let target = ptr.as_ptr() as usize;
-        for arena in self.raw_arenas.iter().rev() {
-            let start = arena.buffer.as_ptr() as usize;
-            let end = start + arena.layout.size();
-
-            if target >= start && target < end {
-                let current_bump = arena.bump.get();
-                let allocation_end = target - start + old_layout.size();
-
-                if allocation_end == current_bump {
-                    let new_allocation_end = target - start + new_layout.size();
-                    arena.bump.set(new_allocation_end);
-                    return true;
-                }
-
-                return false;
+        for page in self.raw_arenas.iter().rev() {
+            if page.owns(ptr) {
+                return page.shrink_in_place(ptr, old_layout, new_layout);
             }
         }
-
         false
     }
 
@@ -264,43 +250,27 @@ impl<'alloc> ArenaAllocator<'alloc> {
         old_layout: Layout,
         new_layout: Layout,
     ) -> bool {
-        let target = ptr.as_ptr() as usize;
-        for arena in self.raw_arenas.iter().rev() {
-            let start = arena.buffer.as_ptr() as usize;
-            let end = start + arena.layout.size();
-
-            if target >= start && target < end {
-                let current_bump = arena.bump.get();
-                let allocation_end = target - start + old_layout.size();
-
-                if allocation_end == current_bump {
-                    let new_allocation_end = target - start + new_layout.size();
-                    if new_allocation_end <= arena.layout.size() {
-                        arena.bump.set(new_allocation_end);
-                        return true;
-                    }
-                }
-
-                return false;
+        for page in self.raw_arenas.iter().rev() {
+            if page.owns(ptr) {
+                return page.grow_in_place(ptr, old_layout, new_layout);
             }
         }
-
         false
     }
 
-    // drop empty typed and raw arenas
+    // drop empty slot pools and raw pages
     pub fn drop_dead_arenas(&mut self) {
-        self.typed_arenas.retain(|a| {
-            if a.run_drop_check() {
-                self.current_heap_size = self.current_heap_size.saturating_sub(a.layout.size());
+        self.typed_arenas.retain(|p| {
+            if p.run_drop_check() {
+                self.current_heap_size = self.current_heap_size.saturating_sub(p.layout.size());
                 false
             } else {
                 true
             }
         });
-        self.raw_arenas.retain(|a| {
-            if a.run_drop_check() {
-                self.current_heap_size = self.current_heap_size.saturating_sub(a.layout.size());
+        self.raw_arenas.retain(|p| {
+            if p.run_drop_check() {
+                self.current_heap_size = self.current_heap_size.saturating_sub(p.layout.size());
                 false
             } else {
                 true
@@ -312,11 +282,11 @@ impl<'alloc> ArenaAllocator<'alloc> {
         }
     }
 
-    // mark the slot at `ptr` as occupied
+    // mark the slot at `ptr` as occupied (only typed slot pools have a bitmap)
     pub fn mark_slot(&self, ptr: NonNull<u8>) {
-        for arena in self.typed_arenas.iter().chain(self.raw_arenas.iter()) {
-            if arena.owns(ptr) {
-                arena.mark_slot(ptr);
+        for pool in self.typed_arenas.iter() {
+            if pool.owns(ptr) {
+                pool.mark_slot(ptr);
                 return;
             }
         }

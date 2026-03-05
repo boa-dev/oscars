@@ -1,5 +1,6 @@
 //! An Ephemeron implementation
 
+use core::any::TypeId;
 use core::marker::PhantomData;
 
 use crate::{
@@ -75,12 +76,14 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
 impl<K: Trace, V: Trace> Finalize for Ephemeron<K, V> {}
 
 // NOTE on Trace for Ephemeron:
-// this impl just satisfies `Trace` bounds for the allocator framework
-// actual GC tracing routes through the `EphemeronVTable`.
-// do not add logic here as it panics if called directly
+// this impl only satisfies `Trace` bounds, actual GC tracing goes through the
+// `EphemeronVTable`, calling trace() directly here is always a bug
 unsafe impl<K: Trace, V: Trace> Trace for Ephemeron<K, V> {
     unsafe fn trace(&self, _color: TraceColor) {
-        panic!("Trace::trace called on Ephemeron directly; must be dispatched via vtable");
+        debug_assert!(
+            false,
+            "Trace::trace called on Ephemeron directly; must be dispatched via vtable"
+        );
     }
 
     fn run_finalizer(&self) {
@@ -151,6 +154,10 @@ pub(crate) const fn vtable_of<K: Trace + 'static, V: Trace + 'static>() -> &'sta
                     .value();
                 Finalize::finalize(ephemeron);
             },
+            _key_type_id: TypeId::of::<K>(),
+            _key_size: size_of::<WeakGcBox<K>>(),
+            _value_type_id: TypeId::of::<V>(),
+            _value_size: size_of::<GcBox<V>>(),
         };
     }
 
@@ -159,10 +166,16 @@ pub(crate) const fn vtable_of<K: Trace + 'static, V: Trace + 'static>() -> &'sta
 
 type EphemeronTraceFn = unsafe fn(this: ErasedEphemeron, color: TraceColor);
 type EphemeronDropFn = unsafe fn(this: ErasedEphemeron);
+type EphemeronIsReachableFn = unsafe fn(this: ErasedEphemeron, color: TraceColor) -> bool;
+type EphemeronFinalizeFn = unsafe fn(this: ErasedEphemeron);
 
 pub struct EphemeronVTable {
     trace_fn: EphemeronTraceFn,
     drop_fn: EphemeronDropFn,
-    is_reachable_fn: unsafe fn(this: ErasedEphemeron, color: TraceColor) -> bool,
-    finalize_fn: unsafe fn(this: ErasedEphemeron),
+    is_reachable_fn: EphemeronIsReachableFn,
+    finalize_fn: EphemeronFinalizeFn,
+    _key_type_id: TypeId,
+    _key_size: usize,
+    _value_type_id: TypeId,
+    _value_size: usize,
 }

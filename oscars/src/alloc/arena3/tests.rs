@@ -137,3 +137,42 @@ fn arc_drop() {
     allocator.drop_dead_arenas();
     assert_eq!(allocator.arenas_len(), 0, "empty arena must be reclaimed");
 }
+
+// SlotPool slot count arithmetic tests
+//
+// these tests confirm that the try_init calculation produces the expected
+// slot count and bitmap size for different inputs
+
+fn slot_pool_layout(slot_size: usize, total_capacity: usize) -> (usize, usize) {
+    use crate::alloc::arena3::alloc::SlotPool;
+    let pool = SlotPool::try_init(slot_size, total_capacity, 8).unwrap();
+    (pool.slot_count, pool.bitmap_words)
+}
+
+#[test]
+fn slot_count_example_from_doc() {
+    let (slot_count, bitmap_words) = slot_pool_layout(16, 512);
+    assert_eq!(bitmap_words, 1, "one 64-bit word covers 32 estimated slots");
+    assert_eq!(slot_count, 31);
+}
+
+#[test]
+fn slot_count_needs_two_bitmap_words() {
+    let (slot_count, bitmap_words) = slot_pool_layout(8, 4096);
+    assert_eq!(bitmap_words, 8);
+    assert_eq!(slot_count, 504);
+}
+
+#[test]
+fn slot_count_large_slot_size() {
+    let (slot_count, bitmap_words) = slot_pool_layout(256, 4096);
+    assert_eq!(bitmap_words, 1);
+    assert_eq!(slot_count, 15);
+}
+
+#[test]
+fn slot_count_tight_capacity() {
+    let (slot_count, bitmap_words) = slot_pool_layout(64, 512);
+    assert_eq!(bitmap_words, 1);
+    assert_eq!(slot_count, 7);
+}

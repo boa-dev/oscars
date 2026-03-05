@@ -331,6 +331,76 @@ fn bench_throughput(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_dealloc_speed(c: &mut Criterion) {
+    let mut group = c.benchmark_group("7_deallocation_speed");
+
+    //measure the time to free all objects in the arena
+    // using `iter_batched` ensures we only measure the deallocation phase
+    for num_objects in [100, 500, 1000].iter() {
+        group.bench_with_input(
+            BenchmarkId::new("arena3", num_objects),
+            num_objects,
+            |b, &num_objects| {
+                b.iter_batched(
+                    || {
+                        let mut allocator =
+                            oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(65536);
+
+                        let mut ptrs = Vec::new();
+                        for i in 0..num_objects {
+                            let ptr = allocator.try_alloc(i).expect("allocation failed");
+                            ptrs.push(ptr);
+                        }
+                        (allocator, ptrs)
+                    },
+                    |(mut allocator, ptrs)| {
+                        for ptr in ptrs {
+                            allocator.free_slot(ptr.as_ptr().cast::<u8>());
+                        }
+                        allocator.drop_dead_arenas();
+                        black_box(allocator.arenas_len())
+                    },
+                    criterion::BatchSize::SmallInput,
+                );
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("arena2", num_objects),
+            num_objects,
+            |b, &num_objects| {
+                b.iter_batched(
+                    || {
+                        let mut allocator =
+                            oscars::alloc::arena2::ArenaAllocator::default().with_arena_size(65536);
+
+                        let mut ptrs = Vec::new();
+                        for i in 0..num_objects {
+                            let ptr = allocator.try_alloc(i).expect("allocation failed");
+                            ptrs.push(ptr);
+                        }
+                        (allocator, ptrs)
+                    },
+                    |(mut allocator, ptrs)| {
+                        for ptr in ptrs {
+                            let mut heap_item_ptr = ptr.as_ptr();
+                            unsafe {
+                                core::ptr::drop_in_place(heap_item_ptr.as_mut().value_mut());
+                                heap_item_ptr.as_mut().mark_dropped();
+                            }
+                        }
+                        allocator.drop_dead_arenas();
+                        black_box(allocator.arenas_len())
+                    },
+                    criterion::BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_alloc_speed,
@@ -339,6 +409,7 @@ criterion_group!(
     bench_density,
     bench_vec_growth,
     bench_throughput,
+    bench_dealloc_speed,
 );
 
 criterion_main!(benches);

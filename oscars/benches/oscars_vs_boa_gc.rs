@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use oscars::{
-    GcAllocVec, MarkSweepGarbageCollector, Root as OscarsRoot, cell::GcRefCell as OscarsGcRefCell,
+    Gc as OscarsGc, GcAllocVec, MarkSweepGarbageCollector, cell::GcRefCell as OscarsGcRefCell,
 };
 
 use boa_gc::{Gc as BoaGc, GcRefCell as BoaGcRefCell, force_collect as boa_force_collect};
@@ -17,7 +17,7 @@ fn bench_alloc(c: &mut Criterion) {
             b.iter(|| {
                 let mut roots = Vec::new();
                 for i in 0..size {
-                    let root = OscarsRoot::new_in(OscarsGcRefCell::new(i), &collector);
+                    let root = OscarsGc::new_in(OscarsGcRefCell::new(i), &collector);
                     roots.push(root);
                 }
                 black_box(roots.len())
@@ -60,7 +60,7 @@ fn bench_collection(c: &mut Criterion) {
                             .with_heap_threshold(262144);
                         let mut roots = Vec::new();
                         for i in 0..num_objects {
-                            let root = OscarsRoot::new_in(OscarsGcRefCell::new(i), &collector);
+                            let root = OscarsGc::new_in(OscarsGcRefCell::new(i), &collector);
                             roots.push(root);
                         }
                         (collector, roots)
@@ -115,7 +115,7 @@ fn bench_vec_create(c: &mut Criterion) {
 
                 b.iter(|| {
                     let vec = GcAllocVec::with_capacity(size, &collector);
-                    let gc_vec = OscarsRoot::new_in(OscarsGcRefCell::new(vec), &collector);
+                    let gc_vec = OscarsGc::new_in(OscarsGcRefCell::new(vec), &collector);
 
                     for i in 0..size {
                         gc_vec.borrow_mut().push(black_box(i));
@@ -158,11 +158,11 @@ fn bench_vec_ptrs(c: &mut Criterion) {
 
                 b.iter(|| {
                     let vec = GcAllocVec::with_capacity(num_elements, &collector);
-                    let gc_vec = OscarsRoot::new_in(OscarsGcRefCell::new(vec), &collector);
+                    let gc_vec = OscarsGc::new_in(OscarsGcRefCell::new(vec), &collector);
 
                     for i in 0..num_elements {
-                        let inner = OscarsRoot::new_in(OscarsGcRefCell::new(i), &collector);
-                        gc_vec.borrow_mut().push(inner.into_gc());
+                        let inner = OscarsGc::new_in(OscarsGcRefCell::new(i), &collector);
+                        gc_vec.borrow_mut().push(inner);
                     }
 
                     let sum: usize = gc_vec.borrow().iter().map(|gc| *gc.borrow()).sum();
@@ -206,13 +206,13 @@ fn bench_mixed(c: &mut Criterion) {
             let mut roots = Vec::new();
 
             for i in 0..100 {
-                let root = OscarsRoot::new_in(OscarsGcRefCell::new(i), &collector);
+                let root = OscarsGc::new_in(OscarsGcRefCell::new(i), &collector);
                 roots.push(root);
             }
             collector.collect();
 
             for i in 100..200 {
-                let root = OscarsRoot::new_in(OscarsGcRefCell::new(i), &collector);
+                let root = OscarsGc::new_in(OscarsGcRefCell::new(i), &collector);
                 roots.push(root);
             }
             collector.collect();
@@ -257,7 +257,7 @@ fn bench_pressure(c: &mut Criterion) {
 
             for round in 0..10 {
                 for i in 0..50 {
-                    let obj = OscarsRoot::new_in(OscarsGcRefCell::new(round * 100 + i), &collector);
+                    let obj = OscarsGc::new_in(OscarsGcRefCell::new(round * 100 + i), &collector);
                     if i % 10 == 0 {
                         live.push(obj);
                     }
@@ -336,7 +336,7 @@ fn bench_deep(c: &mut Criterion) {
                         children,
                     }
                 };
-                OscarsRoot::new_in(OscarsGcRefCell::new(node), collector).into_gc()
+                OscarsGc::new_in(OscarsGcRefCell::new(node), collector)
             }
 
             let root = build_tree(5, &collector);

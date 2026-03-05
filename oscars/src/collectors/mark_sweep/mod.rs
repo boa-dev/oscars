@@ -25,9 +25,10 @@ pub(crate) mod internals;
 #[cfg(feature = "gc_allocator")]
 pub mod gc_collections;
 
-pub(crate) use pointers::weak_map::ErasedWeakMap;
+#[doc(hidden)]
+pub use pointers::weak_map::ErasedWeakMap;
 pub use pointers::weak_map::WeakMap;
-pub use pointers::{Gc, Root, WeakGc};
+pub use pointers::{Gc, WeakGc};
 pub use trace::{Finalize, Trace, TraceColor};
 
 #[cfg(feature = "gc_allocator")]
@@ -123,7 +124,7 @@ impl Drop for MarkSweepGarbageCollector {
         }
 
         // SAFETY:
-        // `Root<T>` pointers act as if they live forever (`'static`).
+        // `Gc<T>` pointers act as if they live forever (`'static`).
         // if the GC drops while they exist, we leak the memory to prevent a UAF
         if self.arenas_len() > 0
             && (!self.root_queue.borrow().is_empty()
@@ -276,13 +277,8 @@ impl MarkSweepGarbageCollector {
                 unsafe { ephemeron_ref.value().is_reachable_fn()(*ephemeron_heap_item, color) };
 
             if is_reachable {
-                // Mark the ephemeron itself in the arena bitmap so it isn't
-                // reclaimed by drop_dead_arenas. Ephemerons don't have GcHeaders,
-                // so we mark them manually.
-                self.allocator
-                    .borrow()
-                    .mark_slot(ephemeron_heap_item.cast());
-
+                // no manual mark_slot is needed as alloc_slot handled it
+                // sweep uses the vtable is_reachable_fn/free_slot path
                 unsafe { ephemeron_ref.value().trace_fn()(*ephemeron_heap_item, color) }
             }
         }
