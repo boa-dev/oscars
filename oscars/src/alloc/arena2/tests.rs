@@ -88,3 +88,30 @@ fn arc_drop() {
 
     assert_eq!(allocator.arenas_len(), 0);
 }
+
+#[test]
+fn external_allocations_affect_threshold_check() {
+    let mut allocator = ArenaAllocator::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
+
+    assert!(allocator.is_below_threshold());
+    assert_eq!(allocator.external_bytes(), 0);
+
+    assert!(allocator.track_external_allocation(257));
+    assert_eq!(allocator.external_bytes(), 257);
+    assert_eq!(allocator.total_tracked_bytes(), 257);
+    assert!(!allocator.is_below_threshold());
+
+    assert!(allocator.untrack_external_allocation(257));
+    assert_eq!(allocator.external_bytes(), 0);
+    assert!(allocator.is_below_threshold());
+}
+
+#[test]
+fn external_allocation_underflow_is_rejected() {
+    let mut allocator = ArenaAllocator::default();
+    assert_eq!(allocator.external_bytes(), 0);
+    assert!(!allocator.untrack_external_allocation(1));
+    assert_eq!(allocator.external_bytes(), 0);
+}

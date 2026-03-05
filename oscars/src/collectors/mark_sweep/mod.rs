@@ -95,6 +95,15 @@ impl MarkSweepGarbageCollector {
     pub fn ephemeron_queue_len(&self) -> usize {
         self.ephemeron_queue.len()
     }
+
+    pub(crate) fn track_external_allocation(&mut self, size: usize) -> bool {
+        self.allocator.track_external_allocation(size)
+    }
+
+    #[cfg(test)]
+    pub fn external_bytes(&self) -> usize {
+        self.allocator.external_bytes()
+    }
 }
 
 // ==== Allocation methods ====

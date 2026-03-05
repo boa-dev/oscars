@@ -90,6 +90,7 @@ pub struct WeakMap<K: Trace + 'static, V: Trace + 'static> {
 impl<K: Trace, V: Trace> WeakMap<K, V> {
     // create a new map and give the collector ownership of its memory
     pub fn new(collector: &mut MarkSweepGarbageCollector) -> Self {
+        let _ = collector.track_external_allocation(core::mem::size_of::<WeakMapInner<K, V>>());
         let boxed: rust_alloc::boxed::Box<WeakMapInner<K, V>> =
             rust_alloc::boxed::Box::new(WeakMapInner::new());
         // get a raw pointer that stays valid even after the box is moved
