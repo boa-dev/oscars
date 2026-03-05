@@ -359,3 +359,44 @@ fn alive_wm() {
     // alive keys persist
     assert_eq!(map.get(&key), Some(&100u64), "ephemeron swept prematurely");
 }
+
+#[test]
+fn collector_drop_runs_destructors_for_live_gc_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct DropSpy {
+        drops: Rc<Cell<u32>>,
+    }
+
+    impl Drop for DropSpy {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    impl Finalize for DropSpy {}
+
+    // SAFETY: `DropSpy` has no traceable children.
+    unsafe impl Trace for DropSpy {
+        crate::empty_trace!();
+    }
+
+    let drops = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_arena_size(128)
+            .with_heap_threshold(256);
+
+        let _gc = Gc::new_in(
+            DropSpy {
+                drops: Rc::clone(&drops),
+            },
+            collector,
+        );
+
+        assert_eq!(drops.get(), 0);
+    }
+
+    assert_eq!(drops.get(), 1, "collector drop should run value destructor");
+}

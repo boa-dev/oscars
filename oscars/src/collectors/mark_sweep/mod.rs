@@ -77,12 +77,12 @@ pub struct CollectionState {
 
 impl MarkSweepGarbageCollector {
     pub fn with_heap_threshold(mut self, heap_threshold: usize) -> Self {
-        self.allocator = self.allocator.with_heap_threshold(heap_threshold);
+        self.allocator = core::mem::take(&mut self.allocator).with_heap_threshold(heap_threshold);
         self
     }
 
     pub fn with_arena_size(mut self, arena_size: usize) -> Self {
-        self.allocator = self.allocator.with_arena_size(arena_size);
+        self.allocator = core::mem::take(&mut self.allocator).with_arena_size(arena_size);
         self
     }
 
@@ -191,6 +191,34 @@ impl MarkSweepGarbageCollector {
 // ==== Collection methods ====
 
 impl MarkSweepGarbageCollector {
+    fn drop_tracked_allocations(&mut self) {
+        for mut node in self.root_queue.drain(..) {
+            // SAFETY: Queue nodes point to arena allocations owned by this collector.
+            let heap_item = unsafe { node.as_mut() };
+            if heap_item.is_dropped() {
+                continue;
+            }
+
+            let gc_box = heap_item.value();
+            gc_box.finalize();
+            // SAFETY: The pointer has not been dropped yet.
+            unsafe { gc_box.drop_fn()(node) };
+        }
+
+        for mut node in self.ephemeron_queue.drain(..) {
+            // SAFETY: Queue nodes point to arena allocations owned by this collector.
+            let heap_item = unsafe { node.as_mut() };
+            if heap_item.is_dropped() {
+                continue;
+            }
+
+            let ephemeron = heap_item.value();
+            ephemeron.finalize();
+            // SAFETY: The pointer has not been dropped yet.
+            unsafe { ephemeron.drop_fn()(node) };
+        }
+    }
+
     pub fn collect(&mut self) {
         self.run_mark_phase();
         self.run_sweep_phase();
@@ -305,5 +333,12 @@ impl MarkSweepGarbageCollector {
             unsafe { drop_fn(ephemeron) }
         }
         self.ephemeron_queue.extend(still_alive);
+    }
+}
+
+impl Drop for MarkSweepGarbageCollector {
+    fn drop(&mut self) {
+        self.drop_tracked_allocations();
+        self.allocator.drop_dead_arenas();
     }
 }

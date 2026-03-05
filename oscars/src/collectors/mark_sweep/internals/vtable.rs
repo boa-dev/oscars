@@ -24,8 +24,16 @@ pub(crate) const fn vtable_of<T: Trace + 'static>() -> &'static VTable {
             // SAFETY: The caller must ensure that the passed erased pointer is `GcBox<Self>`.
             let mut this = this.cast::<ArenaHeapItem<GcBox<Self>>>();
 
-            // SAFETY: The caller must ensure the erased pointer is not dropped or deallocated.
-            unsafe { this.as_mut().mark_dropped() };
+            // SAFETY: The pointer is valid and owned by the collector.
+            //
+            // We only drop the inner value once and mark this node as dropped.
+            unsafe {
+                let heap_item = this.as_mut();
+                if !heap_item.is_dropped() {
+                    heap_item.mark_dropped();
+                    core::ptr::drop_in_place(heap_item.value_mut());
+                }
+            };
         }
     }
 
