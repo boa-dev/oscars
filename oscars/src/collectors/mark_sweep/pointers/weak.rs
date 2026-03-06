@@ -9,6 +9,14 @@ use crate::{
 use core::marker::PhantomData;
 use rust_alloc::rc::Rc;
 
+/// A weak reference to a garbage-collected value.
+///
+/// # Thread Safety
+///
+/// `WeakGc<T>` is deliberately `!Send` and `!Sync`. The garbage collector
+/// relies on non-atomic interior mutability (`Cell`) for header metadata.
+/// Moving a `WeakGc<T>` across threads would create data races on
+/// `GcHeader` fields, which is undefined behavior.
 #[repr(transparent)]
 pub struct WeakGc<T: Trace + 'static> {
     inner_ptr: ArenaPointer<'static, Ephemeron<T, ()>>,

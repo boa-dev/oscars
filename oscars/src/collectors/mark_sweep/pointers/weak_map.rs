@@ -86,14 +86,23 @@ impl<K: Trace, V: Trace> ErasedWeakMap for WeakMapInner<K, V> {
     }
 }
 
-// map that prunes entries automatically when their GC keys are collected
-//
-// the collector owns the `WeakMapInner` heap allocation, `WeakMap` holds a
-// raw pointer back to it
-//
-// single threaded: the GC and all `WeakMap` ops run on the same thread
-//  lifetime ordering: `WeakMap` must not outlive its collector
-// no aliased writes: collector only mutates through box during `collect()`
+/// A map that prunes entries automatically when their GC keys are collected.
+///
+/// The collector owns the `WeakMapInner` heap allocation; `WeakMap` holds a
+/// raw pointer back to it.
+///
+/// # Thread Safety
+///
+/// `WeakMap<K, V>` is deliberately `!Send` and `!Sync`. The garbage collector
+/// relies on non-atomic interior mutability (`Cell`) for header metadata.
+/// Moving a `WeakMap` across threads would create data races on `GcHeader`
+/// fields, which is undefined behavior.
+///
+/// # Invariants
+///
+/// - Single threaded: the GC and all `WeakMap` ops run on the same thread.
+/// - Lifetime ordering: `WeakMap` must not outlive its collector.
+/// - No aliased writes: collector only mutates through box during `collect()`.
 pub struct WeakMap<K: Trace + 'static, V: Trace + 'static> {
     // raw pointer to collector owned memory
     inner: NonNull<WeakMapInner<K, V>>,
