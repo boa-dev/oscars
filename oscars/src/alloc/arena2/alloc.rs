@@ -44,7 +44,7 @@ impl<T: ?Sized> ArenaHeapItem<T> {
         &mut self.value as *mut T
     }
 
-    fn value_mut(&mut self) -> &mut T {
+    pub(crate) fn value_mut(&mut self) -> &mut T {
         &mut self.value
     }
 }
