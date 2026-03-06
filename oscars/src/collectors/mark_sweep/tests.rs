@@ -307,7 +307,7 @@ fn remove_wm() {
 
     // remove should return true and leave map empty
     let removed = map.remove(&key.clone());
-    assert_eq!(removed, true, "remove returned wrong value");
+    assert!(removed, "remove returned wrong value");
     assert_eq!(
         map.get(&key.clone()),
         None,
@@ -380,7 +380,7 @@ fn remove_then_collect() {
 
     map.insert(&key.clone(), 99u64, collector);
     let removed = map.remove(&key.clone());
-    assert_eq!(removed, true);
+    assert!(removed);
 
     // the ephemeron stays in the queue until the key is collected
     drop(key);

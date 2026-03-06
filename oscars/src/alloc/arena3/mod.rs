@@ -129,30 +129,30 @@ impl<'alloc> ArenaAllocator<'alloc> {
         let cached_idx = self.alloc_cache[sc_idx].get();
         if cached_idx < self.typed_arenas.len() {
             let pool = &self.typed_arenas[cached_idx];
-            if pool.slot_size == slot_size {
-                if let Some(slot_ptr) = pool.alloc_slot() {
-                    // SAFETY: slot_ptr was successfully allocated for this size class
-                    return unsafe {
-                        let dst = slot_ptr.as_ptr() as *mut ArenaHeapItem<T>;
-                        dst.write(ArenaHeapItem(value));
-                        Ok(ArenaPointer::from_raw(NonNull::new_unchecked(dst)))
-                    };
-                }
+            if pool.slot_size == slot_size
+                && let Some(slot_ptr) = pool.alloc_slot()
+            {
+                // SAFETY: slot_ptr was successfully allocated for this size class
+                return unsafe {
+                    let dst = slot_ptr.as_ptr() as *mut ArenaHeapItem<T>;
+                    dst.write(ArenaHeapItem(value));
+                    Ok(ArenaPointer::from_raw(NonNull::new_unchecked(dst)))
+                };
             }
         }
 
         // try existing pools with matching slot_size first
         for (i, pool) in self.typed_arenas.iter().enumerate().rev() {
-            if pool.slot_size == slot_size {
-                if let Some(slot_ptr) = pool.alloc_slot() {
-                    self.alloc_cache[sc_idx].set(i);
-                    // SAFETY: slot_ptr was successfully allocated for this size class
-                    return unsafe {
-                        let dst = slot_ptr.as_ptr() as *mut ArenaHeapItem<T>;
-                        dst.write(ArenaHeapItem(value));
-                        Ok(ArenaPointer::from_raw(NonNull::new_unchecked(dst)))
-                    };
-                }
+            if pool.slot_size == slot_size
+                && let Some(slot_ptr) = pool.alloc_slot()
+            {
+                self.alloc_cache[sc_idx].set(i);
+                // SAFETY: slot_ptr was successfully allocated for this size class
+                return unsafe {
+                    let dst = slot_ptr.as_ptr() as *mut ArenaHeapItem<T>;
+                    dst.write(ArenaHeapItem(value));
+                    Ok(ArenaPointer::from_raw(NonNull::new_unchecked(dst)))
+                };
             }
         }
 
@@ -173,11 +173,11 @@ impl<'alloc> ArenaAllocator<'alloc> {
         }
     }
 
-    // drops the value at `ptr` and returns the slot to the allocator
-    //
-    // SAFETY:
-    // `ptr` must be a live `ArenaHeapItem<T>` allocated by this allocator,
-    // must not be used after this call
+    /// Drops the value at `ptr` and returns the slot to the allocator
+    ///
+    /// # Safety
+    /// `ptr` must be a live `ArenaHeapItem<T>` allocated by this allocator,
+    /// must not be used after this call
     pub unsafe fn free_slot_typed<T>(&mut self, ptr: NonNull<ArenaHeapItem<T>>) {
         // SAFETY: guaranteed by caller
         unsafe { core::ptr::drop_in_place(ptr.as_ptr()) };
@@ -211,10 +211,10 @@ impl<'alloc> ArenaAllocator<'alloc> {
     // bump allocate raw bytes onto a BumpPage
     pub fn try_alloc_bytes(&mut self, layout: Layout) -> Result<NonNull<[u8]>, ArenaAllocError> {
         // try the most recent raw page first
-        if let Some(page) = self.raw_arenas.last() {
-            if let Ok(ptr) = page.try_alloc(layout) {
-                return Ok(ptr);
-            }
+        if let Some(page) = self.raw_arenas.last()
+            && let Ok(ptr) = page.try_alloc(layout)
+        {
+            return Ok(ptr);
         }
         // allocate a new raw page with margin for padding
         let margin = 64;

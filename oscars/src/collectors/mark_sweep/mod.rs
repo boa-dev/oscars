@@ -26,9 +26,8 @@ pub(crate) mod internals;
 pub mod gc_collections;
 
 #[doc(hidden)]
-pub use pointers::weak_map::ErasedWeakMap;
-pub use pointers::weak_map::WeakMap;
-pub use pointers::{Gc, WeakGc};
+pub use pointers::ErasedWeakMap;
+pub use pointers::{Gc, WeakGc, WeakMap};
 pub use trace::{Finalize, Trace, TraceColor};
 
 #[cfg(feature = "gc_allocator")]

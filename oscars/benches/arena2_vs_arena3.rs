@@ -53,8 +53,8 @@ fn bench_small_objects(c: &mut Criterion) {
 
     #[derive(Clone, Copy)]
     struct SmallObject {
-        a: u64,
-        b: u64,
+        _a: u64,
+        _b: u64,
     }
 
     for num_objects in [100, 500, 1000].iter() {
@@ -68,8 +68,8 @@ fn bench_small_objects(c: &mut Criterion) {
 
                     for i in 0..num_objects {
                         let obj = SmallObject {
-                            a: i as u64,
-                            b: i as u64 * 2,
+                            _a: i as u64,
+                            _b: i as u64 * 2,
                         };
                         let _ = allocator.try_alloc(obj).expect("allocation failed");
                     }
@@ -89,8 +89,8 @@ fn bench_small_objects(c: &mut Criterion) {
 
                     for i in 0..num_objects {
                         let obj = SmallObject {
-                            a: i as u64,
-                            b: i as u64 * 2,
+                            _a: i as u64,
+                            _b: i as u64 * 2,
                         };
                         let _ = allocator.try_alloc(obj).expect("allocation failed");
                     }
@@ -154,11 +154,8 @@ fn bench_density(c: &mut Criterion) {
                 oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(PAGE_SIZE);
 
             let mut count = 0;
-            loop {
-                match allocator.try_alloc([0u64; 2]) {
-                    Ok(_) => count += 1,
-                    Err(_) => break,
-                }
+            while allocator.try_alloc([0u64; 2]).is_ok() {
+                count += 1;
                 if allocator.arenas_len() > 1 {
                     break;
                 }
@@ -174,11 +171,8 @@ fn bench_density(c: &mut Criterion) {
                 oscars::alloc::arena2::ArenaAllocator::default().with_arena_size(PAGE_SIZE);
 
             let mut count = 0;
-            loop {
-                match allocator.try_alloc([0u64; 2]) {
-                    Ok(_) => count += 1,
-                    Err(_) => break,
-                }
+            while allocator.try_alloc([0u64; 2]).is_ok() {
+                count += 1;
                 if allocator.arenas_len() > 1 {
                     break;
                 }
