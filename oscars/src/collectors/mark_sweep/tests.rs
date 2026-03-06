@@ -13,11 +13,11 @@ fn basic_gc() {
 
     let gc = Gc::new_in(GcRefCell::new(10), collector);
 
-    assert_eq!(collector.allocator.arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
 
     collector.collect();
 
-    assert_eq!(collector.allocator.arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
 
     assert_eq!(*gc.borrow(), 10);
 }
@@ -39,17 +39,17 @@ fn nested_gc() {
 
     collector.collect();
 
-    assert_eq!(collector.allocator.arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 2);
     assert_eq!(*nested_gc.borrow(), 10);
 
     let new_gc = Gc::new_in(GcRefCell::new(8), collector);
 
-    assert_eq!(collector.allocator.arenas_len(), 2);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 2);
 
     drop(new_gc);
     collector.collect();
 
-    assert_eq!(collector.allocator.arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 2);
     assert_eq!(*nested_gc.borrow(), 10);
 }
 
@@ -65,6 +65,10 @@ fn gc_recursion() {
         next: Option<Gc<S>>,
     }
 
+    #[cfg(miri)]
+    const COUNT: usize = 20;
+
+    #[cfg(not(miri))]
     const COUNT: usize = 2_000;
 
     let mut root = Gc::new_in(S { i: 0, next: None }, collector);
@@ -72,7 +76,7 @@ fn gc_recursion() {
         root = Gc::new_in(
             S {
                 i,
-                next: Some(root),
+                next: Some(root.clone()),
             },
             collector,
         );
@@ -89,16 +93,20 @@ fn drop_gc() {
         .with_heap_threshold(512);
 
     let gc = Gc::new_in(GcRefCell::new(7u64), collector);
-    assert_eq!(collector.allocator.arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
 
     collector.collect();
-    assert_eq!(collector.allocator.arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
 
     drop(gc);
     collector.collect();
 
-    // TODO: don't drop an active arena
-    assert_eq!(collector.allocator.arenas_len(), 0, "arena not freed");
+    // after collecting a dead Gc, its slot is freed and the arena page dropped
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        0,
+        "arena not freed"
+    );
 }
 
 #[test]
@@ -127,12 +135,16 @@ fn multi_gc() {
             .map(|i| Gc::new_in(GcRefCell::new(i as u64), collector))
             .collect();
 
-        assert!(collector.allocator.arenas_len() >= 1);
+        assert!(collector.allocator.borrow().arenas_len() >= 1);
 
         drop(objects);
         collector.collect();
 
-        assert_eq!(collector.allocator.arenas_len(), 0, "arenas not reclaimed");
+        assert_eq!(
+            collector.allocator.borrow().arenas_len(),
+            0,
+            "arenas not reclaimed"
+        );
     }
 }
 
@@ -181,7 +193,7 @@ fn long_lived_gc() {
 
     assert_eq!(*gc.borrow(), 77u64, "swept during color-flip");
     assert_eq!(
-        collector.allocator.arenas_len(),
+        collector.allocator.borrow().arenas_len(),
         1,
         "arena freed while live"
     );
@@ -196,10 +208,10 @@ fn basic_wm() {
     let mut map = WeakMap::new(collector);
     let key = Gc::new_in(42u64, collector);
 
-    map.insert(&key, 100u64, collector);
+    map.insert(&key.clone(), 100u64, collector);
 
-    assert_eq!(map.get(&key), Some(&100u64));
-    assert!(map.is_key_alive(&key));
+    assert_eq!(map.get(&key.clone()), Some(&100u64));
+    assert!(map.is_key_alive(&key.clone()));
 }
 
 #[test]
@@ -211,13 +223,17 @@ fn dead_wm() {
     let mut map = WeakMap::new(collector);
     let key = Gc::new_in(42u64, collector);
 
-    map.insert(&key, 100u64, collector);
-    assert_eq!(map.get(&key), Some(&100u64));
+    map.insert(&key.clone(), 100u64, collector);
+    assert_eq!(map.get(&key.clone()), Some(&100u64));
 
     drop(key);
     collector.collect();
 
-    assert_eq!(collector.allocator.arenas_len(), 0, "ephemeron not swept");
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        0,
+        "ephemeron not swept"
+    );
 }
 
 #[test]
@@ -230,16 +246,24 @@ fn update_wm() {
     let key = Gc::new_in(1u64, collector);
 
     // insert then update so that old value doesn't leak
-    map.insert(&key, 10u64, collector);
-    map.insert(&key, 20u64, collector);
+    map.insert(&key.clone(), 10u64, collector);
+    map.insert(&key.clone(), 20u64, collector);
 
-    assert_eq!(map.get(&key), Some(&20u64), "value not updated");
+    assert_eq!(map.get(&key.clone()), Some(&20u64), "value not updated");
 
     drop(key);
     collector.collect();
 
+    // both ephemerons (old invalidated, new key dead) should be freed
     assert_eq!(
-        collector.allocator.arenas_len(),
+        collector.allocator.borrow().arenas_len(),
+        0,
+        "arena leaked after update"
+    );
+
+    // both ephemerons (old invalidated, new key-dead) should be freed
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
         0,
         "arena leaked after update"
     );
@@ -278,13 +302,20 @@ fn remove_wm() {
     let mut map = WeakMap::new(collector);
     let key = Gc::new_in(1u64, collector);
 
-    map.insert(&key, 99u64, collector);
-    assert_eq!(map.get(&key), Some(&99u64));
+    map.insert(&key.clone(), 99u64, collector);
+    assert_eq!(map.get(&key.clone()), Some(&99u64));
 
-    // remove should return the value and leave map empty
-    let removed = map.remove(&key);
-    assert_eq!(removed, Some(99u64), "remove returned wrong value");
-    assert_eq!(map.get(&key), None, "entry still present after remove");
+    // remove should return true and leave map empty
+    let removed = map.remove(&key.clone());
+    assert_eq!(removed, true, "remove returned wrong value");
+    assert_eq!(
+        map.get(&key.clone()),
+        None,
+        "entry still present after remove"
+    );
+
+    drop(key);
+    collector.collect();
 }
 
 #[test]
@@ -298,23 +329,43 @@ fn prune_wm() {
     let mut map = WeakMap::new(collector);
 
     let key1 = Gc::new_in(1u64, collector);
-    assert_eq!(collector.allocator.arenas_len(), 1, "after key1 alloc");
-    map.insert(&key1, 10u64, collector);
-    assert_eq!(collector.allocator.arenas_len(), 1, "after insert key1");
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        1,
+        "after key1 alloc"
+    );
+    map.insert(&key1.clone(), 10u64, collector);
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        2,
+        "after insert key1"
+    );
     drop(key1);
     collector.collect();
-    assert_eq!(collector.allocator.arenas_len(), 0, "after first collect");
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        0,
+        "after first collect"
+    );
 
     let key2 = Gc::new_in(2u64, collector);
-    assert_eq!(collector.allocator.arenas_len(), 1, "after key2 alloc");
-    map.insert(&key2, 20u64, collector);
-    assert_eq!(collector.allocator.arenas_len(), 1, "after insert key2");
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        1,
+        "after key2 alloc"
+    );
+    map.insert(&key2.clone(), 20u64, collector);
+    assert_eq!(
+        collector.allocator.borrow().arenas_len(),
+        2,
+        "after insert key2"
+    );
 
-    assert_eq!(map.get(&key2), Some(&20u64));
+    assert_eq!(map.get(&key2.clone()), Some(&20u64));
 
     drop(key2);
     collector.collect();
-    assert_eq!(collector.allocator.arenas_len(), 0);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 0);
 }
 
 #[test]
@@ -327,16 +378,16 @@ fn remove_then_collect() {
     let mut map = WeakMap::new(collector);
     let key = Gc::new_in(1u64, collector);
 
-    map.insert(&key, 99u64, collector);
-    let removed = map.remove(&key);
-    assert_eq!(removed, Some(99u64));
+    map.insert(&key.clone(), 99u64, collector);
+    let removed = map.remove(&key.clone());
+    assert_eq!(removed, true);
 
     // the ephemeron stays in the queue until the key is collected
     drop(key);
     collector.collect();
 
     assert_eq!(
-        collector.allocator.arenas_len(),
+        collector.allocator.borrow().arenas_len(),
         0,
         "ephemeron leaked after remove"
     );
@@ -351,11 +402,15 @@ fn alive_wm() {
     let mut map = WeakMap::new(collector);
     let key = Gc::new_in(42u64, collector);
 
-    map.insert(&key, 100u64, collector);
-    assert_eq!(map.get(&key), Some(&100u64));
+    map.insert(&key.clone(), 100u64, collector);
+    assert_eq!(map.get(&key.clone()), Some(&100u64));
 
     collector.collect();
 
     // alive keys persist
-    assert_eq!(map.get(&key), Some(&100u64), "ephemeron swept prematurely");
+    assert_eq!(
+        map.get(&key.clone()),
+        Some(&100u64),
+        "ephemeron swept prematurely"
+    );
 }

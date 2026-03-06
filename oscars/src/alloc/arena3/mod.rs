@@ -1,0 +1,305 @@
+//! size-class memory pool. typed GC objects go into per size class slot pools
+//! where freed slots are recycled via a free list, raw byte allocations use
+//! separate bump pages
+//!
+//! TODO: move from `arena` to `mempool`
+
+use core::{cell::Cell, ptr::NonNull};
+use rust_alloc::alloc::{Layout, LayoutError};
+use rust_alloc::vec::Vec;
+
+mod alloc;
+
+pub use alloc::{ArenaHeapItem, ArenaPointer, ErasedArenaPointer};
+use alloc::{BumpPage, SlotPool};
+
+#[cfg(test)]
+mod tests;
+
+#[derive(Debug, Clone)]
+pub enum ArenaAllocError {
+    LayoutError(LayoutError),
+    OutOfMemory,
+    AlignmentNotPossible,
+}
+
+impl From<LayoutError> for ArenaAllocError {
+    fn from(value: LayoutError) -> Self {
+        Self::LayoutError(value)
+    }
+}
+
+const SIZE_CLASSES: &[usize] = &[16, 24, 32, 48, 64, 96, 128, 192, 256, 512, 1024, 2048];
+
+fn size_class_index_for(size: usize) -> usize {
+    let idx = SIZE_CLASSES.iter().copied().position(|sc| sc >= size);
+    debug_assert!(
+        idx.is_some(),
+        "object size {size}B exceeds the largest size class ({}B); \
+         consider adding a larger class",
+        SIZE_CLASSES.last().unwrap()
+    );
+    idx.unwrap_or(SIZE_CLASSES.len() - 1)
+}
+
+const DEFAULT_ARENA_SIZE: usize = 4096;
+const DEFAULT_HEAP_THRESHOLD: usize = 2_097_152;
+
+#[derive(Debug)]
+pub struct ArenaAllocator<'alloc> {
+    pub(crate) heap_threshold: usize,
+    pub(crate) arena_size: usize,
+    pub(crate) current_heap_size: usize,
+    // per size-class slot pools
+    pub(crate) typed_arenas: Vec<SlotPool>,
+    // bump pages for raw byte allocs
+    pub(crate) raw_arenas: Vec<BumpPage>,
+    // cached index of the last pool used by free_slot
+    pub(crate) free_cache: Cell<usize>,
+    // per size class cached index of the last pool used by alloc_slot
+    pub(crate) alloc_cache: [Cell<usize>; 12],
+    _marker: core::marker::PhantomData<&'alloc ()>,
+}
+
+impl<'alloc> Default for ArenaAllocator<'alloc> {
+    fn default() -> Self {
+        Self {
+            heap_threshold: DEFAULT_HEAP_THRESHOLD,
+            arena_size: DEFAULT_ARENA_SIZE,
+            current_heap_size: 0,
+            typed_arenas: Vec::new(),
+            raw_arenas: Vec::new(),
+            free_cache: Cell::new(usize::MAX),
+            alloc_cache: [
+                Cell::new(usize::MAX),
+                Cell::new(usize::MAX),
+                Cell::new(usize::MAX),
+                Cell::new(usize::MAX),
+                Cell::new(usize::MAX),
+                Cell::new(usize::MAX),
+                Cell::new(usize::MAX),
+                Cell::new(usize::MAX),
+                Cell::new(usize::MAX),
+                Cell::new(usize::MAX),
+                Cell::new(usize::MAX),
+                Cell::new(usize::MAX),
+            ],
+            _marker: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<'alloc> ArenaAllocator<'alloc> {
+    pub fn with_arena_size(mut self, arena_size: usize) -> Self {
+        self.arena_size = arena_size;
+        self
+    }
+    pub fn with_heap_threshold(mut self, heap_threshold: usize) -> Self {
+        self.heap_threshold = heap_threshold;
+        self
+    }
+
+    // total live pool + page count
+    pub fn arenas_len(&self) -> usize {
+        self.typed_arenas.len() + self.raw_arenas.len()
+    }
+
+    // exact heap size in bytes
+    fn heap_size(&self) -> usize {
+        self.current_heap_size
+    }
+
+    pub fn is_below_threshold(&self) -> bool {
+        // keep 25% headroom so collection fires before the last page fills
+        let margin = self.heap_threshold / 4;
+        self.heap_size() <= self.heap_threshold.saturating_sub(margin)
+    }
+
+    pub fn increase_threshold(&mut self) {
+        self.heap_threshold += self.arena_size * 4;
+    }
+}
+
+impl<'alloc> ArenaAllocator<'alloc> {
+    pub fn try_alloc<T>(&mut self, value: T) -> Result<ArenaPointer<'alloc, T>, ArenaAllocError> {
+        let needed = core::mem::size_of::<ArenaHeapItem<T>>().max(8);
+        let sc_idx = size_class_index_for(needed);
+        let slot_size = SIZE_CLASSES.get(sc_idx).copied().unwrap_or(needed);
+
+        let cached_idx = self.alloc_cache[sc_idx].get();
+        if cached_idx < self.typed_arenas.len() {
+            let pool = &self.typed_arenas[cached_idx];
+            if pool.slot_size == slot_size {
+                if let Some(slot_ptr) = pool.alloc_slot() {
+                    // SAFETY: slot_ptr was successfully allocated for this size class
+                    return unsafe {
+                        let dst = slot_ptr.as_ptr() as *mut ArenaHeapItem<T>;
+                        dst.write(ArenaHeapItem(value));
+                        Ok(ArenaPointer::from_raw(NonNull::new_unchecked(dst)))
+                    };
+                }
+            }
+        }
+
+        // try existing pools with matching slot_size first
+        for (i, pool) in self.typed_arenas.iter().enumerate().rev() {
+            if pool.slot_size == slot_size {
+                if let Some(slot_ptr) = pool.alloc_slot() {
+                    self.alloc_cache[sc_idx].set(i);
+                    // SAFETY: slot_ptr was successfully allocated for this size class
+                    return unsafe {
+                        let dst = slot_ptr.as_ptr() as *mut ArenaHeapItem<T>;
+                        dst.write(ArenaHeapItem(value));
+                        Ok(ArenaPointer::from_raw(NonNull::new_unchecked(dst)))
+                    };
+                }
+            }
+        }
+
+        // need a new pool for this size class
+        let total = self.arena_size.max(slot_size * 4);
+        let new_pool = SlotPool::try_init(slot_size, total, 16)?;
+        self.current_heap_size += new_pool.layout.size();
+        let slot_ptr = new_pool.alloc_slot().ok_or(ArenaAllocError::OutOfMemory)?;
+        let insert_idx = self.typed_arenas.len();
+        self.typed_arenas.push(new_pool);
+        self.alloc_cache[sc_idx].set(insert_idx);
+
+        // SAFETY: slot_ptr was successfully allocated for this size class
+        unsafe {
+            let dst = slot_ptr.as_ptr() as *mut ArenaHeapItem<T>;
+            dst.write(ArenaHeapItem(value));
+            Ok(ArenaPointer::from_raw(NonNull::new_unchecked(dst)))
+        }
+    }
+
+    // drops the value at `ptr` and returns the slot to the allocator
+    //
+    // SAFETY:
+    // `ptr` must be a live `ArenaHeapItem<T>` allocated by this allocator,
+    // must not be used after this call
+    pub unsafe fn free_slot_typed<T>(&mut self, ptr: NonNull<ArenaHeapItem<T>>) {
+        // SAFETY: guaranteed by caller
+        unsafe { core::ptr::drop_in_place(ptr.as_ptr()) };
+        self.free_slot(ptr.cast::<u8>());
+    }
+
+    pub fn free_slot(&mut self, ptr: NonNull<u8>) {
+        let cached = self.free_cache.get();
+        if cached < self.typed_arenas.len() {
+            let pool = &self.typed_arenas[cached];
+            if pool.owns(ptr) {
+                pool.free_slot(ptr);
+                return;
+            }
+        }
+
+        for (i, pool) in self.typed_arenas.iter().enumerate().rev() {
+            if pool.owns(ptr) {
+                pool.free_slot(ptr);
+                self.free_cache.set(i);
+                return;
+            }
+        }
+        debug_assert!(
+            false,
+            "free_slot called with pointer {ptr:p} not owned by any slot pool; \
+             possible double-free or pointer from a raw page"
+        );
+    }
+
+    // bump allocate raw bytes onto a BumpPage
+    pub fn try_alloc_bytes(&mut self, layout: Layout) -> Result<NonNull<[u8]>, ArenaAllocError> {
+        // try the most recent raw page first
+        if let Some(page) = self.raw_arenas.last() {
+            if let Ok(ptr) = page.try_alloc(layout) {
+                return Ok(ptr);
+            }
+        }
+        // allocate a new raw page with margin for padding
+        let margin = 64;
+        let total = self.arena_size.max(layout.size() + layout.align() + margin);
+        let max_align = layout.align().max(16);
+        let page = BumpPage::try_init(total, max_align)?;
+        self.current_heap_size += page.layout.size();
+        let ptr = page
+            .try_alloc(layout)
+            .map_err(|_| ArenaAllocError::OutOfMemory)?;
+        self.raw_arenas.push(page);
+        Ok(ptr)
+    }
+
+    // decrement live allocation count for the page owning ptr
+    pub fn dealloc_bytes(&mut self, ptr: NonNull<u8>) {
+        for page in self.raw_arenas.iter().rev() {
+            if page.owns(ptr) {
+                page.dealloc();
+                return;
+            }
+        }
+    }
+
+    // try to shrink a raw allocation in place
+    pub fn shrink_bytes_in_place(
+        &mut self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> bool {
+        for page in self.raw_arenas.iter().rev() {
+            if page.owns(ptr) {
+                return page.shrink_in_place(ptr, old_layout, new_layout);
+            }
+        }
+        false
+    }
+
+    // try to grow a raw allocation in place
+    pub fn grow_bytes_in_place(
+        &mut self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> bool {
+        for page in self.raw_arenas.iter().rev() {
+            if page.owns(ptr) {
+                return page.grow_in_place(ptr, old_layout, new_layout);
+            }
+        }
+        false
+    }
+
+    // drop empty slot pools and raw pages
+    pub fn drop_dead_arenas(&mut self) {
+        self.typed_arenas.retain(|p| {
+            if p.run_drop_check() {
+                self.current_heap_size = self.current_heap_size.saturating_sub(p.layout.size());
+                false
+            } else {
+                true
+            }
+        });
+        self.raw_arenas.retain(|p| {
+            if p.run_drop_check() {
+                self.current_heap_size = self.current_heap_size.saturating_sub(p.layout.size());
+                false
+            } else {
+                true
+            }
+        });
+        self.free_cache.set(usize::MAX);
+        for cache in &self.alloc_cache {
+            cache.set(usize::MAX);
+        }
+    }
+
+    // mark the slot at `ptr` as occupied (only typed slot pools have a bitmap)
+    pub fn mark_slot(&self, ptr: NonNull<u8>) {
+        for pool in self.typed_arenas.iter() {
+            if pool.owns(ptr) {
+                pool.mark_slot(ptr);
+                return;
+            }
+        }
+    }
+}

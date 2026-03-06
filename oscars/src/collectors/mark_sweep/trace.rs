@@ -299,6 +299,20 @@ unsafe impl<T: Trace> Trace for Vec<T> {
     });
 }
 
+#[cfg(feature = "gc_allocator")]
+impl<T: Trace, C: allocator_api2::alloc::Allocator> Finalize for allocator_api2::vec::Vec<T, C> {}
+#[cfg(feature = "gc_allocator")]
+// SAFETY: All the inner elements of the `Vec` are correctly marked
+unsafe impl<T: Trace, C: allocator_api2::alloc::Allocator> Trace
+    for allocator_api2::vec::Vec<T, C>
+{
+    custom_trace!(this, mark, {
+        for e in this {
+            mark(e);
+        }
+    });
+}
+
 // TODO: Needed for boa_engine
 
 /*

@@ -1,6 +1,7 @@
-use crate::alloc::arena2::{ArenaHeapItem, ArenaPointer, ErasedArenaPointer};
+use crate::alloc::arena3::{ArenaHeapItem, ArenaPointer, ErasedArenaPointer};
+use crate::collectors::collector::Collector;
+use crate::collectors::mark_sweep::Finalize;
 use crate::collectors::mark_sweep::internals::NonTraceable;
-use crate::collectors::mark_sweep::{Finalize, MarkSweepGarbageCollector};
 use crate::collectors::mark_sweep::{internals::GcBox, trace::Trace};
 use core::any::TypeId;
 use core::cmp::Ordering;
@@ -15,28 +16,35 @@ pub struct Gc<T: Trace + ?Sized + 'static> {
 }
 
 impl<T: Trace> Gc<T> {
-    /// Constructs a new `Gc<T>` with the given value.
     #[must_use]
-    pub fn new_in(value: T, collector: &mut MarkSweepGarbageCollector) -> Self {
-        // Create GcBox
-        let gc_box = GcBox::new(value, &collector.state);
-        let inner_ptr = collector.alloc_with_collection(gc_box).to_erased();
+    pub fn new_in<C: Collector>(value: T, collector: &C) -> Self {
+        let inner_ptr = collector
+            .alloc_gc_node(value)
+            .expect("Failed to allocate Gc node")
+            .to_erased();
 
-        Self {
+        // SAFETY: safe because the gc tracks this
+        let inner_ptr = unsafe { inner_ptr.extend_lifetime() };
+
+        let gc = Self {
             inner_ptr,
             marker: PhantomData,
-        }
+        };
+        // GcBox is allocated with 0 roots, increment to 1 for the new handle
+        gc.inner_ptr().as_inner_ref().inc_roots();
+        gc
     }
+}
 
+impl<T: Trace> Gc<T> {
     pub(crate) fn inner_ptr(&self) -> ArenaPointer<'static, GcBox<T>> {
         unsafe { self.inner_ptr.to_typed_arena_pointer::<GcBox<T>>() }
     }
 }
 
 impl<T: Trace + ?Sized> Gc<T> {
-    pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
+    pub(crate) fn as_sized_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
         let heap_item = unsafe { self.as_heap_ptr().as_mut() };
-        // SAFETY: We just removed this value from a NonNull.
         unsafe { NonNull::new_unchecked(heap_item.as_ptr()) }
     }
 
@@ -47,7 +55,7 @@ impl<T: Trace + ?Sized> Gc<T> {
     }
 
     pub(crate) fn inner_ref(&self) -> &GcBox<NonTraceable> {
-        unsafe { self.erased_inner_ptr().as_ref() }
+        unsafe { self.as_sized_inner_ptr().as_ref() }
     }
 
     pub fn size(&self) -> usize {
@@ -63,46 +71,8 @@ impl<T: Trace + ?Sized> Gc<T> {
     }
 }
 
-impl<T: Trace + ?Sized> Finalize for Gc<T> {
-    fn finalize(&self) {
-        unsafe {
-            self.erased_inner_ptr().as_ref().dec_roots();
-        };
-    }
-}
-
-unsafe impl<T: Trace + ?Sized> Trace for Gc<T> {
-    unsafe fn trace(&self, color: crate::collectors::mark_sweep::TraceColor) {
-        let trace_fn = unsafe { self.erased_inner_ptr().as_ref().trace_fn() };
-        unsafe { trace_fn(self.as_heap_ptr(), color) }
-    }
-
-    fn run_finalizer(&self) {
-        Finalize::finalize(self);
-    }
-}
-
-impl<T: Trace> Clone for Gc<T> {
-    fn clone(&self) -> Self {
-        // Increment root count and copy pointer
-        self.inner_ptr().as_inner_ref().inc_roots();
-        Self {
-            inner_ptr: self.inner_ptr,
-            marker: PhantomData,
-        }
-    }
-}
-
-impl<T: Trace + ?Sized> Drop for Gc<T> {
-    fn drop(&mut self) {
-        // SAFETY: the pointer should be valid for a reference.
-        Finalize::finalize(self);
-    }
-}
-
 impl<T: Trace> Deref for Gc<T> {
     type Target = T;
-
     fn deref(&self) -> &T {
         self.inner_ptr().as_inner_ref().value()
     }
@@ -124,22 +94,18 @@ impl<T: Trace + PartialOrd> PartialOrd for Gc<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         (**self).partial_cmp(&**other)
     }
-
     #[inline(always)]
     fn lt(&self, other: &Self) -> bool {
         **self < **other
     }
-
     #[inline(always)]
     fn le(&self, other: &Self) -> bool {
         **self <= **other
     }
-
     #[inline(always)]
     fn gt(&self, other: &Self) -> bool {
         **self > **other
     }
-
     #[inline(always)]
     fn ge(&self, other: &Self) -> bool {
         **self >= **other
@@ -161,5 +127,40 @@ impl<T: Trace + Display> Display for Gc<T> {
 impl<T: Trace + Debug> Debug for Gc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Debug::fmt(&**self, f)
+    }
+}
+
+impl<T: Trace + ?Sized> Finalize for Gc<T> {
+    fn finalize(&self) {
+        unsafe {
+            self.as_sized_inner_ptr().as_ref().dec_roots();
+        }
+    }
+}
+
+unsafe impl<T: Trace + ?Sized> Trace for Gc<T> {
+    unsafe fn trace(&self, color: crate::collectors::mark_sweep::TraceColor) {
+        let trace_fn = unsafe { self.as_sized_inner_ptr().as_ref().trace_fn() };
+        unsafe { trace_fn(self.as_heap_ptr(), color) }
+    }
+
+    fn run_finalizer(&self) {
+        Finalize::finalize(self);
+    }
+}
+
+impl<T: Trace> Clone for Gc<T> {
+    fn clone(&self) -> Self {
+        self.inner_ptr().as_inner_ref().inc_roots();
+        Self {
+            inner_ptr: self.inner_ptr,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Trace + ?Sized> Drop for Gc<T> {
+    fn drop(&mut self) {
+        Finalize::finalize(self);
     }
 }
