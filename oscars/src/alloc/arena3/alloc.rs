@@ -38,8 +38,11 @@ impl<'arena> ErasedArenaPointer<'arena> {
         self.0
     }
 
-    // retype this pointer
-    // SAFETY: caller must ensure `T` matches the original allocation
+    /// Retype this pointer
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `T` matches the original allocation
     pub unsafe fn to_typed_arena_pointer<T>(self) -> ArenaPointer<'arena, T> {
         ArenaPointer(self.0.cast::<ArenaHeapItem<T>>(), PhantomData)
     }
@@ -48,9 +51,11 @@ impl<'arena> ErasedArenaPointer<'arena> {
         self.0
     }
 
-    // extend the lifetime of this erased arena pointer to 'static
-    //
-    // SAFETY: same as ArenaPointer::extend_lifetime
+    /// Extend the lifetime of this erased arena pointer to 'static
+    ///
+    /// # Safety
+    ///
+    /// Safe because the gc collector owns the arena and keeps it alive
     pub(crate) unsafe fn extend_lifetime(self) -> ErasedArenaPointer<'static> {
         ErasedArenaPointer(self.0, PhantomData)
     }
@@ -85,7 +90,7 @@ impl<'arena, T> ArenaPointer<'arena, T> {
     }
 }
 
-/// SlotPool ///
+// ==== SlotPool ==== //
 
 impl core::fmt::Debug for SlotPool {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -132,7 +137,7 @@ impl SlotPool {
         // example (512 capacity, 16 slot size): guess 32 slots -> 8 byte bitmap, real 504 bytes left -> 31 slots
         // layout: [ 8-byte bitmap ][ 31 x 16-byte slots ] = 504 bytes used
         let estimated = total_capacity / slot_size;
-        let bitmap_words = (estimated + 63) / 64;
+        let bitmap_words = estimated.div_ceil(64);
         let bitmap_bytes = bitmap_words * 8;
         let slot_area = total_capacity.saturating_sub(bitmap_bytes);
         let slot_count = slot_area / slot_size;

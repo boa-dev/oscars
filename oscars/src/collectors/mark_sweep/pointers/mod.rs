@@ -6,3 +6,4 @@ pub(crate) mod weak_map;
 
 pub use gc::Gc;
 pub use weak::WeakGc;
+pub use weak_map::{ErasedWeakMap, WeakMap};
