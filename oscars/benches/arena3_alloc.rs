@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use oscars::alloc::arena3::ArenaAllocator;
 use std::hint::black_box as bb;
 
@@ -40,7 +40,9 @@ fn bench_arena3_alloc(c: &mut Criterion) {
                     ptrs.push(alloc.try_alloc(i).unwrap());
                 }
                 for ptr in ptrs {
-                    unsafe { alloc.free_slot_typed(ptr.as_ptr()); }
+                    unsafe {
+                        alloc.free_slot_typed(ptr.as_ptr());
+                    }
                 }
                 alloc
             },
