@@ -509,8 +509,7 @@ impl<T: Display + ?Sized> Display for GcRefMut<'_, T> {
     }
 }
 
-// SAFETY: GcCell<T> tracks it's `BorrowState` is `Writing`
-unsafe impl<T: ?Sized + Send> Send for GcRefCell<T> {}
+// GcRefCell is intentionally !Send because borrow state uses Cell and is not thread-safe.
 
 impl<T: Trace + Clone> Clone for GcRefCell<T> {
     fn clone(&self) -> Self {

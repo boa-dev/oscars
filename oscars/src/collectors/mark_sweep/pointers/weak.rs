@@ -6,10 +6,13 @@ use crate::{
     collectors::collector::Collector,
     collectors::mark_sweep::{Trace, internals::Ephemeron},
 };
+use core::marker::PhantomData;
+use rust_alloc::rc::Rc;
 
 #[repr(transparent)]
 pub struct WeakGc<T: Trace + 'static> {
     inner_ptr: ArenaPointer<'static, Ephemeron<T, ()>>,
+    _not_send_sync: PhantomData<Rc<()>>,
 }
 
 impl<T: Trace> WeakGc<T> {
@@ -24,6 +27,9 @@ impl<T: Trace> WeakGc<T> {
         // SAFETY: safe because the gc tracks this
         let inner_ptr = unsafe { inner_ptr.extend_lifetime() };
 
-        Self { inner_ptr }
+        Self {
+            inner_ptr,
+            _not_send_sync: PhantomData,
+        }
     }
 }

@@ -5,7 +5,9 @@ use crate::{
     collectors::collector::Collector,
     collectors::mark_sweep::{Finalize, TraceColor, internals::Ephemeron, trace::Trace},
 };
+use core::marker::PhantomData;
 use core::ptr::NonNull;
+use rust_alloc::rc::Rc;
 
 use super::Gc;
 
@@ -95,6 +97,7 @@ impl<K: Trace, V: Trace> ErasedWeakMap for WeakMapInner<K, V> {
 pub struct WeakMap<K: Trace + 'static, V: Trace + 'static> {
     // raw pointer to collector owned memory
     inner: NonNull<WeakMapInner<K, V>>,
+    _not_send_sync: PhantomData<Rc<()>>,
 }
 
 impl<K: Trace, V: Trace> WeakMap<K, V> {
@@ -109,7 +112,10 @@ impl<K: Trace, V: Trace> WeakMap<K, V> {
         let inner = unsafe { NonNull::new_unchecked(inner_ptr) };
 
         collector.track_weak_map(inner);
-        Self { inner }
+        Self {
+            inner,
+            _not_send_sync: PhantomData,
+        }
     }
 
     pub fn insert<C: Collector>(&mut self, key: &Gc<K>, value: V, collector: &C) {

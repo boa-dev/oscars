@@ -1,6 +1,7 @@
 use core::{cell::Cell, marker::PhantomData, ptr::NonNull};
 
 use rust_alloc::alloc::{Layout, alloc, dealloc, handle_alloc_error};
+use rust_alloc::rc::Rc;
 
 use crate::alloc::arena3::ArenaAllocError;
 
@@ -31,7 +32,11 @@ impl<T: ?Sized> ArenaHeapItem<T> {
 // `'arena` prevents outliving the allocator
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct ErasedArenaPointer<'arena>(NonNull<u8>, PhantomData<&'arena ()>);
+pub struct ErasedArenaPointer<'arena>(
+    NonNull<u8>,
+    PhantomData<&'arena ()>,
+    PhantomData<Rc<()>>,
+);
 
 impl<'arena> ErasedArenaPointer<'arena> {
     pub fn as_ptr(&self) -> NonNull<u8> {
@@ -44,7 +49,7 @@ impl<'arena> ErasedArenaPointer<'arena> {
     ///
     /// Caller must ensure `T` matches the original allocation
     pub unsafe fn to_typed_arena_pointer<T>(self) -> ArenaPointer<'arena, T> {
-        ArenaPointer(self.0.cast::<ArenaHeapItem<T>>(), PhantomData)
+        ArenaPointer(self.0.cast::<ArenaHeapItem<T>>(), PhantomData, PhantomData)
     }
 
     pub fn as_non_null(&self) -> NonNull<u8> {
@@ -57,18 +62,22 @@ impl<'arena> ErasedArenaPointer<'arena> {
     ///
     /// Safe because the gc collector owns the arena and keeps it alive
     pub(crate) unsafe fn extend_lifetime(self) -> ErasedArenaPointer<'static> {
-        ErasedArenaPointer(self.0, PhantomData)
+        ErasedArenaPointer(self.0, PhantomData, PhantomData)
     }
 }
 
 // typed pointer into a pool slot
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct ArenaPointer<'arena, T>(NonNull<ArenaHeapItem<T>>, PhantomData<&'arena T>);
+pub struct ArenaPointer<'arena, T>(
+    NonNull<ArenaHeapItem<T>>,
+    PhantomData<&'arena T>,
+    PhantomData<Rc<()>>,
+);
 
 impl<'arena, T> ArenaPointer<'arena, T> {
     pub(crate) unsafe fn from_raw(raw: NonNull<ArenaHeapItem<T>>) -> Self {
-        Self(raw, PhantomData)
+        Self(raw, PhantomData, PhantomData)
     }
 
     pub fn as_inner_ref(&self) -> &'arena T {
@@ -81,12 +90,12 @@ impl<'arena, T> ArenaPointer<'arena, T> {
     }
 
     pub fn to_erased(self) -> ErasedArenaPointer<'arena> {
-        ErasedArenaPointer(self.0.cast::<u8>(), PhantomData)
+        ErasedArenaPointer(self.0.cast::<u8>(), PhantomData, PhantomData)
     }
 
     // SAFETY: safe because the gc collector owns the arena and keeps it alive
     pub(crate) unsafe fn extend_lifetime(self) -> ArenaPointer<'static, T> {
-        ArenaPointer(self.0, PhantomData)
+        ArenaPointer(self.0, PhantomData, PhantomData)
     }
 }
 

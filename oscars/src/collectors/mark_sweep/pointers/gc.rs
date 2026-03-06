@@ -8,11 +8,22 @@ use core::cmp::Ordering;
 use core::fmt::{self, Debug, Display};
 use core::ops::Deref;
 use core::{marker::PhantomData, ptr::NonNull};
+use rust_alloc::rc::Rc;
 
+/// # Thread Safety
+///
+/// `Gc<T>` is deliberately `!Send` and `!Sync`. The garbage collector
+/// relies on non-atomic interior mutability (`Cell`) for root counting
+/// and header metadata. Moving a `Gc<T>` across threads would create
+/// data races on `GcHeader` fields, which is undefined behavior.
+///
+/// If multi-threaded GC is needed in the future, header fields must
+/// be migrated to atomic types and the collector API redesigned accordingly.
 /// A garbage-collected pointer type over an immutable value.
 pub struct Gc<T: Trace + ?Sized + 'static> {
     pub(crate) inner_ptr: ErasedArenaPointer<'static>,
     pub(crate) marker: PhantomData<T>,
+    _not_send_sync: PhantomData<Rc<()>>,
 }
 
 impl<T: Trace> Gc<T> {
@@ -29,6 +40,7 @@ impl<T: Trace> Gc<T> {
         let gc = Self {
             inner_ptr,
             marker: PhantomData,
+            _not_send_sync: PhantomData,
         };
         // GcBox is allocated with 0 roots, increment to 1 for the new handle
         gc.inner_ptr().as_inner_ref().inc_roots();
@@ -155,6 +167,7 @@ impl<T: Trace> Clone for Gc<T> {
         Self {
             inner_ptr: self.inner_ptr,
             marker: PhantomData,
+            _not_send_sync: PhantomData,
         }
     }
 }
