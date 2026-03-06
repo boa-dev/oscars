@@ -2,9 +2,9 @@
 
 use core::any::TypeId;
 
-use crate::collectors::mark_sweep::Finalize;
-use crate::collectors::mark_sweep::internals::gc_header::{GcHeader, HeaderColor};
-use crate::collectors::mark_sweep::{Trace, TraceColor};
+use crate::collectors::mark_sweep_arena2::Finalize;
+use crate::collectors::mark_sweep_arena2::internals::gc_header::{GcHeader, HeaderColor};
+use crate::collectors::mark_sweep_arena2::{Trace, TraceColor};
 
 use super::{DropFn, TraceFn, VTable, vtable_of};
 
@@ -26,17 +26,17 @@ unsafe impl Trace for NonTraceable {
 
 // NOTE: This may not be the best idea, but let's find out.
 //
-use crate::alloc::mempool3::{ErasedPoolPointer, PoolItem};
+use crate::alloc::arena2::{ArenaHeapItem, ErasedArenaPointer};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 pub struct WeakGcBox<T: Trace + ?Sized + 'static> {
-    pub(crate) inner_ptr: ErasedPoolPointer<'static>,
+    pub(crate) inner_ptr: ErasedArenaPointer<'static>,
     pub(crate) marker: PhantomData<T>,
 }
 
 impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
-    pub fn new(inner_ptr: ErasedPoolPointer<'static>) -> Self {
+    pub fn new(inner_ptr: ErasedArenaPointer<'static>) -> Self {
         Self {
             inner_ptr,
             marker: PhantomData,
@@ -44,17 +44,17 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
     }
 
     pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
-        // SAFETY: `as_heap_ptr` returns a valid pointer to
-        // `PoolItem` whose lifetime is tied to the pool
-        let heap_item: *mut PoolItem<GcBox<NonTraceable>> = self.as_heap_ptr().as_ptr();
-        // SAFETY: `PoolItem` is repr(transparent), so pointing to and returning field 0 is valid.
-        unsafe { NonNull::new_unchecked(&raw mut (*heap_item).0) }
+        // SAFETY: `&raw mut` prevents creating `&mut` reference into the
+        // arena to avoid stacked borrows during Gc tracing
+        let heap_ptr = self.as_heap_ptr();
+        let value_ptr = ArenaHeapItem::as_value_ptr(heap_ptr);
+        unsafe { NonNull::new_unchecked(value_ptr) }
     }
 
-    pub(crate) fn as_heap_ptr(&self) -> NonNull<PoolItem<GcBox<NonTraceable>>> {
+    pub(crate) fn as_heap_ptr(&self) -> NonNull<ArenaHeapItem<GcBox<NonTraceable>>> {
         self.inner_ptr
             .as_non_null()
-            .cast::<PoolItem<GcBox<NonTraceable>>>()
+            .cast::<ArenaHeapItem<GcBox<NonTraceable>>>()
     }
 
     pub(crate) fn inner_ref(&self) -> &GcBox<NonTraceable> {
@@ -69,10 +69,10 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
 }
 
 impl<T: Trace> WeakGcBox<T> {
-    pub(crate) fn inner_ptr(&self) -> crate::alloc::mempool3::PoolPointer<'static, GcBox<T>> {
+    pub(crate) fn inner_ptr(&self) -> crate::alloc::arena2::ArenaPointer<'static, GcBox<T>> {
         // SAFETY: This pointer started out as a `GcBox<T>`, so it's safe to cast
         // it back, the `PhantomData` guarantees that the type `T` is still correct
-        unsafe { self.inner_ptr.to_typed_pool_pointer::<GcBox<T>>() }
+        unsafe { self.inner_ptr.to_typed_arena_pointer::<GcBox<T>>() }
     }
 
     pub fn value(&self) -> &T {

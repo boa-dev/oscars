@@ -44,6 +44,15 @@ impl<T: ?Sized> ArenaHeapItem<T> {
         &mut self.value as *mut T
     }
 
+    /// Returns a raw mutable pointer to the value
+    ///
+    /// This avoids creating a `&mut self` reference, which can lead to stacked borrows
+    /// if shared references to the heap item exist
+    pub(crate) fn as_value_ptr(ptr: NonNull<Self>) -> *mut T {
+        // SAFETY: `&raw mut` computes the field address without creating a reference
+        unsafe { &raw mut (*ptr.as_ptr()).value }
+    }
+
     fn value_mut(&mut self) -> &mut T {
         &mut self.value
     }
@@ -133,6 +142,15 @@ impl<'arena> ErasedArenaPointer<'arena> {
         self.0.as_ptr()
     }
 
+    /// Extend the lifetime of this erased arena pointer to 'static
+    ///
+    /// SAFETY:
+    ///
+    /// safe because the gc collector owns the arena and keeps it alive
+    pub(crate) unsafe fn extend_lifetime(self) -> ErasedArenaPointer<'static> {
+        ErasedArenaPointer(self.0, PhantomData)
+    }
+
     /// Returns an [`ArenaPointer`] for the current [`ErasedArenaPointer`]
     ///
     /// # Safety
@@ -177,6 +195,15 @@ impl<'arena, T> ArenaPointer<'arena, T> {
     /// Convert the current ArenaPointer into an `ErasedArenaPointer`
     pub fn to_erased(self) -> ErasedArenaPointer<'arena> {
         self.0
+    }
+
+    /// Extend the lifetime of this arena pointer to 'static
+    ///
+    /// SAFETY:
+    ///
+    /// safe because the gc collector owns the arena and keeps it alive
+    pub(crate) unsafe fn extend_lifetime(self) -> ArenaPointer<'static, T> {
+        ArenaPointer(self.0.extend_lifetime(), PhantomData)
     }
 }
 
