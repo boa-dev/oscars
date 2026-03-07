@@ -17,8 +17,6 @@ use rust_alloc::vec::Vec;
 
 #[cfg(feature = "std")]
 use std::collections::{HashMap, HashSet};
-#[cfg(feature = "std")]
-use std::path::{Path, PathBuf};
 
 /// Substitute for the [`Drop`] trait for garbage collected types.
 pub trait Finalize {
