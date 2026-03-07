@@ -644,4 +644,23 @@ mod weak_gc_tests {
 
         let _weak = WeakGc::new_in(&strong, collector);
     }
+
+    #[test]
+    fn weak_gc_ephemeron_swept_after_strong_drop() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_arena_size(256)
+            .with_heap_threshold(512);
+
+        let strong = Gc::new_in(GcRefCell::new(42u64), collector);
+        let _weak = WeakGc::new_in(&strong, collector);
+
+        drop(strong);
+        collector.collect();
+
+        assert_eq!(
+            collector.allocator.borrow().arenas_len(),
+            0,
+            "WeakGc ephemeron leaked after strong reference dropped"
+        );
+    }
 }
