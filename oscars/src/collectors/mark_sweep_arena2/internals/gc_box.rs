@@ -44,10 +44,11 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
     }
 
     pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
-        // SAFETY: `value` is private, so we find its address by skipping past the first field
-        let raw_base = self.as_heap_ptr().as_ptr().cast::<u8>();
-        let value_addr = unsafe { raw_base.add(size_of::<usize>()) };
-        unsafe { NonNull::new_unchecked(value_addr.cast()) }
+        // SAFETY: `as_value_ptr` prevents creating `&mut` reference into the
+        // arena to avoid stacked borrows during Gc tracing
+        let heap_ptr = self.as_heap_ptr();
+        let value_ptr = unsafe { heap_ptr.as_ref().as_value_ptr() };
+        unsafe { NonNull::new_unchecked(value_ptr) }
     }
 
     pub(crate) fn as_heap_ptr(&self) -> NonNull<ArenaHeapItem<GcBox<NonTraceable>>> {

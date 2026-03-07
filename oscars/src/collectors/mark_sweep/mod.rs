@@ -181,6 +181,10 @@ impl MarkSweepGarbageCollector {
 
     // Force drops all elements in the internal tracking queues and clears
     // them without regard for reachability.
+    //
+    // NOTE: This intentionally differs from arena2's sweep_all_queues.
+    // arena3 uses`free_slot` calls to reclaim memory.
+    // arena2 uses a bitmap (`mark_dropped`) and reclaims automatically
     fn sweep_all_queues(&self) {
         let ephemerons = core::mem::take(&mut *self.ephemeron_queue.borrow_mut());
         for ephemeron in ephemerons {

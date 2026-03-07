@@ -1,28 +1,15 @@
-//! An Ephemeron implementation
-
 use core::any::TypeId;
 use core::marker::PhantomData;
 
 use crate::{
     alloc::arena2::ArenaHeapItem,
-    collectors::mark_sweep_arena2::pointers::Gc,
     collectors::mark_sweep_arena2::{
-        TraceColor,
+        ErasedEphemeron, Finalize, TraceColor,
         internals::{GcBox, WeakGcBox},
+        pointers::Gc,
         trace::Trace,
     },
 };
-
-pub(crate) type ErasedEphemeron = core::ptr::NonNull<
-    ArenaHeapItem<
-        Ephemeron<
-            crate::collectors::mark_sweep_arena2::internals::NonTraceable,
-            crate::collectors::mark_sweep_arena2::internals::NonTraceable,
-        >,
-    >,
->;
-
-use crate::collectors::mark_sweep_arena2::Finalize;
 
 pub struct Ephemeron<K: Trace + ?Sized + 'static, V: Trace + 'static> {
     pub(crate) value: GcBox<V>,

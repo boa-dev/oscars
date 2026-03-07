@@ -45,10 +45,10 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
 
     pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
         use crate::alloc::arena3::ArenaHeapItem;
-        // SAFETY: `ArenaHeapItem` is `repr(transparent)`, use addr_of_mut! to avoid
+        // SAFETY: `ArenaHeapItem` is `repr(transparent)`, use `&raw mut` to avoid
         // creating a &mut reference during trace
         let raw: *mut ArenaHeapItem<GcBox<NonTraceable>> = self.as_heap_ptr().as_ptr();
-        unsafe { NonNull::new_unchecked(core::ptr::addr_of_mut!((*raw).0)) }
+        unsafe { NonNull::new_unchecked(&raw mut (*raw).0) }
     }
 
     pub(crate) fn as_heap_ptr(&self) -> NonNull<ArenaHeapItem<GcBox<NonTraceable>>> {

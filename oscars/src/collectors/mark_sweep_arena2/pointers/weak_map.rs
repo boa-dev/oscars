@@ -1,4 +1,3 @@
-use crate::alloc::arena2::ErasedArenaPointer;
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -20,9 +19,8 @@ pub trait ErasedWeakMap {
 //
 // TODO: a HashTable might be a better approach here
 struct WeakMapInner<K: Trace + 'static, V: Trace + 'static> {
-    entries: FxHashMap<usize, ErasedArenaPointer<'static>>,
+    entries: FxHashMap<usize, ArenaPointer<'static, Ephemeron<K, V>>>,
     is_alive: core::cell::Cell<bool>,
-    _marker: core::marker::PhantomData<(K, V)>,
 }
 
 impl<K: Trace, V: Trace> WeakMapInner<K, V> {
@@ -30,14 +28,12 @@ impl<K: Trace, V: Trace> WeakMapInner<K, V> {
         Self {
             entries: FxHashMap::default(),
             is_alive: core::cell::Cell::new(true),
-            _marker: core::marker::PhantomData,
         }
     }
 
     fn remove_and_invalidate(&mut self, key_addr: usize) {
         if let Some(old_ephemeron) = self.entries.remove(&key_addr) {
-            let p = unsafe { old_ephemeron.to_typed_arena_pointer::<Ephemeron<K, V>>() };
-            p.as_inner_ref().invalidate();
+            old_ephemeron.as_inner_ref().invalidate();
         }
     }
 
@@ -46,15 +42,14 @@ impl<K: Trace, V: Trace> WeakMapInner<K, V> {
         key_addr: usize,
         ephemeron_ptr: ArenaPointer<'static, Ephemeron<K, V>>,
     ) {
-        self.entries.insert(key_addr, ephemeron_ptr.to_erased());
+        self.entries.insert(key_addr, ephemeron_ptr);
     }
 
     fn get(&self, key: &Gc<K>) -> Option<&V> {
         let key_addr = key.inner_ptr.as_non_null().as_ptr() as usize;
-        self.entries.get(&key_addr).map(|p| {
-            let typed = unsafe { p.to_typed_arena_pointer::<Ephemeron<K, V>>() };
-            typed.as_inner_ref().value()
-        })
+        self.entries
+            .get(&key_addr)
+            .map(|p| p.as_inner_ref().value())
     }
 
     fn is_key_alive(&self, key: &Gc<K>) -> bool {
@@ -69,8 +64,7 @@ impl<K: Trace, V: Trace> WeakMapInner<K, V> {
         self.entries
             .remove(&key_addr)
             .map(|p| {
-                let typed = unsafe { p.to_typed_arena_pointer::<Ephemeron<K, V>>() };
-                typed.as_inner_ref().invalidate();
+                p.as_inner_ref().invalidate();
             })
             .is_some()
     }
@@ -79,8 +73,7 @@ impl<K: Trace, V: Trace> WeakMapInner<K, V> {
 impl<K: Trace, V: Trace> ErasedWeakMap for WeakMapInner<K, V> {
     fn prune_dead_entries(&mut self, color: TraceColor) {
         self.entries.retain(|_, ephemeron_ptr| {
-            let typed = unsafe { ephemeron_ptr.to_typed_arena_pointer::<Ephemeron<K, V>>() };
-            let ephemeron = typed.as_inner_ref();
+            let ephemeron = ephemeron_ptr.as_inner_ref();
             ephemeron.is_reachable(color)
         });
     }
@@ -101,7 +94,6 @@ impl<K: Trace, V: Trace> ErasedWeakMap for WeakMapInner<K, V> {
 pub struct WeakMap<K: Trace + 'static, V: Trace + 'static> {
     // raw pointer to collector owned memory
     inner: NonNull<WeakMapInner<K, V>>,
-    _marker: core::marker::PhantomData<(K, V)>,
 }
 
 impl<K: Trace, V: Trace> WeakMap<K, V> {
@@ -118,10 +110,7 @@ impl<K: Trace, V: Trace> WeakMap<K, V> {
         let inner = unsafe { NonNull::new_unchecked(inner_ptr) };
 
         collector.track_weak_map(inner);
-        Self {
-            inner,
-            _marker: core::marker::PhantomData,
-        }
+        Self { inner }
     }
 
     pub fn insert(
@@ -141,9 +130,8 @@ impl<K: Trace, V: Trace> WeakMap<K, V> {
             .alloc_ephemeron_node(key, value)
             .expect("Failed to allocate ephemeron");
 
-        // SAFETY: safe because the gc tracks this, lifetime extension
-        let ephemeron_ptr: crate::alloc::arena2::ArenaPointer<'static, _> =
-            unsafe { core::mem::transmute(ephemeron_ptr) };
+        // SAFETY: safe because the gc tracks this
+        let ephemeron_ptr = unsafe { ephemeron_ptr.extend_lifetime() };
 
         //insert the new node using another short lived mutable borrow
         // SAFETY: we have unique access to `self`
@@ -157,7 +145,7 @@ impl<K: Trace, V: Trace> WeakMap<K, V> {
 
     pub fn is_key_alive(&self, key: &Gc<K>) -> bool {
         // SAFETY: we hold `&self` so the map is alive and unchanged
-        unsafe { WeakMapInner::<K, V>::is_key_alive(self.inner.as_ref(), key) }
+        unsafe { self.inner.as_ref().is_key_alive(key) }
     }
 
     pub fn remove(&mut self, key: &Gc<K>) -> bool {

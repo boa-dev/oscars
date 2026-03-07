@@ -1,5 +1,5 @@
 use crate::collectors::mark_sweep_arena2::MarkSweepGarbageCollector;
-use crate::collectors::mark_sweep_arena2::{Finalize, Trace, TraceColor};
+use crate::collectors::mark_sweep_arena2::trace::{Finalize, Trace, TraceColor};
 
 use super::Gc;
 use super::WeakMap;

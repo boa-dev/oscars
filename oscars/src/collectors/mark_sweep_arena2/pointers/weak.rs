@@ -23,9 +23,8 @@ impl<T: Trace> WeakGc<T> {
             .alloc_ephemeron_node(value, ())
             .expect("Failed to allocate Ephemeron node");
 
-        // SAFETY: safe because the gc tracks this, lifetime extension
-        let inner_ptr: crate::alloc::arena2::ArenaPointer<'static, _> =
-            unsafe { core::mem::transmute(inner_ptr) };
+        // SAFETY: safe because the gc tracks this
+        let inner_ptr = unsafe { inner_ptr.extend_lifetime() };
 
         Self { inner_ptr }
     }
