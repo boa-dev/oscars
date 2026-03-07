@@ -4,7 +4,7 @@ use core::any::TypeId;
 use core::marker::PhantomData;
 
 use crate::{
-    alloc::arena3::ArenaHeapItem,
+    alloc::mempool3::PoolItem,
     collectors::mark_sweep::{
         ErasedEphemeron, TraceColor,
         internals::{GcBox, WeakGcBox},
@@ -112,11 +112,7 @@ pub(crate) const fn vtable_of<K: Trace + 'static, V: Trace + 'static>() -> &'sta
             color: TraceColor,
         ) {
             // SAFETY: The caller must ensure that the passed erased pointer is `GcBox<Self>`.
-            let ephemeron = unsafe {
-                this.cast::<ArenaHeapItem<Ephemeron<K, V>>>()
-                    .as_ref()
-                    .value()
-            };
+            let ephemeron = unsafe { this.cast::<PoolItem<Ephemeron<K, V>>>().as_ref().value() };
 
             // SAFETY: The implementor must ensure that `trace` is correctly implemented.
             unsafe {
@@ -127,8 +123,8 @@ pub(crate) const fn vtable_of<K: Trace + 'static, V: Trace + 'static>() -> &'sta
 
         // SAFETY: The caller must ensure that the passed erased pointer is `GcBox<Self>`.
         unsafe fn drop_fn<K: Trace + 'static, V: Trace + 'static>(this: ErasedEphemeron) {
-            // SAFETY: The caller must ensure that the passed erased pointer is `ArenaHeapItem<Ephemeron<K, V>>`.
-            let mut this = this.cast::<ArenaHeapItem<Ephemeron<K, V>>>();
+            // SAFETY: The caller must ensure that the passed erased pointer is `PoolItem<Ephemeron<K, V>>`.
+            let mut this = this.cast::<PoolItem<Ephemeron<K, V>>>();
 
             // drop the Ephemeron value in place, the arena bitmap is cleared
             // by the sweep loop after this function returns
@@ -141,17 +137,11 @@ pub(crate) const fn vtable_of<K: Trace + 'static, V: Trace + 'static>() -> &'sta
             trace_fn: EphemeronMarker::<K, V>::trace_fn::<K, V>,
             drop_fn: EphemeronMarker::<K, V>::drop_fn::<K, V>,
             is_reachable_fn: |this, color| unsafe {
-                let ephemeron = this
-                    .cast::<ArenaHeapItem<Ephemeron<K, V>>>()
-                    .as_ref()
-                    .value();
+                let ephemeron = this.cast::<PoolItem<Ephemeron<K, V>>>().as_ref().value();
                 ephemeron.active.get() && ephemeron.key.is_reachable(color)
             },
             finalize_fn: |this| unsafe {
-                let ephemeron = this
-                    .cast::<ArenaHeapItem<Ephemeron<K, V>>>()
-                    .as_ref()
-                    .value();
+                let ephemeron = this.cast::<PoolItem<Ephemeron<K, V>>>().as_ref().value();
                 Finalize::finalize(ephemeron);
             },
             _key_type_id: TypeId::of::<K>(),

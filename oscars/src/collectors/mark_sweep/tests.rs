@@ -8,16 +8,16 @@ use super::cell::GcRefCell;
 #[test]
 fn basic_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(64)
+        .with_page_size(64)
         .with_heap_threshold(128);
 
     let gc = Gc::new_in(GcRefCell::new(10), collector);
 
-    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().pools_len(), 1);
 
     collector.collect();
 
-    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().pools_len(), 1);
 
     assert_eq!(*gc.borrow(), 10);
 }
@@ -25,7 +25,7 @@ fn basic_gc() {
 #[test]
 fn nested_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(80)
+        .with_page_size(80)
         .with_heap_threshold(128);
 
     // We are allocating 32 bytes, per GC, which with the linked list pointer should be
@@ -39,24 +39,24 @@ fn nested_gc() {
 
     collector.collect();
 
-    assert_eq!(collector.allocator.borrow().arenas_len(), 2);
+    assert_eq!(collector.allocator.borrow().pools_len(), 2);
     assert_eq!(*nested_gc.borrow(), 10);
 
     let new_gc = Gc::new_in(GcRefCell::new(8), collector);
 
-    assert_eq!(collector.allocator.borrow().arenas_len(), 2);
+    assert_eq!(collector.allocator.borrow().pools_len(), 2);
 
     drop(new_gc);
     collector.collect();
 
-    assert_eq!(collector.allocator.borrow().arenas_len(), 2);
+    assert_eq!(collector.allocator.borrow().pools_len(), 2);
     assert_eq!(*nested_gc.borrow(), 10);
 }
 
 #[test]
 fn gc_recursion() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(4096)
+        .with_page_size(4096)
         .with_heap_threshold(8_192);
 
     #[derive(Debug, Finalize, Trace)]
@@ -89,30 +89,30 @@ fn gc_recursion() {
 #[test]
 fn drop_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(256)
+        .with_page_size(256)
         .with_heap_threshold(512);
 
     let gc = Gc::new_in(GcRefCell::new(7u64), collector);
-    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().pools_len(), 1);
 
     collector.collect();
-    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
+    assert_eq!(collector.allocator.borrow().pools_len(), 1);
 
     drop(gc);
     collector.collect();
 
-    // after collecting a dead Gc, its slot is freed and the arena page dropped
+    // after collecting a dead Gc, its slot is freed and the pool page dropped
     assert_eq!(
-        collector.allocator.borrow().arenas_len(),
+        collector.allocator.borrow().pools_len(),
         0,
-        "arena not freed"
+        "pool not freed"
     );
 }
 
 #[test]
 fn clone_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(256)
+        .with_page_size(256)
         .with_heap_threshold(512);
 
     let gc = Gc::new_in(GcRefCell::new(42u32), collector);
@@ -127,7 +127,7 @@ fn clone_gc() {
 #[test]
 fn multi_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(128)
+        .with_page_size(128)
         .with_heap_threshold(512);
 
     for _ in 0..3 {
@@ -135,15 +135,15 @@ fn multi_gc() {
             .map(|i| Gc::new_in(GcRefCell::new(i as u64), collector))
             .collect();
 
-        assert!(collector.allocator.borrow().arenas_len() >= 1);
+        assert!(collector.allocator.borrow().pools_len() >= 1);
 
         drop(objects);
         collector.collect();
 
         assert_eq!(
-            collector.allocator.borrow().arenas_len(),
+            collector.allocator.borrow().pools_len(),
             0,
-            "arenas not reclaimed"
+            "pools not reclaimed"
         );
     }
 }
@@ -151,7 +151,7 @@ fn multi_gc() {
 #[test]
 fn pressure_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(128)
+        .with_page_size(128)
         .with_heap_threshold(256);
 
     let root = Gc::new_in(GcRefCell::new(99u64), collector);
@@ -168,7 +168,7 @@ fn pressure_gc() {
 #[test]
 fn borrow_mut_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(256)
+        .with_page_size(256)
         .with_heap_threshold(512);
 
     let gc = Gc::new_in(GcRefCell::new(0u64), collector);
@@ -182,7 +182,7 @@ fn borrow_mut_gc() {
 #[test]
 fn long_lived_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(256)
+        .with_page_size(256)
         .with_heap_threshold(512);
 
     let gc = Gc::new_in(GcRefCell::new(77u64), collector);
@@ -193,16 +193,16 @@ fn long_lived_gc() {
 
     assert_eq!(*gc.borrow(), 77u64, "swept during color-flip");
     assert_eq!(
-        collector.allocator.borrow().arenas_len(),
+        collector.allocator.borrow().pools_len(),
         1,
-        "arena freed while live"
+        "pool freed while live"
     );
 }
 
 #[test]
 fn basic_wm() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(256)
+        .with_page_size(256)
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
@@ -217,7 +217,7 @@ fn basic_wm() {
 #[test]
 fn dead_wm() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(256)
+        .with_page_size(256)
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
@@ -230,7 +230,7 @@ fn dead_wm() {
     collector.collect();
 
     assert_eq!(
-        collector.allocator.borrow().arenas_len(),
+        collector.allocator.borrow().pools_len(),
         0,
         "ephemeron not swept"
     );
@@ -239,7 +239,7 @@ fn dead_wm() {
 #[test]
 fn update_wm() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(256)
+        .with_page_size(256)
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
@@ -256,16 +256,23 @@ fn update_wm() {
 
     // both ephemerons (old invalidated, new key dead) should be freed
     assert_eq!(
-        collector.allocator.borrow().arenas_len(),
+        collector.allocator.borrow().pools_len(),
         0,
         "arena leaked after update"
     );
 
     // both ephemerons (old invalidated, new key-dead) should be freed
     assert_eq!(
-        collector.allocator.borrow().arenas_len(),
+        collector.allocator.borrow().pools_len(),
         0,
-        "arena leaked after update"
+        "pool leaked after update"
+    );
+
+    // both ephemerons (old invalidated, new key-dead) should be freed
+    assert_eq!(
+        collector.allocator.borrow().pools_len(),
+        0,
+        "pool leaked after update"
     );
 }
 
@@ -278,7 +285,7 @@ fn trace_wm() {
     }
 
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(256)
+        .with_page_size(256)
         .with_heap_threshold(512);
 
     let container = Gc::new_in(
@@ -296,7 +303,7 @@ fn trace_wm() {
 #[test]
 fn remove_wm() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(256)
+        .with_page_size(256)
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
@@ -323,40 +330,40 @@ fn prune_wm() {
     //  dangling pointer fix
     // ensure insert doesn't read freed memory on dead entries
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(256)
+        .with_page_size(256)
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
 
     let key1 = Gc::new_in(1u64, collector);
     assert_eq!(
-        collector.allocator.borrow().arenas_len(),
+        collector.allocator.borrow().pools_len(),
         1,
         "after key1 alloc"
     );
     map.insert(&key1.clone(), 10u64, collector);
     assert_eq!(
-        collector.allocator.borrow().arenas_len(),
+        collector.allocator.borrow().pools_len(),
         2,
         "after insert key1"
     );
     drop(key1);
     collector.collect();
     assert_eq!(
-        collector.allocator.borrow().arenas_len(),
+        collector.allocator.borrow().pools_len(),
         0,
         "after first collect"
     );
 
     let key2 = Gc::new_in(2u64, collector);
     assert_eq!(
-        collector.allocator.borrow().arenas_len(),
+        collector.allocator.borrow().pools_len(),
         1,
         "after key2 alloc"
     );
     map.insert(&key2.clone(), 20u64, collector);
     assert_eq!(
-        collector.allocator.borrow().arenas_len(),
+        collector.allocator.borrow().pools_len(),
         2,
         "after insert key2"
     );
@@ -365,14 +372,14 @@ fn prune_wm() {
 
     drop(key2);
     collector.collect();
-    assert_eq!(collector.allocator.borrow().arenas_len(), 0);
+    assert_eq!(collector.allocator.borrow().pools_len(), 0);
 }
 
 #[test]
 fn remove_then_collect() {
     // ensure remove() doesn't leak the backing ephemeron after key is gone
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(256)
+        .with_page_size(256)
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
@@ -387,7 +394,7 @@ fn remove_then_collect() {
     collector.collect();
 
     assert_eq!(
-        collector.allocator.borrow().arenas_len(),
+        collector.allocator.borrow().pools_len(),
         0,
         "ephemeron leaked after remove"
     );
@@ -396,7 +403,7 @@ fn remove_then_collect() {
 #[test]
 fn alive_wm() {
     let collector = &mut MarkSweepGarbageCollector::default()
-        .with_arena_size(256)
+        .with_page_size(256)
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
@@ -436,7 +443,7 @@ mod gc_edge_cases {
     #[test]
     fn deep_object_graph() {
         let collector = &mut MarkSweepGarbageCollector::default()
-            .with_arena_size(4096)
+            .with_page_size(4096)
             .with_heap_threshold(8_192);
 
         #[derive(Debug, Finalize, Trace)]
@@ -472,7 +479,7 @@ mod gc_edge_cases {
     #[test]
     fn cyclic_references() {
         let collector = &mut MarkSweepGarbageCollector::default()
-            .with_arena_size(4096)
+            .with_page_size(4096)
             .with_heap_threshold(8_192);
 
         #[derive(Debug, Finalize, Trace)]
@@ -514,7 +521,7 @@ mod gc_edge_cases {
     #[test]
     fn weak_map_cleanup() {
         let collector = &mut MarkSweepGarbageCollector::default()
-            .with_arena_size(1024)
+            .with_page_size(1024)
             .with_heap_threshold(2048);
 
         let mut map = WeakMap::new(collector);
@@ -548,7 +555,7 @@ mod gc_edge_cases {
     #[test]
     fn finalizer_safety() {
         let collector = &mut MarkSweepGarbageCollector::default()
-            .with_arena_size(4096)
+            .with_page_size(4096)
             .with_heap_threshold(8_192);
 
         #[derive(Trace)]
@@ -582,7 +589,7 @@ mod gc_edge_cases {
     #[test]
     fn repeated_collections_stable() {
         let collector = &mut MarkSweepGarbageCollector::default()
-            .with_arena_size(256)
+            .with_page_size(256)
             .with_heap_threshold(512);
 
         let root = Gc::new_in(GcRefCell::new(99u64), collector);
@@ -605,7 +612,7 @@ mod gc_edge_cases {
     #[test]
     fn deep_dead_graph_sweep() {
         let collector = &mut MarkSweepGarbageCollector::default()
-            .with_arena_size(4096)
+            .with_page_size(4096)
             .with_heap_threshold(8_192);
 
         #[derive(Debug, Finalize, Trace)]

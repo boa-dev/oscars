@@ -17,7 +17,6 @@ but arena3 fits more objects into the same amount of memory
 arena2 is faster at every size and the gap grows as object count goes up
 
 | objects | arena3  | arena2  |
-|---------|---------|---------|
 | 100     | 1.02 µs | 643 ns  |
 | 500     | 4.15 µs | 1.83 µs |
 | 1000    | 8.36 µs | 2.77 µs |
@@ -34,7 +33,6 @@ header on every object. But this bench is measuring allocation time, not memory 
 writing the header is cheap, what costs time in arena3 is the size class routing.
 
 | objects | arena3 (0-byte header) | arena2 (8-byte header) |
-|---------|---------|---------|
 | 100     | 781 ns                 | 257 ns                 |
 | 500     | 3.56 µs                | 1.08 µs                |
 | 1000    | 7.02 µs                | 2.15 µs                |
@@ -91,7 +89,6 @@ the whole suite
 time to free all objects and reclaim dead arenas:
 
 | objects | arena3  | arena2  |
-|---------|---------|---------|
 | 100     | 951 ns  | 665 ns  |
 | 500     | 2.57 µs | 2.11 µs |
 | 1000    | 4.65 µs | 4.97 µs |
