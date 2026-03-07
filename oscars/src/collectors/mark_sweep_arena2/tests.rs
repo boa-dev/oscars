@@ -1,5 +1,5 @@
-use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
-use crate::{Finalize, Trace};
+use crate::collectors::mark_sweep_arena2::MarkSweepGarbageCollector;
+use crate::collectors::mark_sweep_arena2::trace::{Finalize, Trace, TraceColor};
 
 use super::Gc;
 use super::WeakMap;
@@ -39,7 +39,7 @@ fn nested_gc() {
 
     collector.collect();
 
-    assert_eq!(collector.allocator.borrow().arenas_len(), 2);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
     assert_eq!(*nested_gc.borrow(), 10);
 
     let new_gc = Gc::new_in(GcRefCell::new(8), collector);
@@ -49,7 +49,7 @@ fn nested_gc() {
     drop(new_gc);
     collector.collect();
 
-    assert_eq!(collector.allocator.borrow().arenas_len(), 2);
+    assert_eq!(collector.allocator.borrow().arenas_len(), 1);
     assert_eq!(*nested_gc.borrow(), 10);
 }
 
@@ -59,10 +59,21 @@ fn gc_recursion() {
         .with_arena_size(4096)
         .with_heap_threshold(8_192);
 
-    #[derive(Debug, Finalize, Trace)]
     struct S {
         i: usize,
         next: Option<Gc<S>>,
+    }
+
+    impl Finalize for S {}
+
+    unsafe impl Trace for S {
+        unsafe fn trace(&self, color: TraceColor) {
+            if let Some(next) = &self.next {
+                unsafe { next.trace(color) };
+            }
+        }
+
+        fn run_finalizer(&self) {}
     }
 
     #[cfg(miri)]
@@ -205,13 +216,13 @@ fn basic_wm() {
         .with_arena_size(256)
         .with_heap_threshold(512);
 
-    let mut map = WeakMap::new(collector);
+    let mut map = WeakMap::<u64, u64>::new(collector);
     let key = Gc::new_in(42u64, collector);
 
     map.insert(&key.clone(), 100u64, collector);
 
     assert_eq!(map.get(&key.clone()), Some(&100u64));
-    assert!(map.is_key_alive(&key.clone()));
+    assert!(WeakMap::<u64, u64>::is_key_alive(&map, &key.clone()));
 }
 
 #[test]
@@ -220,7 +231,7 @@ fn dead_wm() {
         .with_arena_size(256)
         .with_heap_threshold(512);
 
-    let mut map = WeakMap::new(collector);
+    let mut map = WeakMap::<u64, u64>::new(collector);
     let key = Gc::new_in(42u64, collector);
 
     map.insert(&key.clone(), 100u64, collector);
@@ -242,7 +253,7 @@ fn update_wm() {
         .with_arena_size(256)
         .with_heap_threshold(512);
 
-    let mut map = WeakMap::new(collector);
+    let mut map = WeakMap::<u64, u64>::new(collector);
     let key = Gc::new_in(1u64, collector);
 
     // insert then update so that old value doesn't leak
@@ -272,9 +283,18 @@ fn update_wm() {
 #[test]
 fn trace_wm() {
     // weak_map must implement Trace to be embeddable in traced structs
-    #[derive(Finalize, Trace)]
     struct Container {
         _map: WeakMap<u64, u64>,
+    }
+
+    impl Finalize for Container {}
+
+    unsafe impl Trace for Container {
+        unsafe fn trace(&self, color: TraceColor) {
+            unsafe { self._map.trace(color) };
+        }
+
+        fn run_finalizer(&self) {}
     }
 
     let collector = &mut MarkSweepGarbageCollector::default()
@@ -283,7 +303,7 @@ fn trace_wm() {
 
     let container = Gc::new_in(
         Container {
-            _map: WeakMap::new(collector),
+            _map: WeakMap::<u64, u64>::new(collector),
         },
         collector,
     );
@@ -299,7 +319,7 @@ fn remove_wm() {
         .with_arena_size(256)
         .with_heap_threshold(512);
 
-    let mut map = WeakMap::new(collector);
+    let mut map = WeakMap::<u64, u64>::new(collector);
     let key = Gc::new_in(1u64, collector);
 
     map.insert(&key.clone(), 99u64, collector);
@@ -310,7 +330,7 @@ fn remove_wm() {
     assert!(removed, "remove returned wrong value");
     assert_eq!(
         map.get(&key.clone()),
-        None,
+        None::<&u64>,
         "entry still present after remove"
     );
 
@@ -326,7 +346,7 @@ fn prune_wm() {
         .with_arena_size(256)
         .with_heap_threshold(512);
 
-    let mut map = WeakMap::new(collector);
+    let mut map = WeakMap::<u64, u64>::new(collector);
 
     let key1 = Gc::new_in(1u64, collector);
     assert_eq!(
@@ -337,7 +357,7 @@ fn prune_wm() {
     map.insert(&key1.clone(), 10u64, collector);
     assert_eq!(
         collector.allocator.borrow().arenas_len(),
-        2,
+        1,
         "after insert key1"
     );
     drop(key1);
@@ -357,7 +377,7 @@ fn prune_wm() {
     map.insert(&key2.clone(), 20u64, collector);
     assert_eq!(
         collector.allocator.borrow().arenas_len(),
-        2,
+        1,
         "after insert key2"
     );
 
@@ -375,7 +395,7 @@ fn remove_then_collect() {
         .with_arena_size(256)
         .with_heap_threshold(512);
 
-    let mut map = WeakMap::new(collector);
+    let mut map = WeakMap::<u64, u64>::new(collector);
     let key = Gc::new_in(1u64, collector);
 
     map.insert(&key.clone(), 99u64, collector);
@@ -399,7 +419,7 @@ fn alive_wm() {
         .with_arena_size(256)
         .with_heap_threshold(512);
 
-    let mut map = WeakMap::new(collector);
+    let mut map = WeakMap::<u64, u64>::new(collector);
     let key = Gc::new_in(42u64, collector);
 
     map.insert(&key.clone(), 100u64, collector);
@@ -424,10 +444,10 @@ fn alive_wm() {
 /// `collector.allocator` or `arenas_len()`.  This keeps them stable across
 /// future allocator refactors.
 mod gc_edge_cases {
-    use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
-    use crate::collectors::mark_sweep::cell::GcRefCell;
-    use crate::collectors::mark_sweep::pointers::{Gc, WeakMap};
-    use crate::{Finalize, Trace};
+    use crate::collectors::mark_sweep_arena2::MarkSweepGarbageCollector;
+    use crate::collectors::mark_sweep_arena2::cell::GcRefCell;
+    use crate::collectors::mark_sweep_arena2::pointers::{Gc, WeakMap};
+    use crate::collectors::mark_sweep_arena2::{Finalize, Trace, TraceColor};
 
     // ---- Deep object graph ------------------------------------------------
 
@@ -439,10 +459,21 @@ mod gc_edge_cases {
             .with_arena_size(4096)
             .with_heap_threshold(8_192);
 
-        #[derive(Debug, Finalize, Trace)]
         struct Node {
             _id: usize,
             next: Option<Gc<Node>>,
+        }
+
+        impl Finalize for Node {}
+
+        unsafe impl Trace for Node {
+            unsafe fn trace(&self, color: TraceColor) {
+                if let Some(ref next) = self.next {
+                    unsafe { next.trace(color) };
+                }
+            }
+
+            fn run_finalizer(&self) {}
         }
 
         #[cfg(miri)]
@@ -479,10 +510,19 @@ mod gc_edge_cases {
             .with_arena_size(4096)
             .with_heap_threshold(8_192);
 
-        #[derive(Debug, Finalize, Trace)]
         struct CycleNode {
             _label: u64,
             next: GcRefCell<Option<Gc<CycleNode>>>,
+        }
+
+        impl Finalize for CycleNode {}
+
+        unsafe impl Trace for CycleNode {
+            unsafe fn trace(&self, color: TraceColor) {
+                self.next.trace(color);
+            }
+
+            fn run_finalizer(&self) {}
         }
 
         let node_a = Gc::new_in(
@@ -521,7 +561,7 @@ mod gc_edge_cases {
             .with_arena_size(1024)
             .with_heap_threshold(2048);
 
-        let mut map = WeakMap::new(collector);
+        let mut map = WeakMap::<u64, u64>::new(collector);
         let key = Gc::new_in(42u64, collector);
 
         map.insert(&key, 100u64, collector);
@@ -533,7 +573,7 @@ mod gc_edge_cases {
             "value missing before collection"
         );
         assert!(
-            map.is_key_alive(&key),
+            WeakMap::<u64, u64>::is_key_alive(&map, &key),
             "key reported dead while still rooted"
         );
 
@@ -555,9 +595,16 @@ mod gc_edge_cases {
             .with_arena_size(4096)
             .with_heap_threshold(8_192);
 
-        #[derive(Trace)]
         struct Flagged {
             flag: Gc<GcRefCell<bool>>,
+        }
+
+        unsafe impl Trace for Flagged {
+            unsafe fn trace(&self, color: TraceColor) {
+                unsafe { self.flag.trace(color) };
+            }
+
+            fn run_finalizer(&self) {}
         }
 
         impl Finalize for Flagged {
@@ -612,9 +659,20 @@ mod gc_edge_cases {
             .with_arena_size(4096)
             .with_heap_threshold(8_192);
 
-        #[derive(Debug, Finalize, Trace)]
         struct Chain {
             next: Option<Gc<Chain>>,
+        }
+
+        impl Finalize for Chain {}
+
+        unsafe impl Trace for Chain {
+            unsafe fn trace(&self, color: TraceColor) {
+                if let Some(ref chain) = self.next {
+                    unsafe { chain.trace(color) };
+                }
+            }
+
+            fn run_finalizer(&self) {}
         }
 
         #[cfg(miri)]

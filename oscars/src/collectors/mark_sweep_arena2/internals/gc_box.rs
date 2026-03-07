@@ -2,9 +2,9 @@
 
 use core::any::TypeId;
 
-use crate::collectors::mark_sweep::Finalize;
-use crate::collectors::mark_sweep::internals::gc_header::{GcHeader, HeaderColor};
-use crate::collectors::mark_sweep::{Trace, TraceColor};
+use crate::collectors::mark_sweep_arena2::Finalize;
+use crate::collectors::mark_sweep_arena2::internals::gc_header::{GcHeader, HeaderColor};
+use crate::collectors::mark_sweep_arena2::{Trace, TraceColor};
 
 use super::{DropFn, TraceFn, VTable, vtable_of};
 
@@ -26,7 +26,7 @@ unsafe impl Trace for NonTraceable {
 
 // NOTE: This may not be the best idea, but let's find out.
 //
-use crate::alloc::arena3::{ArenaHeapItem, ErasedArenaPointer};
+use crate::alloc::arena2::{ArenaHeapItem, ErasedArenaPointer};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
@@ -44,11 +44,11 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
     }
 
     pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
-        use crate::alloc::arena3::ArenaHeapItem;
-        // SAFETY: `ArenaHeapItem` is `repr(transparent)`, use `&raw mut` to avoid
-        // creating a &mut reference during trace
-        let raw: *mut ArenaHeapItem<GcBox<NonTraceable>> = self.as_heap_ptr().as_ptr();
-        unsafe { NonNull::new_unchecked(&raw mut (*raw).0) }
+        // SAFETY: `as_value_ptr` prevents creating `&mut` reference into the
+        // arena to avoid stacked borrows during Gc tracing
+        let heap_ptr = self.as_heap_ptr();
+        let value_ptr = unsafe { heap_ptr.as_ref().as_value_ptr() };
+        unsafe { NonNull::new_unchecked(value_ptr) }
     }
 
     pub(crate) fn as_heap_ptr(&self) -> NonNull<ArenaHeapItem<GcBox<NonTraceable>>> {
@@ -69,7 +69,7 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
 }
 
 impl<T: Trace> WeakGcBox<T> {
-    pub(crate) fn inner_ptr(&self) -> crate::alloc::arena3::ArenaPointer<'static, GcBox<T>> {
+    pub(crate) fn inner_ptr(&self) -> crate::alloc::arena2::ArenaPointer<'static, GcBox<T>> {
         // SAFETY: This pointer started out as a `GcBox<T>`, so it's safe to cast
         // it back, the `PhantomData` guarantees that the type `T` is still correct
         unsafe { self.inner_ptr.to_typed_arena_pointer::<GcBox<T>>() }

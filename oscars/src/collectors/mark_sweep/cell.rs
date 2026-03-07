@@ -171,6 +171,14 @@ impl<T: ?Sized> GcRefCell<T> {
         }
     }
 
+    // returns a raw pointer to the inner value or `None` if currently mutably borrowed
+    pub(crate) fn get_raw(&self) -> Option<*mut T> {
+        match self.borrow.get().borrowed() {
+            BorrowState::Writing => None,
+            _ => Some(self.cell.get()),
+        }
+    }
+
     /// Mutably borrows the wrapped value, returning an error if the value is currently borrowed.
     ///
     /// The borrow lasts until the returned `GcCellRefMut` exits scope.

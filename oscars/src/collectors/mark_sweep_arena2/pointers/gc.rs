@@ -1,8 +1,8 @@
-use crate::alloc::arena3::{ArenaHeapItem, ArenaPointer, ErasedArenaPointer};
-use crate::collectors::collector::Collector;
-use crate::collectors::mark_sweep::Finalize;
-use crate::collectors::mark_sweep::internals::NonTraceable;
-use crate::collectors::mark_sweep::{internals::GcBox, trace::Trace};
+use crate::alloc::arena2::{ArenaHeapItem, ArenaPointer, ErasedArenaPointer};
+
+use crate::collectors::mark_sweep_arena2::Finalize;
+use crate::collectors::mark_sweep_arena2::internals::NonTraceable;
+use crate::collectors::mark_sweep_arena2::{Trace, internals::GcBox};
 use core::any::TypeId;
 use core::cmp::Ordering;
 use core::fmt::{self, Debug, Display};
@@ -17,7 +17,10 @@ pub struct Gc<T: Trace + ?Sized + 'static> {
 
 impl<T: Trace> Gc<T> {
     #[must_use]
-    pub fn new_in<C: Collector>(value: T, collector: &C) -> Self {
+    pub fn new_in(
+        value: T,
+        collector: &crate::collectors::mark_sweep_arena2::MarkSweepGarbageCollector,
+    ) -> Self {
         let inner_ptr = collector
             .alloc_gc_node(value)
             .expect("Failed to allocate Gc node")
@@ -44,12 +47,11 @@ impl<T: Trace> Gc<T> {
 
 impl<T: Trace + ?Sized> Gc<T> {
     pub(crate) fn as_sized_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
-        // SAFETY: use `&raw mut` to get a raw pointer without creating
-        // a `&mut` reference, avoiding Stacked Borrows UB during GC tracing
-        let raw: *mut ArenaHeapItem<GcBox<NonTraceable>> = self.as_heap_ptr().as_ptr();
-        // SAFETY: `raw` is non-null because it comes from `as_heap_ptr()`
-        // `ArenaHeapItem` is `#[repr(transparent)]` so it shares the same address as field 0
-        unsafe { NonNull::new_unchecked(&raw mut (*raw).0) }
+        // SAFETY: `as_value_ptr` prevents creating `&mut` reference into the
+        // arena to avoid stacked borrows during Gc tracing
+        let heap_ptr = self.as_heap_ptr();
+        let value_ptr = unsafe { heap_ptr.as_ref().as_value_ptr() };
+        unsafe { NonNull::new_unchecked(value_ptr) }
     }
 
     pub(crate) fn as_heap_ptr(&self) -> NonNull<ArenaHeapItem<GcBox<NonTraceable>>> {
@@ -143,7 +145,7 @@ impl<T: Trace + ?Sized> Finalize for Gc<T> {
 }
 
 unsafe impl<T: Trace + ?Sized> Trace for Gc<T> {
-    unsafe fn trace(&self, color: crate::collectors::mark_sweep::TraceColor) {
+    unsafe fn trace(&self, color: crate::collectors::mark_sweep_arena2::TraceColor) {
         let trace_fn = unsafe { self.as_sized_inner_ptr().as_ref().trace_fn() };
         unsafe { trace_fn(self.as_heap_ptr(), color) }
     }
