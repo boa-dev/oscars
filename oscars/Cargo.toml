@@ -28,3 +28,7 @@ default = ["mark_sweep"]
 std = []
 mark_sweep = []
 gc_allocator = ["dep:allocator-api2", "mark_sweep"]
+
+[[bench]]
+name = "arena3_alloc"
+harness = false
