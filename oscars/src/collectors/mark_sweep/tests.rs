@@ -627,3 +627,40 @@ mod gc_edge_cases {
         collector.collect();
     }
 }
+
+/// Tests for the standalone WeakGc pointer behavior.
+mod weak_gc_tests {
+    use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
+    use crate::collectors::mark_sweep::cell::GcRefCell;
+    use crate::collectors::mark_sweep::pointers::{Gc, WeakGc};
+
+    #[test]
+    fn weak_gc_can_be_created_from_strong() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_arena_size(256)
+            .with_heap_threshold(512);
+
+        let strong = Gc::new_in(GcRefCell::new(42u64), collector);
+
+        let _weak = WeakGc::new_in(&strong, collector);
+    }
+
+    #[test]
+    fn weak_gc_ephemeron_swept_after_strong_drop() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_arena_size(256)
+            .with_heap_threshold(512);
+
+        let strong = Gc::new_in(GcRefCell::new(42u64), collector);
+        let _weak = WeakGc::new_in(&strong, collector);
+
+        drop(strong);
+        collector.collect();
+
+        assert_eq!(
+            collector.allocator.borrow().arenas_len(),
+            0,
+            "WeakGc ephemeron leaked after strong reference dropped"
+        );
+    }
+}
