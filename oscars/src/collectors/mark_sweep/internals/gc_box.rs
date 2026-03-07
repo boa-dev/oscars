@@ -26,17 +26,17 @@ unsafe impl Trace for NonTraceable {
 
 // NOTE: This may not be the best idea, but let's find out.
 //
-use crate::alloc::arena3::{ArenaHeapItem, ErasedArenaPointer};
+use crate::alloc::mempool3::{ErasedPoolPointer, PoolItem};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 pub struct WeakGcBox<T: Trace + ?Sized + 'static> {
-    pub(crate) inner_ptr: ErasedArenaPointer<'static>,
+    pub(crate) inner_ptr: ErasedPoolPointer<'static>,
     pub(crate) marker: PhantomData<T>,
 }
 
 impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
-    pub fn new(inner_ptr: ErasedArenaPointer<'static>) -> Self {
+    pub fn new(inner_ptr: ErasedPoolPointer<'static>) -> Self {
         Self {
             inner_ptr,
             marker: PhantomData,
@@ -45,16 +45,16 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
 
     pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
         // SAFETY: `as_heap_ptr` returns a valid pointer to
-        // `ArenaHeapItem` whose lifetime is tied to the arena
+        // `PoolItem` whose lifetime is tied to the pool
         let heap_item = unsafe { self.as_heap_ptr().as_mut() };
         // SAFETY: We just removed this value from a NonNull
         unsafe { NonNull::new_unchecked(heap_item.as_ptr()) }
     }
 
-    pub(crate) fn as_heap_ptr(&self) -> NonNull<ArenaHeapItem<GcBox<NonTraceable>>> {
+    pub(crate) fn as_heap_ptr(&self) -> NonNull<PoolItem<GcBox<NonTraceable>>> {
         self.inner_ptr
             .as_non_null()
-            .cast::<ArenaHeapItem<GcBox<NonTraceable>>>()
+            .cast::<PoolItem<GcBox<NonTraceable>>>()
     }
 
     pub(crate) fn inner_ref(&self) -> &GcBox<NonTraceable> {
@@ -69,10 +69,10 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
 }
 
 impl<T: Trace> WeakGcBox<T> {
-    pub(crate) fn inner_ptr(&self) -> crate::alloc::arena3::ArenaPointer<'static, GcBox<T>> {
+    pub(crate) fn inner_ptr(&self) -> crate::alloc::mempool3::PoolPointer<'static, GcBox<T>> {
         // SAFETY: This pointer started out as a `GcBox<T>`, so it's safe to cast
         // it back, the `PhantomData` guarantees that the type `T` is still correct
-        unsafe { self.inner_ptr.to_typed_arena_pointer::<GcBox<T>>() }
+        unsafe { self.inner_ptr.to_typed_pool_pointer::<GcBox<T>>() }
     }
 
     pub fn value(&self) -> &T {

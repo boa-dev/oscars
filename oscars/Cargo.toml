@@ -20,7 +20,7 @@ harness = false
 required-features = ["gc_allocator"]
 
 [[bench]]
-name = "arena2_vs_arena3"
+name = "arena2_vs_mempool3"
 harness = false
 
 [features]

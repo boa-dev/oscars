@@ -11,7 +11,7 @@ fn bench_alloc(c: &mut Criterion) {
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::new("oscars", size), size, |b, &size| {
             let collector = MarkSweepGarbageCollector::default()
-                .with_arena_size(65536)
+                .with_page_size(65536)
                 .with_heap_threshold(262144);
 
             b.iter(|| {
@@ -56,7 +56,7 @@ fn bench_collection(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         let collector = MarkSweepGarbageCollector::default()
-                            .with_arena_size(65536)
+                            .with_page_size(65536)
                             .with_heap_threshold(262144);
                         let mut roots = Vec::new();
                         for i in 0..num_objects {
@@ -110,7 +110,7 @@ fn bench_vec_create(c: &mut Criterion) {
             size,
             |b, &size| {
                 let collector = MarkSweepGarbageCollector::default()
-                    .with_arena_size(65536)
+                    .with_page_size(65536)
                     .with_heap_threshold(262144);
 
                 b.iter(|| {
@@ -153,7 +153,7 @@ fn bench_vec_ptrs(c: &mut Criterion) {
             num_elements,
             |b, &num_elements| {
                 let collector = MarkSweepGarbageCollector::default()
-                    .with_arena_size(65536)
+                    .with_page_size(65536)
                     .with_heap_threshold(262144);
 
                 b.iter(|| {
@@ -199,7 +199,7 @@ fn bench_mixed(c: &mut Criterion) {
 
     group.bench_function("oscars", |b| {
         let collector = MarkSweepGarbageCollector::default()
-            .with_arena_size(65536)
+            .with_page_size(65536)
             .with_heap_threshold(131072);
 
         b.iter(|| {
@@ -249,7 +249,7 @@ fn bench_pressure(c: &mut Criterion) {
 
     group.bench_function("oscars", |b| {
         let collector = MarkSweepGarbageCollector::default()
-            .with_arena_size(32768)
+            .with_page_size(32768)
             .with_heap_threshold(65536);
 
         b.iter(|| {
@@ -316,7 +316,7 @@ fn bench_deep(c: &mut Criterion) {
 
     group.bench_function("oscars", |b| {
         let collector = MarkSweepGarbageCollector::default()
-            .with_arena_size(131072)
+            .with_page_size(131072)
             .with_heap_threshold(262144);
 
         b.iter(|| {
