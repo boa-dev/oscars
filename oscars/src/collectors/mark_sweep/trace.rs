@@ -399,6 +399,22 @@ unsafe impl<K: Eq + Hash + Trace, V: Trace, S: BuildHasher> Trace
 }
 
 #[cfg(feature = "std")]
+impl Finalize for Path {}
+#[cfg(feature = "std")]
+// SAFETY: `Path` doesn't have any inner nodes that need to be marked
+unsafe impl Trace for Path {
+    empty_trace!();
+}
+
+#[cfg(feature = "std")]
+impl Finalize for PathBuf {}
+#[cfg(feature = "std")]
+// SAFETY: `PathBuf` doesn't have any inner nodes that need to be marked
+unsafe impl Trace for PathBuf {
+    empty_trace!();
+}
+
+#[cfg(feature = "std")]
 impl<K: Eq + Hash + Trace, V: Trace, S: BuildHasher> Finalize for HashMap<K, V, S> {}
 #[cfg(feature = "std")]
 // SAFETY: All the elements of the `HashMap` are correctly marked.
