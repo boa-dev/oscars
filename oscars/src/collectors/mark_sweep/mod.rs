@@ -3,14 +3,12 @@
 //! This was initially a copy of `boa_gc` with alterations to make the collector
 //! `no_std`
 
+use core::cell::{Cell, RefCell};
 use core::ptr::NonNull;
 
 use crate::{
-    alloc::arena2::{ArenaAllocator, ArenaHeapItem, ArenaPointer},
-    collectors::mark_sweep::{
-        internals::{Ephemeron, GcBox, NonTraceable},
-        pointers::weak_map::ErasedWeakMap,
-    },
+    alloc::mempool3::{PoolAllocator, PoolItem, PoolPointer},
+    collectors::mark_sweep::internals::{Ephemeron, GcBox, NonTraceable},
 };
 use rust_alloc::vec::Vec;
 
@@ -24,12 +22,19 @@ mod tests;
 
 pub(crate) mod internals;
 
+#[cfg(feature = "gc_allocator")]
+pub mod gc_collections;
+
+#[doc(hidden)]
+pub use pointers::ErasedWeakMap;
+pub use pointers::{Gc, WeakGc, WeakMap};
 pub use trace::{Finalize, Trace, TraceColor};
 
-pub use pointers::{Gc, WeakGc, WeakMap};
+#[cfg(feature = "gc_allocator")]
+pub use gc_collections::{GcAllocBox, GcAllocVec};
 
-type GcErasedPointer = NonNull<ArenaHeapItem<GcBox<NonTraceable>>>;
-type ErasedEphemeron = NonNull<ArenaHeapItem<Ephemeron<NonTraceable, NonTraceable>>>;
+type GcErasedPointer = NonNull<PoolItem<GcBox<NonTraceable>>>;
+pub(crate) type ErasedEphemeron = NonNull<PoolItem<Ephemeron<NonTraceable, NonTraceable>>>;
 
 /* TODO: Figure out the best way to adapt the thread local concept in no_std
 *
@@ -49,271 +54,306 @@ type ErasedEphemeron = NonNull<ArenaHeapItem<Ephemeron<NonTraceable, NonTraceabl
 
 #[derive(Default)]
 pub struct MarkSweepGarbageCollector {
-    allocator: ArenaAllocator<'static>, // TODO: Cell or refcell
-    root_queue: Vec<GcErasedPointer>,
-    ephemeron_queue: Vec<ErasedEphemeron>,
-    state: CollectionState,
-    // weak maps allocated via WeakMap::new, owned here so their lifetime is
-    // tied to the collector
-    pub(crate) weak_maps: Vec<rust_alloc::boxed::Box<dyn ErasedWeakMap>>,
-}
-
-impl core::fmt::Debug for MarkSweepGarbageCollector {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("MarkSweepGarbageCollector")
-            .field("allocator", &self.allocator)
-            .field("root_queue", &self.root_queue)
-            .field("ephemeron_queue", &self.ephemeron_queue)
-            .field("state", &self.state)
-            .field("weak_maps_count", &self.weak_maps.len())
-            .finish()
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct CollectionState {
-    color: TraceColor,
+    // we use RefCell so we can borrow the arena mutably via &self
+    // this fits the Allocator trait and is safe for single-threaded use
+    pub(crate) allocator: RefCell<PoolAllocator<'static>>,
+    root_queue: RefCell<Vec<GcErasedPointer>>,
+    ephemeron_queue: RefCell<Vec<ErasedEphemeron>>,
+    // current trace color epoch, flips each cycle
+    pub(crate) trace_color: Cell<TraceColor>,
+    // true if the heap crossed its threshold, triggers a deferred collection
+    collect_needed: Cell<bool>,
+    // true during a collection, pushes new allocations to pending queues to prevent crashes
+    is_collecting: Cell<bool>,
+    pending_root_queue: RefCell<Vec<GcErasedPointer>>,
+    pending_ephemeron_queue: RefCell<Vec<ErasedEphemeron>>,
+    pub(crate) weak_maps: RefCell<Vec<NonNull<dyn ErasedWeakMap>>>,
+    // debug only: track raw byte allocations from the Allocator impl for leak detection
+    #[cfg(all(debug_assertions, feature = "gc_allocator"))]
+    debug_raw_allocs: RefCell<hashbrown::HashSet<core::ptr::NonNull<u8>>>,
 }
 
 impl MarkSweepGarbageCollector {
     pub fn with_heap_threshold(mut self, heap_threshold: usize) -> Self {
-        self.allocator = core::mem::take(&mut self.allocator).with_heap_threshold(heap_threshold);
+        self.allocator.get_mut().heap_threshold = heap_threshold;
         self
     }
 
-    pub fn with_arena_size(mut self, arena_size: usize) -> Self {
-        self.allocator = core::mem::take(&mut self.allocator).with_arena_size(arena_size);
+    pub fn with_page_size(mut self, page_size: usize) -> Self {
+        self.allocator.get_mut().page_size = page_size;
         self
     }
 
-    #[cfg(test)]
-    pub fn root_queue_len(&self) -> usize {
-        self.root_queue.len()
-    }
-
-    #[cfg(test)]
-    pub fn ephemeron_queue_len(&self) -> usize {
-        self.ephemeron_queue.len()
-    }
-
-    pub(crate) fn track_external_allocation(&mut self, size: usize) -> bool {
-        self.allocator.track_external_allocation(size)
-    }
-
-    #[cfg(test)]
-    pub fn external_bytes(&self) -> usize {
-        self.allocator.external_bytes()
+    // returns the number of live slot pools + bump pages held by this collector
+    //
+    // prefer this over accessing `self.allocator` directly in tests so that
+    // the pool representation can change without touching every call site
+    pub fn pools_len(&self) -> usize {
+        self.allocator.borrow().pools_len()
     }
 }
 
-// ==== Allocation methods ====
-
-impl MarkSweepGarbageCollector {
-    pub fn check_allocation<T>(&mut self, value: &T) {
-        let allocation_data = self.allocator.get_allocation_data(value);
-        match allocation_data {
-            Ok(Some(_)) => {}
-            _ if self.allocator.is_below_threshold() => self
-                .allocator
-                .initialize_new_arena()
-                .expect("Unable to request region from system"),
-            _ => {
-                self.collect();
-                // If the collection did not free any memory, then bump the
-                // threshold, and initialize a new arena
-                if !self.allocator.is_below_threshold() {
-                    self.allocator.increase_threshold();
-                    self.allocator
-                        .initialize_new_arena()
-                        .expect("Unable to request region from system")
-                }
+impl Drop for MarkSweepGarbageCollector {
+    fn drop(&mut self) {
+        // debug only: check for leaked raw allocations
+        #[cfg(all(debug_assertions, feature = "gc_allocator", feature = "std"))]
+        {
+            let leaked_count = self.debug_raw_allocs.borrow().len();
+            if leaked_count > 0 {
+                std::eprintln!(
+                    "WARNING: {} raw byte allocations were not deallocated before collector drop",
+                    leaked_count
+                );
+                std::eprintln!(
+                    "this indicates Vec/Box/etc created with the collector as allocator"
+                );
+                std::eprintln!(
+                    "but not stored inside a traced GC object (e.g., Gc<GcAllocVec<T>>),"
+                );
+                std::eprintln!("use GcAllocVec and GcAllocBox wrappers for safe usage.");
             }
-        };
-    }
+        }
 
-    pub fn alloc_with_collection<T: Trace>(
-        &mut self,
-        gc_box: GcBox<T>,
-    ) -> ArenaPointer<'static, GcBox<T>> {
-        // This method checks the allocation and triggers a collection if needed.
-        self.check_allocation(&gc_box);
+        // Reclaim all collector-owned weak maps.
+        // Single-threaded, so this is safe.
+        for &map_ptr in self.weak_maps.borrow().iter() {
+            unsafe {
+                let _ = rust_alloc::boxed::Box::from_raw(map_ptr.as_ptr());
+            }
+        }
 
-        // We need to update the mark of the gc_box as it could be desynced from
-        // the collection state
-        gc_box.set_unmarked(&self.state);
+        // SAFETY:
+        // `Gc<T>` pointers act as if they live forever (`'static`).
+        // if the GC drops while rooted values still exist, we leak memory to prevent UAF.
+        let has_rooted_values = self
+            .root_queue
+            .borrow()
+            .iter()
+            .any(|node| unsafe { node.as_ref().value().is_rooted() })
+            || self
+                .pending_root_queue
+                .borrow()
+                .iter()
+                .any(|node| unsafe { node.as_ref().value().is_rooted() });
 
-        // Allocate it onto the heap.
-        let arena_ptr = self
-            .allocator
-            .try_alloc(gc_box)
-            .expect("Failed to allocate memory");
-
-        // TODO (addressed?): This is problematic and may cost performance.
-        //
-        // We are allocating the Box randomly on the heap and not into an arena.
-        //
-        // There may be some value here to use Bumpalo as an optimization.
-        //
-        // Another option would be to create a Vec type backed by a single arena. The
-        // reason for this is because our NeoGcBox should be singular inside, so we
-        // have some valid options here that could be useful for this.
-        //
-        // Funny enough, this is probably a great use for mempool... would two allocators
-        // be too much?
-        //
-        // Although, the long term solution would be to move more and more functionality
-        // into the allocator pointer, but that could saved for another day.
-        //
-
-        // Create an erased pointer to the heap object for the collector queue
-        // SAFETY: The erased pointer is used to determine whether the value is dropped.
-        let erased: NonNull<ArenaHeapItem<GcBox<NonTraceable>>> = arena_ptr.as_ptr().cast();
-        self.root_queue.push(erased);
-
-        arena_ptr
-    }
-
-    pub fn alloc_epemeron_with_collection<K: Trace, V: Trace>(
-        &mut self,
-        ephemeron: Ephemeron<K, V>,
-    ) -> ArenaPointer<'static, Ephemeron<K, V>> {
-        // Checks if there is room for an allocation and triggers a collection if not
-        // enough space on the heap
-        self.check_allocation(&ephemeron);
-        // Updates the ephemron for the new allocation state.
-        ephemeron.set_unmarked(&self.state);
-        let inner_ptr = self
-            .allocator
-            .try_alloc(ephemeron)
-            .expect("failed to allocate");
-
-        // Push to root stack
-        let eph_ptr = inner_ptr
-            .as_ptr()
-            .cast::<ArenaHeapItem<Ephemeron<NonTraceable, NonTraceable>>>();
-        self.ephemeron_queue.push(eph_ptr);
-
-        inner_ptr
+        if self.pools_len() > 0 && has_rooted_values {
+            // Unrooted items are NOT swept here so they intentionally leak
+            // instead of triggering a Use-After-Free.
+            // The underlying arena pools WILL be dropped (and OS memory reclaimed)
+            // when `self.allocator` is dropped at the end of this scope.
+        } else {
+            // No rooted items are alive. Sweep and clean up the remaining
+            // cycles and loose allocations before the allocator natively drops.
+            self.sweep_all_queues();
+        }
     }
 }
 
 // ==== Collection methods ====
 
 impl MarkSweepGarbageCollector {
-    fn drop_tracked_allocations(&mut self) {
-        for mut node in self.root_queue.drain(..) {
-            // SAFETY: Queue nodes point to arena allocations owned by this collector.
-            let heap_item = unsafe { node.as_mut() };
-            if heap_item.is_dropped() {
-                continue;
+    pub fn collect(&self) {
+        self.is_collecting.set(true);
+        struct CollectionGuard<'a>(&'a Cell<bool>);
+        impl<'a> Drop for CollectionGuard<'a> {
+            fn drop(&mut self) {
+                self.0.set(false);
             }
-
-            let gc_box = heap_item.value();
-            gc_box.finalize();
-            // SAFETY: The pointer has not been dropped yet.
-            unsafe { gc_box.drop_fn()(node) };
         }
+        let _guard = CollectionGuard(&self.is_collecting);
 
-        for mut node in self.ephemeron_queue.drain(..) {
-            // SAFETY: Queue nodes point to arena allocations owned by this collector.
-            let heap_item = unsafe { node.as_mut() };
-            if heap_item.is_dropped() {
-                continue;
-            }
-
-            let ephemeron = heap_item.value();
-            // SAFETY: The pointer has not been dropped yet and points to an
-            // `ArenaHeapItem<Ephemeron<_, _>>` owned by this collector.
-            unsafe { ephemeron.finalize_fn()(node) };
-            // SAFETY: The pointer has not been dropped yet.
-            unsafe { ephemeron.drop_fn()(node) };
-        }
-    }
-
-    pub fn collect(&mut self) {
         self.run_mark_phase();
-        self.run_sweep_phase();
-        // We've run a collection, so we switch the color.
-        self.state.color = self.state.color.flip();
-        // NOTE: It would actually be interesting to reuse the arenas that are dead rather
-        // than drop the page and reallocate when a new page is needed ... TBD
+
+        // the sweep color is the color used to mark alive objects during this cycle
+        let sweep_color = self.trace_color.get();
 
         // prune dead entries from each collector owned weak map before freeing
-        // memory so we can still inspect the dropped flag on ephemerons
-        for map in &mut self.weak_maps {
-            map.prune_dead_entries();
-        }
+        // memory so we can still inspect the trace color on ephemerons;
+        // use sweep_color since alive objects were marked with it.
+        self.sweep_trace_color(sweep_color);
 
-        self.allocator.drop_dead_arenas();
+        // finally tell the allocator to reclaim raw OS memory
+        // from arenas that are completely empty now
+        self.allocator.borrow_mut().drop_empty_pools();
     }
 
-    pub fn run_mark_phase(&mut self) {
+    // Force drops all elements in the internal tracking queues and clears
+    // them without regard for reachability.
+    fn sweep_all_queues(&self) {
+        let ephemerons = core::mem::take(&mut *self.ephemeron_queue.borrow_mut());
+        for ephemeron in ephemerons {
+            let ephemeron_ref = unsafe { ephemeron.as_ref() };
+            unsafe { ephemeron_ref.value().drop_fn()(ephemeron) };
+            self.allocator
+                .borrow_mut()
+                .free_slot(ephemeron.cast::<u8>());
+        }
+
+        let roots = core::mem::take(&mut *self.root_queue.borrow_mut());
+        for node in roots {
+            let node_ref = unsafe { node.as_ref() };
+            unsafe { node_ref.value().drop_fn()(node) };
+            self.allocator.borrow_mut().free_slot(node.cast::<u8>());
+        }
+
+        let pending_e = core::mem::take(&mut *self.pending_ephemeron_queue.borrow_mut());
+        for ephemeron in pending_e {
+            let ephemeron_ref = unsafe { ephemeron.as_ref() };
+            unsafe { ephemeron_ref.value().drop_fn()(ephemeron) };
+            self.allocator
+                .borrow_mut()
+                .free_slot(ephemeron.cast::<u8>());
+        }
+
+        let pending_r = core::mem::take(&mut *self.pending_root_queue.borrow_mut());
+        for node in pending_r {
+            let node_ref = unsafe { node.as_ref() };
+            unsafe { node_ref.value().drop_fn()(node) };
+            self.allocator.borrow_mut().free_slot(node.cast::<u8>());
+        }
+    }
+
+    // Extracts and sweeps items that are considered dead (different trace color).
+    fn sweep_trace_color(&self, sweep_color: TraceColor) {
+        // We use retain and manually drop deleted maps to satisfy Miri's
+        // pointer provenance rules (avoiding Box's unique ownership).
+        self.weak_maps.borrow_mut().retain(|&map_ptr| {
+            // SAFETY: the pointer is valid as long as it's in this list.
+            let map = unsafe { map_ptr.as_ref() };
+            if map.is_alive() {
+                // We need mut access to prune.
+                unsafe { (&mut *map_ptr.as_ptr()).prune_dead_entries(sweep_color) };
+                true
+            } else {
+                // WeakMap was dropped, reclaim the inner allocation.
+                unsafe {
+                    let _ = rust_alloc::boxed::Box::from_raw(map_ptr.as_ptr());
+                }
+                false
+            }
+        });
+
+        self.run_sweep_phase();
+
+        // flip the trace color epoch so newly allocated objects get the next color
+        let new_color = sweep_color.flip();
+        self.trace_color.set(new_color);
+
+        // NOTE: It would actually be interesting to reuse the pools that are empty rather
+        // than drop the page and reallocate when a new page is needed ... TBD
+        self.allocator.borrow_mut().drop_empty_pools();
+
+        // Drain pending queues while `is_collecting` is still true so that any
+        // allocation triggered by `drop(_guard)` flushes to pending (not main)
+        // queues, preserving insertion-order invariants for cache-friendly traversal.
+        self.root_queue
+            .borrow_mut()
+            .append(&mut self.pending_root_queue.borrow_mut());
+        self.ephemeron_queue
+            .borrow_mut()
+            .append(&mut self.pending_ephemeron_queue.borrow_mut());
+
+        // guard drops here, setting is_collecting = false
+    }
+
+    pub fn run_mark_phase(&self) {
+        let color = self.trace_color.get();
         // Run marks through the roots
-        for heap_item in &self.root_queue {
+        for heap_item in self.root_queue.borrow().iter() {
             let heap_item_ref = unsafe { heap_item.as_ref() };
             if heap_item_ref.value().is_rooted() {
                 unsafe {
-                    heap_item_ref.value().trace_fn()(*heap_item, self.state.color);
+                    heap_item_ref.value().trace_fn()(*heap_item, color);
                 }
             }
         }
 
-        for ephemeron_heap_item in &self.ephemeron_queue {
+        for ephemeron_heap_item in self.ephemeron_queue.borrow().iter() {
             let ephemeron_ref = unsafe { ephemeron_heap_item.as_ref() };
-            // use the vtable to check if the key is still reachable
-            let is_reachable = unsafe {
-                ephemeron_ref.value().is_reachable_fn()(*ephemeron_heap_item, self.state.color)
-            };
+            let is_reachable =
+                unsafe { ephemeron_ref.value().is_reachable_fn()(*ephemeron_heap_item, color) };
+
             if is_reachable {
-                unsafe { ephemeron_ref.value().trace_fn()(*ephemeron_heap_item, self.state.color) }
+                // no manual mark_slot is needed as alloc_slot handled it
+                // sweep uses the vtable is_reachable_fn/free_slot path
+                unsafe { ephemeron_ref.value().trace_fn()(*ephemeron_heap_item, color) }
             }
         }
 
         // At this point, all objects should be marked.
     }
 
-    pub fn run_sweep_phase(&mut self) {
-        // NOTE: it is important here to only extract after attemmpting to finalize. This is
+    pub fn run_sweep_phase(&self) {
+        let color = self.trace_color.get();
+
+        // NOTE: it is important here to only extract after attempting to finalize, this is
         // so that our queues ideally maintain the insertion order for so that they are cache
         // friendly.
-        let droppables = self.root_queue.extract_if(.., |node| {
-            let heap_item_ref = unsafe { node.as_ref() };
-            let gc_box = heap_item_ref.value();
-            // Check if the value is not reachable, i.e. dead.
-            if !gc_box.is_reachable(self.state.color) {
-                // Finalize the dead item
-                gc_box.finalize();
-                // Recheck if the value is now rooted again after finalization.
-                if gc_box.is_rooted() {
-                    unsafe { gc_box.trace_fn()(*node, self.state.color) };
+        let droppables = self
+            .root_queue
+            .borrow_mut()
+            .extract_if(.., |node| {
+                let heap_item_ref = unsafe { node.as_ref() };
+                let gc_box = heap_item_ref.value();
+                // Check if the value is not reachable, i.e. dead.
+                if !gc_box.is_reachable(color) {
+                    // Finalize the dead item
+                    gc_box.finalize();
+                    // Recheck if the value is now rooted again after finalization.
+                    if gc_box.is_rooted() {
+                        unsafe { gc_box.trace_fn()(*node, color) };
+                    }
                 }
-            }
-            // Extract if the value is still no longer reachable.
-            !heap_item_ref.value().is_reachable(self.state.color)
-        });
+                // Extract if the value is still no longer reachable.
+                !heap_item_ref.value().is_reachable(color)
+            })
+            .collect::<Vec<_>>();
 
-        let ephemerons = self.ephemeron_queue.extract_if(.., |node| {
-            let heap_item_ref = unsafe { node.as_ref() };
-            let ephemeron = heap_item_ref.value();
-            let color = self.state.color;
+        let ephemerons = self
+            .ephemeron_queue
+            .borrow_mut()
+            .extract_if(.., |node| {
+                let ephemeron_ref = unsafe { node.as_ref() };
+                let vtable = ephemeron_ref.value();
 
-            // check if the key is reachable via the vtable
-            let is_reachable = unsafe { ephemeron.is_reachable_fn()(*node, color) };
-
-            if !is_reachable {
-                unsafe { ephemeron.finalize_fn()(*node) };
-                // check if key was revived by finalizer
-                let revived = unsafe { ephemeron.is_reachable_fn()(*node, color) };
-                if revived {
-                    unsafe { ephemeron.trace_fn()(*node, color) };
+                let is_reachable = unsafe { vtable.is_reachable_fn()(*node, color) };
+                if !is_reachable {
+                    unsafe { vtable.finalize_fn()(*node) };
+                    // Recheck after finalization
+                    if unsafe { vtable.is_reachable_fn()(*node, color) } {
+                        unsafe { vtable.trace_fn()(*node, color) };
+                    }
                 }
-            }
 
-            // sweep if key is still dead after finalization
-            !unsafe { ephemeron.is_reachable_fn()(*node, color) }
-        });
+                // Check whether the ephemeron is reachable.
+                // An inactive ephemeron should be dropped.
+                !unsafe { vtable.is_reachable_fn()(*node, color) }
+            })
+            .collect::<Vec<_>>();
+
+        let mut still_alive_roots = Vec::default();
 
         let mut still_alive = Vec::default();
+        for ephemeron in ephemerons {
+            let ephemeron_ref = unsafe { ephemeron.as_ref() };
+            // If it's reachable according to the color, and it's active
+            // (both are checked inside the vtable-dispatched is_reachable_fn)
+            let is_reachable = unsafe { ephemeron_ref.value().is_reachable_fn()(ephemeron, color) };
+
+            if is_reachable {
+                still_alive.push(ephemeron);
+                continue;
+            }
+            // copy ptrs for aliasing safety
+            let drop_fn = ephemeron_ref.value().drop_fn();
+
+            unsafe { drop_fn(ephemeron) };
+            self.allocator
+                .borrow_mut()
+                .free_slot(ephemeron.cast::<u8>());
+        }
+        self.ephemeron_queue.borrow_mut().extend(still_alive);
+
         for node in droppables {
             // copy ptrs for aliasing safety
             let (is_rooted, drop_fn) = {
@@ -323,33 +363,385 @@ impl MarkSweepGarbageCollector {
             // Check one last time if the values are alive in case they were deemed
             // alive while checking the ephemerons.
             if is_rooted {
-                still_alive.push(node);
+                still_alive_roots.push(node);
                 continue;
             }
-            unsafe { drop_fn(node) }
+            // INVARIANT: free_slot must be called after drop_fn returns and
+            // while is_collecting is still true. Violating this would leave the
+            // bitmap stale for an allocation that may fire from inside drop_fn.
+            debug_assert!(
+                self.is_collecting.get(),
+                "free_slot called outside a collection — ordering invariant violated"
+            );
+            unsafe { drop_fn(node) };
+            // reclaim the arena slot, clear the bitmap bit and add to free list
+            self.allocator.borrow_mut().free_slot(node.cast::<u8>());
         }
-        self.root_queue.extend(still_alive);
-
-        let mut still_alive = Vec::default();
-        for ephemeron in ephemerons {
-            // copy ptrs for aliasing safety
-            let (is_reachable_fn, drop_fn) = {
-                let r = unsafe { ephemeron.as_ref() };
-                (r.value().is_reachable_fn(), r.value().drop_fn())
-            };
-            if unsafe { is_reachable_fn(ephemeron, self.state.color) } {
-                still_alive.push(ephemeron);
-                continue;
-            }
-            unsafe { drop_fn(ephemeron) }
-        }
-        self.ephemeron_queue.extend(still_alive);
+        self.root_queue.borrow_mut().extend(still_alive_roots);
     }
 }
 
-impl Drop for MarkSweepGarbageCollector {
-    fn drop(&mut self) {
-        self.drop_tracked_allocations();
-        self.allocator.drop_dead_arenas();
+// Allocator supertrait implementation
+//
+// allows collections like `Vec<T, &MarkSweepGarbageCollector>` to use
+// the GC bump arena as their backing store
+//
+// rules:
+// - `allocate`: returns valid, aligned pointers from the bump arena
+// - `deallocate`: decrements active allocations, reclaiming the arena when empty
+// - `grow` / `shrink`: allocates new memory and copies the data. the old memory
+//    is wasted until the entire arena page is freed, use `Vec::with_capacity`
+//    when possible to avoid this waste
+//
+// SAFETY:
+// any raw byte allocation using this impl MUST be stored inside a GC traced
+// object. Raw allocations are invisible to the mark phase, so if the owner
+// becomes unreachable without the GC knowing, the memory leaks
+#[cfg(feature = "gc_allocator")]
+unsafe impl allocator_api2::alloc::Allocator for MarkSweepGarbageCollector {
+    fn allocate(
+        &self,
+        layout: allocator_api2::alloc::Layout,
+    ) -> Result<NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        if layout.size() == 0 {
+            // SAFETY: any valid layout has align >= 1.
+            let dangling = unsafe { NonNull::new_unchecked(layout.align() as *mut u8) };
+            return Ok(NonNull::slice_from_raw_parts(dangling, 0));
+        }
+
+        // panic in debug mode if trying to allocate during collection
+        // raw allocations during sweeping could be problematic
+        #[cfg(debug_assertions)]
+        {
+            if self.is_collecting.get() {
+                panic!(
+                    "attempted to allocate raw bytes during GC collection cycle \
+                     this is unsafe and may cause memory corruption"
+                );
+            }
+        }
+
+        // run any deferred collection before allocating
+        if self.collect_needed.get() && !self.is_collecting.get() {
+            self.collect_needed.set(false);
+            self.collect();
+        }
+
+        // raw byte allocations skip ensure_capacity
+        // and go straight to try_alloc_bytes
+        let result = self
+            .allocator
+            .borrow_mut()
+            .try_alloc_bytes(layout)
+            .map_err(|_| allocator_api2::alloc::AllocError)?;
+
+        // debug only: track raw allocations for leak detection
+        #[cfg(all(debug_assertions, feature = "gc_allocator"))]
+        {
+            let ptr = result.cast::<u8>();
+            self.debug_raw_allocs.borrow_mut().insert(ptr);
+        }
+
+        Ok(result)
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, _layout: allocator_api2::alloc::Layout) {
+        // decrements active_raw_allocs for the arena containing ptr
+        // allowing drop_empty_pools to reclaim the page when it reaches zero
+        self.allocator.borrow_mut().dealloc_bytes(ptr);
+
+        // debug only: remove from tracking
+        #[cfg(all(debug_assertions, feature = "gc_allocator"))]
+        {
+            self.debug_raw_allocs.borrow_mut().remove(&ptr);
+        }
+    }
+
+    unsafe fn grow(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: allocator_api2::alloc::Layout,
+        new_layout: allocator_api2::alloc::Layout,
+    ) -> Result<NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        debug_assert!(
+            new_layout.size() >= old_layout.size(),
+            "grow called with smaller new_layout"
+        );
+
+        // if this is the last allocation in its arena and there is space,
+        // we can just bump the pointer for a zero copy O(1) grow
+        let grew_in_place = self
+            .allocator
+            .borrow_mut()
+            .grow_bytes_in_place(ptr, old_layout, new_layout);
+        if grew_in_place {
+            return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+        }
+
+        // SAFETY:
+        // `allocate` may trigger a deferred GC collection, but that is safe here
+        // because `collect()` only sweeps GC-traced objects.  `ptr` is a raw
+        // arena allocation — invisible to the mark phase — so the sweep will
+        // never free it.  Callers MUST NOT pass a GC-managed pointer here.
+        debug_assert!(
+            !self.is_collecting.get(),
+            "grow called from inside a collection; raw pointer may be dangling"
+        );
+        let new_block = self.allocate(new_layout)?;
+
+        if old_layout.size() > 0 {
+            // SAFETY:
+            // `ptr` is valid for `old_layout.size()` (guaranteed by caller),
+            // `new_block` is fresh and non-overlapping, and the allocator contract
+            // guarantees the new alignment is suitable for the old data
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    ptr.as_ptr(),
+                    new_block.as_ptr() as *mut u8,
+                    old_layout.size(),
+                );
+            }
+            unsafe { self.deallocate(ptr, old_layout) };
+        }
+        Ok(new_block)
+    }
+
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: allocator_api2::alloc::Layout,
+        new_layout: allocator_api2::alloc::Layout,
+    ) -> Result<NonNull<[u8]>, allocator_api2::alloc::AllocError> {
+        debug_assert!(
+            new_layout.size() <= old_layout.size(),
+            "shrink called with larger new_layout"
+        );
+
+        if new_layout.size() == 0 {
+            // SAFETY: any valid layout has align >= 1
+            let dangling = unsafe { NonNull::new_unchecked(new_layout.align() as *mut u8) };
+            // Free the old block before returning the ZST dangling pointer.
+            unsafe { self.deallocate(ptr, old_layout) };
+            return Ok(NonNull::slice_from_raw_parts(dangling, 0));
+        }
+
+        //if this is the last allocation in its arena,
+        // we can just wind back the bump pointer for a zero-copy O(1) shrink
+        let shrunk_in_place = self
+            .allocator
+            .borrow_mut()
+            .shrink_bytes_in_place(ptr, old_layout, new_layout);
+        if shrunk_in_place {
+            return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+        }
+
+        let new_block = self.allocate(new_layout)?;
+
+        // SAFETY:
+        // `ptr` is valid for `old_layout.size()` (caller guarantee)
+        // we copy `new_layout.size()` bytes (<= old size) into the fresh
+        // block, and the new alignment is suitable for the old data
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                ptr.as_ptr(),
+                new_block.as_ptr() as *mut u8,
+                new_layout.size(),
+            );
+        }
+        unsafe { self.deallocate(ptr, old_layout) };
+        Ok(new_block)
+    }
+}
+
+#[cfg(feature = "gc_allocator")]
+impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
+    fn collect(&self) {
+        MarkSweepGarbageCollector::collect(self);
+    }
+
+    fn gc_color(&self) -> TraceColor {
+        self.trace_color.get()
+    }
+
+    // Allocates a standard GC node for `value`, wrapping it in a `GcBox`
+    //
+    // the returned pointer is only valid while the collector (`&self`) is alive
+    // the lifetime ties the pointer to the collector
+    fn alloc_gc_node<'gc, T: Trace + 'static>(
+        &'gc self,
+        value: T,
+    ) -> Result<PoolPointer<'gc, GcBox<T>>, allocator_api2::alloc::AllocError> {
+        if self.collect_needed.get() && !self.is_collecting.get() {
+            self.collect_needed.set(false);
+            self.collect();
+        }
+
+        let gc_box = GcBox::new_in(value, self.trace_color.get());
+
+        // try_alloc creates a new arena page on OOM
+        let mut alloc = self.allocator.borrow_mut();
+        let arena_ptr = alloc
+            .try_alloc(gc_box)
+            .map_err(|_| allocator_api2::alloc::AllocError)?;
+        let needs_collect = !alloc.is_below_threshold();
+        drop(alloc);
+
+        // flag for a deferred collection if the heap crossed its threshold
+        if needs_collect {
+            self.collect_needed.set(true);
+        }
+
+        let erased: NonNull<PoolItem<GcBox<NonTraceable>>> = arena_ptr.as_ptr().cast();
+        if self.is_collecting.get() {
+            self.pending_root_queue.borrow_mut().push(erased);
+        } else {
+            self.root_queue.borrow_mut().push(erased);
+        }
+
+        Ok(arena_ptr)
+    }
+
+    // Allocates an ephemeron node for a (key, value) pair
+    //
+    // the returned pointer is only valid while the collector (`&self`) is alive
+    // the lifetime ties the pointer to the collector
+    fn alloc_ephemeron_node<'gc, K: Trace + 'static, V: Trace + 'static>(
+        &'gc self,
+        key: &crate::collectors::mark_sweep::pointers::Gc<K>,
+        value: V,
+    ) -> Result<PoolPointer<'gc, Ephemeron<K, V>>, allocator_api2::alloc::AllocError> {
+        if self.collect_needed.get() && !self.is_collecting.get() {
+            self.collect_needed.set(false);
+            self.collect();
+        }
+
+        let ephemeron = Ephemeron::new(key, value, self.trace_color.get());
+
+        let mut alloc = self.allocator.borrow_mut();
+        let inner_ptr = alloc
+            .try_alloc(ephemeron)
+            .map_err(|_| allocator_api2::alloc::AllocError)?;
+        let needs_collect = !alloc.is_below_threshold();
+        drop(alloc);
+
+        if needs_collect {
+            self.collect_needed.set(true);
+        }
+
+        let eph_ptr = inner_ptr
+            .as_ptr()
+            .cast::<PoolItem<Ephemeron<NonTraceable, NonTraceable>>>();
+
+        if self.is_collecting.get() {
+            self.pending_ephemeron_queue.borrow_mut().push(eph_ptr);
+        } else {
+            self.ephemeron_queue.borrow_mut().push(eph_ptr);
+        }
+
+        Ok(inner_ptr)
+    }
+
+    fn track_weak_map(
+        &self,
+        map: core::ptr::NonNull<
+            dyn crate::collectors::mark_sweep::pointers::weak_map::ErasedWeakMap,
+        >,
+    ) {
+        self.weak_maps.borrow_mut().push(map);
+    }
+}
+
+#[cfg(not(feature = "gc_allocator"))]
+impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
+    fn collect(&self) {
+        MarkSweepGarbageCollector::collect(self);
+    }
+
+    fn gc_color(&self) -> TraceColor {
+        self.trace_color.get()
+    }
+
+    // Allocates a standard GC node for `value`, wrapping it in a `GcBox`
+    //
+    // the returned pointer is only valid while the collector (`&self`) is alive
+    // the lifetime ties the pointer to the collector
+    fn alloc_gc_node<'gc, T: Trace + 'static>(
+        &'gc self,
+        value: T,
+    ) -> Result<PoolPointer<'gc, GcBox<T>>, crate::alloc::mempool3::PoolAllocError> {
+        if self.collect_needed.get() && !self.is_collecting.get() {
+            self.collect_needed.set(false);
+            self.collect();
+        }
+
+        let gc_box = GcBox::new_in(value, self.trace_color.get());
+
+        // try_alloc creates a new arena page on OOM — no pre-creation needed.
+        let mut alloc = self.allocator.borrow_mut();
+        let arena_ptr = alloc.try_alloc(gc_box)?;
+        let needs_collect = !alloc.is_below_threshold();
+        drop(alloc);
+
+        // flag for a deferred collection if the heap crossed its threshold
+        if needs_collect {
+            self.collect_needed.set(true);
+        }
+
+        let erased: NonNull<PoolItem<GcBox<NonTraceable>>> = arena_ptr.as_ptr().cast();
+        if self.is_collecting.get() {
+            self.pending_root_queue.borrow_mut().push(erased);
+        } else {
+            self.root_queue.borrow_mut().push(erased);
+        }
+
+        Ok(arena_ptr)
+    }
+
+    // Allocates an ephemeron node for a (key, value) pair
+    //
+    // the returned pointer is only valid while the collector (`&self`) is alive
+    // the lifetime ties the pointer to the collector
+    fn alloc_ephemeron_node<'gc, K: Trace + 'static, V: Trace + 'static>(
+        &'gc self,
+        key: &crate::collectors::mark_sweep::pointers::Gc<K>,
+        value: V,
+    ) -> Result<PoolPointer<'gc, Ephemeron<K, V>>, crate::alloc::mempool3::PoolAllocError> {
+        if self.collect_needed.get() && !self.is_collecting.get() {
+            self.collect_needed.set(false);
+            self.collect();
+        }
+
+        let ephemeron = Ephemeron::new(key, value, self.trace_color.get());
+
+        // try_alloc creates a new arena page on OOM
+        let mut alloc = self.allocator.borrow_mut();
+        let inner_ptr = alloc.try_alloc(ephemeron)?;
+        let needs_collect = !alloc.is_below_threshold();
+        drop(alloc);
+
+        if needs_collect {
+            self.collect_needed.set(true);
+        }
+
+        let eph_ptr = inner_ptr
+            .as_ptr()
+            .cast::<PoolItem<Ephemeron<NonTraceable, NonTraceable>>>();
+
+        if self.is_collecting.get() {
+            self.pending_ephemeron_queue.borrow_mut().push(eph_ptr);
+        } else {
+            self.ephemeron_queue.borrow_mut().push(eph_ptr);
+        }
+
+        Ok(inner_ptr)
+    }
+
+    fn track_weak_map(
+        &self,
+        map: core::ptr::NonNull<
+            dyn crate::collectors::mark_sweep::pointers::weak_map::ErasedWeakMap,
+        >,
+    ) {
+        self.weak_maps.borrow_mut().push(map);
     }
 }

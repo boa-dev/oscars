@@ -37,8 +37,6 @@ impl From<LayoutError> for ArenaAllocError {
 // This may also point to a different problem which is that the arena's as they
 // currently exist do not have a lifetime, their lifetime is derived from the
 // ArenaAllocator.
-//
-// But this may all be something to work on in arena3
 
 // NOTE: Vec may actually be better here over link list.
 
