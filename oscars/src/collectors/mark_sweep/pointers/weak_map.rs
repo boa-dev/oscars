@@ -1,7 +1,7 @@
 use rustc_hash::FxHashMap;
 
 use crate::{
-    alloc::arena3::ArenaPointer,
+    alloc::mempool3::PoolPointer,
     collectors::collector::Collector,
     collectors::mark_sweep::{Finalize, TraceColor, internals::Ephemeron, trace::Trace},
 };
@@ -20,7 +20,7 @@ pub trait ErasedWeakMap {
 //
 // TODO: a HashTable might be a better approach here
 struct WeakMapInner<K: Trace + 'static, V: Trace + 'static> {
-    entries: FxHashMap<usize, ArenaPointer<'static, Ephemeron<K, V>>>,
+    entries: FxHashMap<usize, PoolPointer<'static, Ephemeron<K, V>>>,
     is_alive: core::cell::Cell<bool>,
 }
 
@@ -41,7 +41,7 @@ impl<K: Trace, V: Trace> WeakMapInner<K, V> {
     fn insert_ptr(
         &mut self,
         key_addr: usize,
-        ephemeron_ptr: ArenaPointer<'static, Ephemeron<K, V>>,
+        ephemeron_ptr: PoolPointer<'static, Ephemeron<K, V>>,
     ) {
         self.entries.insert(key_addr, ephemeron_ptr);
     }

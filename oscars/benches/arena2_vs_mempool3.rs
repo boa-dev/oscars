@@ -6,12 +6,12 @@ fn bench_alloc_speed(c: &mut Criterion) {
 
     for num_objects in [100, 500, 1000].iter() {
         group.bench_with_input(
-            BenchmarkId::new("arena3", num_objects),
+            BenchmarkId::new("mempool3", num_objects),
             num_objects,
             |b, &num_objects| {
                 b.iter(|| {
                     let mut allocator =
-                        oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(65536);
+                        oscars::alloc::mempool3::PoolAllocator::default().with_page_size(65536);
 
                     let mut ptrs = Vec::new();
                     for i in 0..num_objects {
@@ -19,7 +19,7 @@ fn bench_alloc_speed(c: &mut Criterion) {
                         ptrs.push(ptr);
                     }
 
-                    black_box((ptrs.len(), allocator.arenas_len()))
+                    black_box((ptrs.len(), allocator.pools_len()))
                 });
             },
         );
@@ -34,6 +34,7 @@ fn bench_alloc_speed(c: &mut Criterion) {
 
                     let mut ptrs = Vec::new();
                     for i in 0..num_objects {
+                        let i: usize = i;
                         let ptr = allocator.try_alloc(i).expect("allocation failed");
                         ptrs.push(ptr);
                     }
@@ -59,12 +60,12 @@ fn bench_small_objects(c: &mut Criterion) {
 
     for num_objects in [100, 500, 1000].iter() {
         group.bench_with_input(
-            BenchmarkId::new("arena3", num_objects),
+            BenchmarkId::new("mempool3", num_objects),
             num_objects,
             |b, &num_objects| {
                 b.iter(|| {
                     let mut allocator =
-                        oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(32768);
+                        oscars::alloc::mempool3::PoolAllocator::default().with_page_size(32768);
 
                     for i in 0..num_objects {
                         let obj = SmallObject {
@@ -74,7 +75,7 @@ fn bench_small_objects(c: &mut Criterion) {
                         let _ = allocator.try_alloc(obj).expect("allocation failed");
                     }
 
-                    black_box(allocator.arenas_len())
+                    black_box(allocator.pools_len())
                 });
             },
         );
@@ -88,6 +89,7 @@ fn bench_small_objects(c: &mut Criterion) {
                         oscars::alloc::arena2::ArenaAllocator::default().with_arena_size(32768);
 
                     for i in 0..num_objects {
+                        let i: usize = i;
                         let obj = SmallObject {
                             _a: i as u64,
                             _b: i as u64 * 2,
@@ -107,10 +109,10 @@ fn bench_small_objects(c: &mut Criterion) {
 fn bench_mixed(c: &mut Criterion) {
     let mut group = c.benchmark_group("3_mixed_sizes");
 
-    group.bench_function("arena3", |b| {
+    group.bench_function("mempool3", |b| {
         b.iter(|| {
             let mut allocator =
-                oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(65536);
+                oscars::alloc::mempool3::PoolAllocator::default().with_page_size(65536);
 
             for _ in 0..50 {
                 let _ = allocator.try_alloc([0u8; 16]);
@@ -119,7 +121,7 @@ fn bench_mixed(c: &mut Criterion) {
                 let _ = allocator.try_alloc([0u8; 128]);
             }
 
-            black_box(allocator.arenas_len())
+            black_box(allocator.pools_len())
         });
     });
 
@@ -148,20 +150,20 @@ fn bench_density(c: &mut Criterion) {
 
     const PAGE_SIZE: usize = 4096;
 
-    group.bench_function("arena3", |b| {
+    group.bench_function("mempool3", |b| {
         b.iter(|| {
             let mut allocator =
-                oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(PAGE_SIZE);
+                oscars::alloc::mempool3::PoolAllocator::default().with_page_size(PAGE_SIZE);
 
             let mut count = 0;
             while allocator.try_alloc([0u64; 2]).is_ok() {
                 count += 1;
-                if allocator.arenas_len() > 1 {
+                if allocator.pools_len() > 1 {
                     break;
                 }
             }
 
-            black_box((count, allocator.arenas_len()))
+            black_box((count, allocator.pools_len()))
         });
     });
 
@@ -189,10 +191,10 @@ fn bench_density(c: &mut Criterion) {
 fn bench_vec_growth(c: &mut Criterion) {
     let mut group = c.benchmark_group("5_vec_growth");
 
-    group.bench_function("arena3", |b| {
+    group.bench_function("mempool3", |b| {
         b.iter(|| {
             let mut allocator =
-                oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(32768);
+                oscars::alloc::mempool3::PoolAllocator::default().with_page_size(32768);
 
             let mut cap = 1;
             while cap <= 1024 {
@@ -235,7 +237,7 @@ fn bench_vec_growth(c: &mut Criterion) {
                 cap *= 2;
             }
 
-            black_box(allocator.arenas_len())
+            black_box(allocator.pools_len())
         });
     });
 
@@ -296,16 +298,16 @@ fn bench_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("6_sustained_throughput");
     group.throughput(criterion::Throughput::Elements(10000));
 
-    group.bench_function("arena3", |b| {
+    group.bench_function("mempool3", |b| {
         b.iter(|| {
             let mut allocator =
-                oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(131072);
+                oscars::alloc::mempool3::PoolAllocator::default().with_page_size(131072);
 
             for i in 0..10000 {
                 let _ = allocator.try_alloc(i);
             }
 
-            black_box(allocator.arenas_len())
+            black_box(allocator.pools_len())
         });
     });
 
@@ -332,13 +334,13 @@ fn bench_dealloc_speed(c: &mut Criterion) {
     // using `iter_batched` ensures we only measure the deallocation phase
     for num_objects in [100, 500, 1000].iter() {
         group.bench_with_input(
-            BenchmarkId::new("arena3", num_objects),
+            BenchmarkId::new("mempool3", num_objects),
             num_objects,
             |b, &num_objects| {
                 b.iter_batched(
                     || {
                         let mut allocator =
-                            oscars::alloc::arena3::ArenaAllocator::default().with_arena_size(65536);
+                            oscars::alloc::mempool3::PoolAllocator::default().with_page_size(65536);
 
                         let mut ptrs = Vec::new();
                         for i in 0..num_objects {
@@ -347,12 +349,14 @@ fn bench_dealloc_speed(c: &mut Criterion) {
                         }
                         (allocator, ptrs)
                     },
-                    |(mut allocator, ptrs)| {
+                    |(mut allocator, ptrs): (_, _)| {
                         for ptr in ptrs {
-                            allocator.free_slot(ptr.as_ptr().cast::<u8>());
+                            unsafe {
+                                allocator.free_slot_typed(ptr.as_ptr());
+                            }
                         }
-                        allocator.drop_dead_arenas();
-                        black_box(allocator.arenas_len())
+                        allocator.drop_empty_pools();
+                        black_box(allocator.pools_len())
                     },
                     criterion::BatchSize::SmallInput,
                 );
@@ -370,12 +374,13 @@ fn bench_dealloc_speed(c: &mut Criterion) {
 
                         let mut ptrs = Vec::new();
                         for i in 0..num_objects {
+                            let i: usize = i;
                             let ptr = allocator.try_alloc(i).expect("allocation failed");
                             ptrs.push(ptr);
                         }
                         (allocator, ptrs)
                     },
-                    |(mut allocator, ptrs)| {
+                    |(mut allocator, ptrs): (_, _)| {
                         for ptr in ptrs {
                             let mut heap_item_ptr = ptr.as_ptr();
                             unsafe {
