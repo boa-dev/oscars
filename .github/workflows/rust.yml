@@ -35,6 +35,40 @@ jobs:
       - name: Check clippy (No features)
         run: cargo ws exec cargo clippy --no-default-features --all-targets
 
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
+      - name: Run tests (all features)
+        run: cargo test --all-features
+      - name: Run tests (no default features)
+        run: cargo test --no-default-features
+
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    env:
+      # Catch pointer bugs and invalid memory access.
+      # Ignore errors from system calls that Miri doesn't support yet.
+      MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-isolation-error=warn
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: miri
+      - name: Set up Miri
+        run: cargo +nightly miri setup
+      - name: Run tests under Miri
+        run: cargo +nightly miri test -p oscars
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest

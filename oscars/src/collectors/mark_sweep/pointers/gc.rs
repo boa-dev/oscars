@@ -44,8 +44,12 @@ impl<T: Trace> Gc<T> {
 
 impl<T: Trace + ?Sized> Gc<T> {
     pub(crate) fn as_sized_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
-        let heap_item = unsafe { self.as_heap_ptr().as_mut() };
-        unsafe { NonNull::new_unchecked(heap_item.as_ptr()) }
+        // SAFETY: use `&raw mut` to get a raw pointer without creating
+        // a `&mut` reference, avoiding Stacked Borrows UB during GC tracing
+        let raw: *mut PoolItem<GcBox<NonTraceable>> = self.as_heap_ptr().as_ptr();
+        // SAFETY: `raw` is non-null because it comes from `as_heap_ptr()`
+        // `PoolItem` is `#[repr(transparent)]` so it shares the same address as field 0
+        unsafe { NonNull::new_unchecked(&raw mut (*raw).0) }
     }
 
     pub(crate) fn as_heap_ptr(&self) -> NonNull<ArenaHeapItem<GcBox<NonTraceable>>> {

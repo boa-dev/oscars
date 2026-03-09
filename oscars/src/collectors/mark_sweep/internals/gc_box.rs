@@ -45,10 +45,10 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
 
     pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
         // SAFETY: `as_heap_ptr` returns a valid pointer to
-        // `ArenaHeapItem` whose lifetime is tied to the arena
-        let heap_item = unsafe { self.as_heap_ptr().as_mut() };
-        // SAFETY: We just removed this value from a NonNull
-        unsafe { NonNull::new_unchecked(heap_item.as_ptr()) }
+        // `PoolItem` whose lifetime is tied to the pool
+        let heap_item: *mut PoolItem<GcBox<NonTraceable>> = self.as_heap_ptr().as_ptr();
+        // SAFETY: `PoolItem` is repr(transparent), so pointing to and returning field 0 is valid.
+        unsafe { NonNull::new_unchecked(&raw mut (*heap_item).0) }
     }
 
     pub(crate) fn as_heap_ptr(&self) -> NonNull<ArenaHeapItem<GcBox<NonTraceable>>> {

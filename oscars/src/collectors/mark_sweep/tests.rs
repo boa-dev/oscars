@@ -445,6 +445,10 @@ mod gc_edge_cases {
             next: Option<Gc<Node>>,
         }
 
+        #[cfg(miri)]
+        const DEPTH: usize = 20;
+
+        #[cfg(not(miri))]
         const DEPTH: usize = 1_000;
 
         let mut head = Gc::new_in(Node { _id: 0, next: None }, collector);
@@ -613,6 +617,10 @@ mod gc_edge_cases {
             next: Option<Gc<Chain>>,
         }
 
+        #[cfg(miri)]
+        const LEN: usize = 20;
+
+        #[cfg(not(miri))]
         const LEN: usize = 500;
 
         let mut head = Gc::new_in(Chain { next: None }, collector);
