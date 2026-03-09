@@ -7,7 +7,7 @@ use core::cell::{Cell, RefCell};
 use core::ptr::NonNull;
 
 use crate::{
-    alloc::arena3::{ArenaAllocator, ArenaHeapItem, ArenaPointer},
+    alloc::mempool3::{PoolAllocator, PoolItem, PoolPointer},
     collectors::mark_sweep::internals::{Ephemeron, GcBox, NonTraceable},
 };
 use rust_alloc::vec::Vec;
@@ -33,8 +33,8 @@ pub use trace::{Finalize, Trace, TraceColor};
 #[cfg(feature = "gc_allocator")]
 pub use gc_collections::{GcAllocBox, GcAllocVec};
 
-type GcErasedPointer = NonNull<ArenaHeapItem<GcBox<NonTraceable>>>;
-pub(crate) type ErasedEphemeron = NonNull<ArenaHeapItem<Ephemeron<NonTraceable, NonTraceable>>>;
+type GcErasedPointer = NonNull<PoolItem<GcBox<NonTraceable>>>;
+pub(crate) type ErasedEphemeron = NonNull<PoolItem<Ephemeron<NonTraceable, NonTraceable>>>;
 
 /* TODO: Figure out the best way to adapt the thread local concept in no_std
 *
@@ -56,7 +56,7 @@ pub(crate) type ErasedEphemeron = NonNull<ArenaHeapItem<Ephemeron<NonTraceable, 
 pub struct MarkSweepGarbageCollector {
     // we use RefCell so we can borrow the arena mutably via &self
     // this fits the Allocator trait and is safe for single-threaded use
-    pub(crate) allocator: RefCell<ArenaAllocator<'static>>,
+    pub(crate) allocator: RefCell<PoolAllocator<'static>>,
     root_queue: RefCell<Vec<GcErasedPointer>>,
     ephemeron_queue: RefCell<Vec<ErasedEphemeron>>,
     // current trace color epoch, flips each cycle
@@ -79,17 +79,17 @@ impl MarkSweepGarbageCollector {
         self
     }
 
-    pub fn with_arena_size(mut self, arena_size: usize) -> Self {
-        self.allocator.get_mut().arena_size = arena_size;
+    pub fn with_page_size(mut self, page_size: usize) -> Self {
+        self.allocator.get_mut().page_size = page_size;
         self
     }
 
-    //returns the number of live arenas held by this collector
+    // returns the number of live slot pools + bump pages held by this collector
     //
-    //prefer this over accessing `self.allocator` directly in tests so that
-    //the arena representation can change without touching every call site
-    pub fn arenas_len(&self) -> usize {
-        self.allocator.borrow().arenas_len()
+    // prefer this over accessing `self.allocator` directly in tests so that
+    // the pool representation can change without touching every call site
+    pub fn pools_len(&self) -> usize {
+        self.allocator.borrow().pools_len()
     }
 }
 
@@ -125,7 +125,7 @@ impl Drop for MarkSweepGarbageCollector {
         // SAFETY:
         // `Gc<T>` pointers act as if they live forever (`'static`).
         // if the GC drops while they exist, we leak the memory to prevent a UAF
-        if self.arenas_len() > 0
+        if self.pools_len() > 0
             && (!self.root_queue.borrow().is_empty()
                 || !self.pending_root_queue.borrow().is_empty())
         {
@@ -143,26 +143,16 @@ impl Drop for MarkSweepGarbageCollector {
 
 // ==== Collection methods ====
 
-// RAII guard that clears `is_collecting` even if a Trace or Finalize impl panics
-// without this, a panic inside run_mark_phase / run_sweep_phase would leave
-// is_collecting == true forever, silently disabling the deferred collect
-struct CollectingGuard<'a>(&'a Cell<bool>);
-
-impl Drop for CollectingGuard<'_> {
-    fn drop(&mut self) {
-        self.0.set(false);
-    }
-}
-
 impl MarkSweepGarbageCollector {
-    // trigger a full collection cycle
-    //
-    // exposes `&self` to run without borrow conflicts when live collections exist
     pub fn collect(&self) {
-        // lock the main queues so allocations buffer into pending queues
-        // the guard resets is_collecting even if a Trace/Finalize impl panics
         self.is_collecting.set(true);
-        let _guard = CollectingGuard(&self.is_collecting);
+        struct CollectionGuard<'a>(&'a Cell<bool>);
+        impl<'a> Drop for CollectionGuard<'a> {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
+        let _guard = CollectionGuard(&self.is_collecting);
 
         self.run_mark_phase();
 
@@ -176,7 +166,7 @@ impl MarkSweepGarbageCollector {
 
         // finally tell the allocator to reclaim raw OS memory
         // from arenas that are completely empty now
-        self.allocator.borrow_mut().drop_dead_arenas();
+        self.allocator.borrow_mut().drop_empty_pools();
     }
 
     // Force drops all elements in the internal tracking queues and clears
@@ -241,9 +231,9 @@ impl MarkSweepGarbageCollector {
         let new_color = sweep_color.flip();
         self.trace_color.set(new_color);
 
-        // NOTE: It would actually be interesting to reuse the arenas that are dead rather
+        // NOTE: It would actually be interesting to reuse the pools that are empty rather
         // than drop the page and reallocate when a new page is needed ... TBD
-        self.allocator.borrow_mut().drop_dead_arenas();
+        self.allocator.borrow_mut().drop_empty_pools();
 
         // Drain pending queues while `is_collecting` is still true so that any
         // allocation triggered by `drop(_guard)` flushes to pending (not main)
@@ -449,7 +439,7 @@ unsafe impl allocator_api2::alloc::Allocator for MarkSweepGarbageCollector {
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, _layout: allocator_api2::alloc::Layout) {
         // decrements active_raw_allocs for the arena containing ptr
-        // allowing drop_dead_arenas to reclaim the page when it reaches zero
+        // allowing drop_empty_pools to reclaim the page when it reaches zero
         self.allocator.borrow_mut().dealloc_bytes(ptr);
 
         // debug only: remove from tracking
@@ -572,7 +562,7 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
     fn alloc_gc_node<'gc, T: Trace + 'static>(
         &'gc self,
         value: T,
-    ) -> Result<ArenaPointer<'gc, GcBox<T>>, allocator_api2::alloc::AllocError> {
+    ) -> Result<PoolPointer<'gc, GcBox<T>>, allocator_api2::alloc::AllocError> {
         if self.collect_needed.get() && !self.is_collecting.get() {
             self.collect_needed.set(false);
             self.collect();
@@ -593,7 +583,7 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
             self.collect_needed.set(true);
         }
 
-        let erased: NonNull<ArenaHeapItem<GcBox<NonTraceable>>> = arena_ptr.as_ptr().cast();
+        let erased: NonNull<PoolItem<GcBox<NonTraceable>>> = arena_ptr.as_ptr().cast();
         if self.is_collecting.get() {
             self.pending_root_queue.borrow_mut().push(erased);
         } else {
@@ -611,7 +601,7 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
         &'gc self,
         key: &crate::collectors::mark_sweep::pointers::Gc<K>,
         value: V,
-    ) -> Result<ArenaPointer<'gc, Ephemeron<K, V>>, allocator_api2::alloc::AllocError> {
+    ) -> Result<PoolPointer<'gc, Ephemeron<K, V>>, allocator_api2::alloc::AllocError> {
         if self.collect_needed.get() && !self.is_collecting.get() {
             self.collect_needed.set(false);
             self.collect();
@@ -632,7 +622,7 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
 
         let eph_ptr = inner_ptr
             .as_ptr()
-            .cast::<ArenaHeapItem<Ephemeron<NonTraceable, NonTraceable>>>();
+            .cast::<PoolItem<Ephemeron<NonTraceable, NonTraceable>>>();
 
         if self.is_collecting.get() {
             self.pending_ephemeron_queue.borrow_mut().push(eph_ptr);
@@ -670,7 +660,7 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
     fn alloc_gc_node<'gc, T: Trace + 'static>(
         &'gc self,
         value: T,
-    ) -> Result<ArenaPointer<'gc, GcBox<T>>, crate::alloc::arena3::ArenaAllocError> {
+    ) -> Result<PoolPointer<'gc, GcBox<T>>, crate::alloc::mempool3::PoolAllocError> {
         if self.collect_needed.get() && !self.is_collecting.get() {
             self.collect_needed.set(false);
             self.collect();
@@ -689,7 +679,7 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
             self.collect_needed.set(true);
         }
 
-        let erased: NonNull<ArenaHeapItem<GcBox<NonTraceable>>> = arena_ptr.as_ptr().cast();
+        let erased: NonNull<PoolItem<GcBox<NonTraceable>>> = arena_ptr.as_ptr().cast();
         if self.is_collecting.get() {
             self.pending_root_queue.borrow_mut().push(erased);
         } else {
@@ -707,7 +697,7 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
         &'gc self,
         key: &crate::collectors::mark_sweep::pointers::Gc<K>,
         value: V,
-    ) -> Result<ArenaPointer<'gc, Ephemeron<K, V>>, crate::alloc::arena3::ArenaAllocError> {
+    ) -> Result<PoolPointer<'gc, Ephemeron<K, V>>, crate::alloc::mempool3::PoolAllocError> {
         if self.collect_needed.get() && !self.is_collecting.get() {
             self.collect_needed.set(false);
             self.collect();
@@ -727,7 +717,7 @@ impl crate::collectors::collector::Collector for MarkSweepGarbageCollector {
 
         let eph_ptr = inner_ptr
             .as_ptr()
-            .cast::<ArenaHeapItem<Ephemeron<NonTraceable, NonTraceable>>>();
+            .cast::<PoolItem<Ephemeron<NonTraceable, NonTraceable>>>();
 
         if self.is_collecting.get() {
             self.pending_ephemeron_queue.borrow_mut().push(eph_ptr);

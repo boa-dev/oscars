@@ -1,6 +1,6 @@
 use core::any::TypeId;
 
-use crate::alloc::arena3::ArenaHeapItem;
+use crate::alloc::mempool3::PoolItem;
 
 use crate::collectors::mark_sweep::{GcBox, GcErasedPointer, Trace, TraceColor};
 
@@ -11,7 +11,7 @@ pub(crate) const fn vtable_of<T: Trace + 'static>() -> &'static VTable {
 
         unsafe fn trace_fn(this: GcErasedPointer, color: TraceColor) {
             // SAFETY: The caller must ensure that the passed erased pointer is `GcBox<Self>`.
-            let value = unsafe { this.cast::<ArenaHeapItem<GcBox<Self>>>().as_ref().value() };
+            let value = unsafe { this.cast::<PoolItem<GcBox<Self>>>().as_ref().value() };
 
             // SAFETY: The implementor must ensure that `trace` is correctly implemented.
             unsafe {
@@ -22,7 +22,7 @@ pub(crate) const fn vtable_of<T: Trace + 'static>() -> &'static VTable {
         // SAFETY: The caller must ensure that the passed erased pointer is `GcBox<Self>`.
         unsafe fn drop_fn(this: GcErasedPointer) {
             // SAFETY: The caller must ensure that the passed erased pointer is `GcBox<Self>`.
-            let mut this = this.cast::<ArenaHeapItem<GcBox<Self>>>();
+            let mut this = this.cast::<PoolItem<GcBox<Self>>>();
 
             // SAFETY: The caller must ensure the erased pointer is not dropped or deallocated.
             unsafe { core::ptr::drop_in_place(this.as_mut()) };

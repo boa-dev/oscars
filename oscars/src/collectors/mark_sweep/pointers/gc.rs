@@ -1,4 +1,4 @@
-use crate::alloc::arena3::{ArenaHeapItem, ArenaPointer, ErasedArenaPointer};
+use crate::alloc::mempool3::{ErasedPoolPointer, PoolItem, PoolPointer};
 use crate::collectors::collector::Collector;
 use crate::collectors::mark_sweep::Finalize;
 use crate::collectors::mark_sweep::internals::NonTraceable;
@@ -11,7 +11,7 @@ use core::{marker::PhantomData, ptr::NonNull};
 
 /// A garbage-collected pointer type over an immutable value.
 pub struct Gc<T: Trace + ?Sized + 'static> {
-    pub(crate) inner_ptr: ErasedArenaPointer<'static>,
+    pub(crate) inner_ptr: ErasedPoolPointer<'static>,
     pub(crate) marker: PhantomData<T>,
 }
 
@@ -37,8 +37,8 @@ impl<T: Trace> Gc<T> {
 }
 
 impl<T: Trace> Gc<T> {
-    pub(crate) fn inner_ptr(&self) -> ArenaPointer<'static, GcBox<T>> {
-        unsafe { self.inner_ptr.to_typed_arena_pointer::<GcBox<T>>() }
+    pub(crate) fn inner_ptr(&self) -> PoolPointer<'static, GcBox<T>> {
+        unsafe { self.inner_ptr.to_typed_pool_pointer::<GcBox<T>>() }
     }
 }
 
@@ -52,10 +52,10 @@ impl<T: Trace + ?Sized> Gc<T> {
         unsafe { NonNull::new_unchecked(&raw mut (*raw).0) }
     }
 
-    pub(crate) fn as_heap_ptr(&self) -> NonNull<ArenaHeapItem<GcBox<NonTraceable>>> {
+    pub(crate) fn as_heap_ptr(&self) -> NonNull<PoolItem<GcBox<NonTraceable>>> {
         self.inner_ptr
             .as_non_null()
-            .cast::<ArenaHeapItem<GcBox<NonTraceable>>>()
+            .cast::<PoolItem<GcBox<NonTraceable>>>()
     }
 
     pub(crate) fn inner_ref(&self) -> &GcBox<NonTraceable> {
