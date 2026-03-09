@@ -400,3 +400,83 @@ fn collector_drop_runs_destructors_for_live_gc_values() {
 
     assert_eq!(drops.get(), 1, "collector drop should run value destructor");
 }
+
+#[test]
+fn weak_map_allocations_are_accounted_as_external_bytes() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
+
+    assert_eq!(collector.external_bytes(), 0);
+
+    let _first = WeakMap::<u64, u64>::new(collector);
+    let first_allocation = collector.external_bytes();
+    assert!(
+        first_allocation > 0,
+        "expected external accounting to increase"
+    );
+
+    // Keep allocating collector-owned weak maps until external pressure alone
+    // pushes us over the threshold margin.
+    let mut maps = rust_alloc::vec::Vec::new();
+    while collector.allocator.is_below_threshold() {
+        assert!(maps.len() < 128, "external threshold never tripped");
+        maps.push(WeakMap::<u64, u64>::new(collector));
+    }
+
+    assert!(
+        collector.external_bytes() >= first_allocation,
+        "expected tracked external bytes to be monotonic"
+    );
+    assert!(
+        !collector.allocator.is_below_threshold(),
+        "external allocations should influence threshold checks"
+    );
+}
+
+#[test]
+fn collector_drop_runs_ephemeron_finalizers_for_live_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct FinalizeSpy {
+        finalized: Rc<Cell<u32>>,
+    }
+
+    impl Finalize for FinalizeSpy {
+        fn finalize(&self) {
+            self.finalized.set(self.finalized.get() + 1);
+        }
+    }
+
+    // SAFETY: `FinalizeSpy` has no traceable children.
+    unsafe impl Trace for FinalizeSpy {
+        crate::empty_trace!();
+    }
+
+    let finalized = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_arena_size(128)
+            .with_heap_threshold(256);
+
+        let mut map = WeakMap::new(collector);
+        let key = Gc::new_in(1u64, collector);
+
+        map.insert(
+            &key,
+            FinalizeSpy {
+                finalized: Rc::clone(&finalized),
+            },
+            collector,
+        );
+
+        assert_eq!(finalized.get(), 0);
+    }
+
+    assert_eq!(
+        finalized.get(),
+        1,
+        "collector drop should run ephemeron value finalizer"
+    );
+}
