@@ -52,7 +52,6 @@ const DEFAULT_HEAP_THRESHOLD: usize = 2_097_152;
 pub struct ArenaAllocator<'alloc> {
     heap_threshold: usize,
     arena_size: usize,
-    external_bytes: usize,
     arenas: LinkedList<Arena<'alloc>>,
 }
 
@@ -61,7 +60,6 @@ impl<'alloc> Default for ArenaAllocator<'alloc> {
         Self {
             heap_threshold: DEFAULT_HEAP_THRESHOLD,
             arena_size: DEFAULT_ARENA_SIZE,
-            external_bytes: 0,
             arenas: LinkedList::default(),
         }
     }
@@ -85,40 +83,12 @@ impl<'alloc> ArenaAllocator<'alloc> {
         self.arenas_len() * self.arena_size
     }
 
-    pub fn external_bytes(&self) -> usize {
-        self.external_bytes
-    }
-
-    pub fn total_tracked_bytes(&self) -> usize {
-        self.heap_size().saturating_add(self.external_bytes)
-    }
-
     pub fn is_below_threshold(&self) -> bool {
-        self.total_tracked_bytes() <= self.heap_threshold.saturating_sub(self.arena_size)
+        self.heap_size() <= self.heap_threshold - self.arena_size
     }
 
     pub fn increase_threshold(&mut self) {
         self.heap_threshold += self.arena_size * 4
-    }
-
-    pub fn track_external_allocation(&mut self, size: usize) -> bool {
-        match self.external_bytes.checked_add(size) {
-            Some(updated) => {
-                self.external_bytes = updated;
-                true
-            }
-            None => false,
-        }
-    }
-
-    pub fn untrack_external_allocation(&mut self, size: usize) -> bool {
-        match self.external_bytes.checked_sub(size) {
-            Some(updated) => {
-                self.external_bytes = updated;
-                true
-            }
-            None => false,
-        }
     }
 }
 
