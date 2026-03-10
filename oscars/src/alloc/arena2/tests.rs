@@ -77,7 +77,7 @@ fn arc_drop() {
         let heap_item_mut = heap_item.as_mut();
         // Manually drop the heap item
         heap_item_mut.mark_dropped();
-        drop_in_place(heap_item_mut.as_ptr());
+        drop_in_place(ArenaHeapItem::as_value_ptr(heap_item));
     };
 
     assert!(dropped.load(Ordering::SeqCst));

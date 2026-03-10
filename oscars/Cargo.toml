@@ -23,6 +23,10 @@ required-features = ["gc_allocator"]
 name = "arena2_vs_mempool3"
 harness = false
 
+[[bench]]
+name = "arena2_vs_boa_gc"
+harness = false
+
 [features]
 default = ["mark_sweep"]
 std = []
