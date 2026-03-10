@@ -163,10 +163,6 @@ impl MarkSweepGarbageCollector {
         // memory so we can still inspect the trace color on ephemerons;
         // use sweep_color since alive objects were marked with it.
         self.sweep_trace_color(sweep_color);
-
-        // finally tell the allocator to reclaim raw OS memory
-        // from arenas that are completely empty now
-        self.allocator.borrow_mut().drop_empty_pools();
     }
 
     // Force drops all elements in the internal tracking queues and clears
@@ -235,8 +231,9 @@ impl MarkSweepGarbageCollector {
         let new_color = sweep_color.flip();
         self.trace_color.set(new_color);
 
-        // NOTE: It would actually be interesting to reuse the pools that are empty rather
-        // than drop the page and reallocate when a new page is needed ... TBD
+        // Reclaim OS memory from pool pages that became fully empty during the sweep above.
+        // Empty pool pages are parked in a recycle list rather than immediately freed to the OS,
+        // allowing the next try_alloc to pull from that list and avoid OS allocation thrashing.
         self.allocator.borrow_mut().drop_empty_pools();
 
         // Drain pending queues while `is_collecting` is still true so that any

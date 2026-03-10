@@ -69,12 +69,14 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
 }
 
 impl<T: Trace> WeakGcBox<T> {
+    #[allow(dead_code)] // TODO: could be used for safe upgrading of weak refs
     pub(crate) fn inner_ptr(&self) -> crate::alloc::arena2::ArenaPointer<'static, GcBox<T>> {
         // SAFETY: This pointer started out as a `GcBox<T>`, so it's safe to cast
         // it back, the `PhantomData` guarantees that the type `T` is still correct
         unsafe { self.inner_ptr.to_typed_arena_pointer::<GcBox<T>>() }
     }
 
+    #[allow(dead_code)] // TODO: could be used to safely resolve weak refs
     pub fn value(&self) -> &T {
         self.inner_ptr().as_inner_ref().value()
     }
@@ -138,6 +140,7 @@ impl<T: Trace + ?Sized> GcBox<T> {
         }
     }
 
+    #[allow(dead_code)] // TODO: could be used for debugging root leaks
     pub fn roots(&self) -> u16 {
         self.header.roots()
     }
@@ -154,6 +157,7 @@ impl<T: Trace + ?Sized> GcBox<T> {
         self.header.is_rooted()
     }
 
+    #[allow(dead_code)] // TODO: figure out what to do with this
     pub fn mark(&self) {
         self.header.mark(HeaderColor::Grey);
     }

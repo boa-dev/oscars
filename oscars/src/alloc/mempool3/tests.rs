@@ -173,3 +173,64 @@ fn slot_count_tight_capacity() {
     assert_eq!(bitmap_bytes, 8);
     assert_eq!(slot_count, 7);
 }
+
+/// Verify that recycled empty slot pools are reused on the next `try_alloc`
+/// without allocating new OS memory, the heap_size should be unchanged.
+#[test]
+fn recycled_pool_avoids_realloc() {
+    let mut allocator = PoolAllocator::default().with_page_size(4096);
+
+    let ptrs: Vec<_> = (0u64..16)
+        .map(|i| allocator.try_alloc(i).unwrap().as_ptr())
+        .collect();
+    assert_eq!(allocator.slot_pools.len(), 1);
+    let heap_after_first_alloc = allocator.current_heap_size;
+
+    for ptr in ptrs {
+        allocator.free_slot(ptr.cast::<u8>());
+    }
+    allocator.drop_empty_pools();
+
+    assert_eq!(allocator.slot_pools.len(), 0);
+    assert_eq!(allocator.recycled_pools.len(), 1);
+    assert_eq!(allocator.current_heap_size, heap_after_first_alloc);
+
+    let heap_before_second_alloc = allocator.current_heap_size;
+    for i in 16u64..32 {
+        let _ = allocator.try_alloc(i).unwrap();
+    }
+
+    assert_eq!(allocator.slot_pools.len(), 1);
+    assert_eq!(allocator.recycled_pools.len(), 0);
+    assert_eq!(allocator.current_heap_size, heap_before_second_alloc);
+}
+
+/// Verify that when more pools become empty than `max_recycled` allows,
+/// the overflow is freed to the OS.
+#[test]
+fn max_recycled_cap_respected() {
+    let mut allocator = PoolAllocator::default().with_page_size(32);
+    allocator.max_recycled = 0;
+
+    let p1 = allocator.try_alloc(1u64).unwrap().as_ptr();
+    let px = allocator.try_alloc(2u64).unwrap().as_ptr();
+    let py = allocator.try_alloc(3u64).unwrap().as_ptr();
+    assert_eq!(allocator.slot_pools.len(), 1);
+
+    let p2 = allocator.try_alloc(4u64).unwrap().as_ptr();
+    assert_eq!(allocator.slot_pools.len(), 2);
+
+    let heap_before = allocator.current_heap_size;
+
+    allocator.free_slot(p1.cast::<u8>());
+    allocator.free_slot(px.cast::<u8>());
+    allocator.free_slot(py.cast::<u8>());
+    allocator.free_slot(p2.cast::<u8>());
+
+    allocator.max_recycled = 1;
+    allocator.drop_empty_pools();
+
+    assert_eq!(allocator.slot_pools.len(), 0);
+    assert_eq!(allocator.recycled_pools.len(), 1);
+    assert!(allocator.current_heap_size < heap_before);
+}
