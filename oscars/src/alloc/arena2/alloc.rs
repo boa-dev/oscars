@@ -405,6 +405,10 @@ impl<'arena> Arena<'arena> {
             self.run_drop_check(),
             "reset() called on an arena with live items"
         );
+        // Zero the buffer so stale object graphs are not observable after recycling.
+        // SAFETY: buffer is valid for the full layout size and was allocated with
+        // the same layout in try_init.
+        unsafe { core::ptr::write_bytes(self.buffer.as_ptr(), 0, self.layout.size()) };
         self.flags.set(ArenaState::default());
         self.last_allocation.set(core::ptr::null_mut());
         self.current_offset.set(0);

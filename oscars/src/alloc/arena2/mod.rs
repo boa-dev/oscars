@@ -159,19 +159,14 @@ impl<'alloc> ArenaAllocator<'alloc> {
     }
 
     pub fn drop_dead_arenas(&mut self) {
-        let dead_arenas: rust_alloc::vec::Vec<Arena> =
-            self.arenas.extract_if(|a| a.run_drop_check()).collect();
-
-        for arena in dead_arenas {
+        for arena in self.arenas.extract_if(|a| a.run_drop_check()) {
             if self.recycled_count < MAX_RECYCLED_ARENAS {
                 //reset in place and park in the reserve.
                 arena.reset();
                 self.recycled_arenas[self.recycled_count] = Some(arena);
                 self.recycled_count += 1;
-            } else {
-                // Reserve is full so free this arena to the OS.
-                drop(arena);
             }
+            // else: arena drops here, returning memory to the OS
         }
     }
 

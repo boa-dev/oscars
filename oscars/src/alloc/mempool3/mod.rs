@@ -303,12 +303,7 @@ impl<'alloc> PoolAllocator<'alloc> {
     /// to avoid global allocator round trips on the next allocation.
     pub fn drop_empty_pools(&mut self) {
         // Drain fully empty slot pools into the recycle list.
-        let empties: Vec<SlotPool> = self
-            .slot_pools
-            .extract_if(.., |p| p.run_drop_check())
-            .collect();
-
-        for pool in empties {
+        for pool in self.slot_pools.extract_if(.., |p| p.run_drop_check()) {
             if self.recycled_pools.len() < self.max_recycled {
                 pool.reset();
                 self.recycled_pools.push(pool);

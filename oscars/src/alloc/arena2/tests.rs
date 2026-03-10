@@ -110,6 +110,8 @@ fn recycled_arena_avoids_realloc() {
     // After recycling, the arena is parked, no live arenas, so heap_size is 0.
     assert_eq!(allocator.arenas_len(), 0);
     assert_eq!(allocator.heap_size(), 0);
+    // recycled_count == 1 proves the arena was parked in the recycle slot, not freed to the OS.
+    assert_eq!(allocator.recycled_count, 1);
 
     // Allocate again, must reuse the recycled arena without growing OS footprint.
     // heap_size returns to the same value as when a live arena was present.
@@ -118,6 +120,8 @@ fn recycled_arena_avoids_realloc() {
     }
     assert_eq!(allocator.arenas_len(), 1);
     assert_eq!(allocator.heap_size(), heap_while_live);
+    // recycled_count == 0 proves the recycled slot was consumed rather than a new OS allocation.
+    assert_eq!(allocator.recycled_count, 0);
 }
 
 #[test]
