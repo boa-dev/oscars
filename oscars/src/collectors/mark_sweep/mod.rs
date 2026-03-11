@@ -124,11 +124,19 @@ impl Drop for MarkSweepGarbageCollector {
 
         // SAFETY:
         // `Gc<T>` pointers act as if they live forever (`'static`).
-        // if the GC drops while they exist, we leak the memory to prevent a UAF
-        if self.pools_len() > 0
-            && (!self.root_queue.borrow().is_empty()
-                || !self.pending_root_queue.borrow().is_empty())
-        {
+        // if the GC drops while rooted values still exist, we leak memory to prevent UAF.
+        let has_rooted_values = self
+            .root_queue
+            .borrow()
+            .iter()
+            .any(|node| unsafe { node.as_ref().value().is_rooted() })
+            || self
+                .pending_root_queue
+                .borrow()
+                .iter()
+                .any(|node| unsafe { node.as_ref().value().is_rooted() });
+
+        if self.pools_len() > 0 && has_rooted_values {
             // Unrooted items are NOT swept here so they intentionally leak
             // instead of triggering a Use-After-Free.
             // The underlying arena pools WILL be dropped (and OS memory reclaimed)
@@ -179,7 +187,9 @@ impl MarkSweepGarbageCollector {
         let ephemerons = core::mem::take(&mut *self.ephemeron_queue.borrow_mut());
         for ephemeron in ephemerons {
             let ephemeron_ref = unsafe { ephemeron.as_ref() };
-            unsafe { ephemeron_ref.value().drop_fn()(ephemeron) };
+            let vtable = ephemeron_ref.value();
+            unsafe { vtable.finalize_fn()(ephemeron) };
+            unsafe { vtable.drop_fn()(ephemeron) };
             self.allocator
                 .borrow_mut()
                 .free_slot(ephemeron.cast::<u8>());
@@ -188,14 +198,18 @@ impl MarkSweepGarbageCollector {
         let roots = core::mem::take(&mut *self.root_queue.borrow_mut());
         for node in roots {
             let node_ref = unsafe { node.as_ref() };
-            unsafe { node_ref.value().drop_fn()(node) };
+            let gc_box = node_ref.value();
+            unsafe { gc_box.finalize_fn()(node) };
+            unsafe { gc_box.drop_fn()(node) };
             self.allocator.borrow_mut().free_slot(node.cast::<u8>());
         }
 
         let pending_e = core::mem::take(&mut *self.pending_ephemeron_queue.borrow_mut());
         for ephemeron in pending_e {
             let ephemeron_ref = unsafe { ephemeron.as_ref() };
-            unsafe { ephemeron_ref.value().drop_fn()(ephemeron) };
+            let vtable = ephemeron_ref.value();
+            unsafe { vtable.finalize_fn()(ephemeron) };
+            unsafe { vtable.drop_fn()(ephemeron) };
             self.allocator
                 .borrow_mut()
                 .free_slot(ephemeron.cast::<u8>());
@@ -204,7 +218,9 @@ impl MarkSweepGarbageCollector {
         let pending_r = core::mem::take(&mut *self.pending_root_queue.borrow_mut());
         for node in pending_r {
             let node_ref = unsafe { node.as_ref() };
-            unsafe { node_ref.value().drop_fn()(node) };
+            let gc_box = node_ref.value();
+            unsafe { gc_box.finalize_fn()(node) };
+            unsafe { gc_box.drop_fn()(node) };
             self.allocator.borrow_mut().free_slot(node.cast::<u8>());
         }
     }
@@ -294,7 +310,7 @@ impl MarkSweepGarbageCollector {
                 // Check if the value is not reachable, i.e. dead.
                 if !gc_box.is_reachable(color) {
                     // Finalize the dead item
-                    gc_box.finalize();
+                    unsafe { gc_box.finalize_fn()(*node) };
                     // Recheck if the value is now rooted again after finalization.
                     if gc_box.is_rooted() {
                         unsafe { gc_box.trace_fn()(*node, color) };
