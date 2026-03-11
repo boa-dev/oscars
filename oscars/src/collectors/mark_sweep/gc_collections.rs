@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn gc_alloc_vec_basic() {
-        let collector = &MarkSweepGarbageCollector::default();
+        let collector = &mut MarkSweepGarbageCollector::default();
         let vec = GcAllocVec::new_in(collector);
         let gc_vec = Gc::new_in(GcRefCell::new(vec), collector);
 
@@ -214,16 +214,19 @@ mod tests {
         assert_eq!(gc_vec.borrow()[0], 1);
         assert_eq!(gc_vec.borrow()[1], 2);
         assert_eq!(gc_vec.borrow()[2], 3);
+
+        drop(gc_vec);
+        collector.collect();
     }
 
     #[test]
     fn gc_alloc_vec_survives_collection() {
-        let collector = &mut MarkSweepGarbageCollector::default()
+        let collector = MarkSweepGarbageCollector::default()
             .with_page_size(256)
             .with_heap_threshold(512);
 
-        let vec = GcAllocVec::with_capacity(100, collector);
-        let gc_vec = Gc::new_in(GcRefCell::new(vec), collector);
+        let vec = GcAllocVec::with_capacity(100, &collector);
+        let gc_vec = Gc::new_in(GcRefCell::new(vec), &collector);
 
         for i in 0..100u64 {
             gc_vec.borrow_mut().push(i);
@@ -233,15 +236,23 @@ mod tests {
 
         assert_eq!(gc_vec.borrow().len(), 100);
         assert_eq!(gc_vec.borrow()[50], 50);
+
+        // Drop the handle and run a normal collection cycle so cleanup happens
+        // through regular sweep logic instead of collector-drop teardown.
+        drop(gc_vec);
+        collector.collect();
     }
 
     #[test]
     fn gc_alloc_box_basic() {
-        let collector = &MarkSweepGarbageCollector::default();
+        let collector = &mut MarkSweepGarbageCollector::default();
         let boxed = GcAllocBox::new_in(42u64, collector);
         let gc_box = Gc::new_in(GcRefCell::new(boxed), collector);
 
         assert_eq!(**gc_box.borrow(), 42);
+
+        drop(gc_box);
+        collector.collect();
     }
 
     #[test]
@@ -255,11 +266,14 @@ mod tests {
 
         assert_eq!(gc_box.borrow().len(), 5);
         assert_eq!(gc_box.borrow()[2], 3);
+
+        drop(gc_box);
+        collector.collect();
     }
 
     #[test]
     fn gc_alloc_vec_with_gc_pointers() {
-        let collector = &MarkSweepGarbageCollector::default();
+        let collector = &mut MarkSweepGarbageCollector::default();
         let vec = GcAllocVec::new_in(collector);
         let gc_vec = Gc::new_in(GcRefCell::new(vec), collector);
 
@@ -278,5 +292,8 @@ mod tests {
         assert_eq!(gc_vec.borrow().len(), 2);
         assert_eq!(*gc_vec.borrow()[0].borrow(), 100);
         assert_eq!(*gc_vec.borrow()[1].borrow(), 200);
+
+        drop(gc_vec);
+        collector.collect();
     }
 }

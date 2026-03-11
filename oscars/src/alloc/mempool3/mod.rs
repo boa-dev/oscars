@@ -56,6 +56,10 @@ pub struct PoolAllocator<'alloc> {
     pub(crate) free_cache: Cell<usize>,
     // per size class cached index of the last pool used by alloc_slot
     pub(crate) alloc_cache: [Cell<usize>; 12],
+    // empty slot pools kept alive to avoid OS reallocation on the next cycle
+    pub(crate) recycled_pools: Vec<SlotPool>,
+    // maximum number of idle pages held across all size classes
+    pub(crate) max_recycled: usize,
     _marker: core::marker::PhantomData<&'alloc ()>,
 }
 
@@ -82,6 +86,9 @@ impl<'alloc> Default for PoolAllocator<'alloc> {
                 Cell::new(usize::MAX),
                 Cell::new(usize::MAX),
             ],
+            recycled_pools: Vec::new(),
+            // one idle page per size class keeps memory pressure manageable
+            max_recycled: SIZE_CLASSES.len(),
             _marker: core::marker::PhantomData,
         }
     }
@@ -155,6 +162,29 @@ impl<'alloc> PoolAllocator<'alloc> {
         }
 
         // need a new pool for this size class
+        // try the recycle list first
+        // to avoid a round trip through the OS allocator
+        if let Some(pos) = self
+            .recycled_pools
+            .iter()
+            .rposition(|p| p.slot_size == slot_size)
+        {
+            let pool = self.recycled_pools.swap_remove(pos);
+            // pool.reset() was already called in drop_empty_pools when it was parked
+            let slot_ptr = pool.alloc_slot().ok_or(PoolAllocError::OutOfMemory)?;
+            let insert_idx = self.slot_pools.len();
+            self.slot_pools.push(pool);
+            self.alloc_cache[sc_idx].set(insert_idx);
+
+            // SAFETY: slot_ptr was successfully allocated for this size class
+            return unsafe {
+                let dst = slot_ptr.as_ptr() as *mut PoolItem<T>;
+                dst.write(PoolItem(value));
+                Ok(PoolPointer::from_raw(NonNull::new_unchecked(dst)))
+            };
+        }
+
+        // Recycle list had no match, allocate a fresh page from the OS.
         let total = self.page_size.max(slot_size * 4);
         let new_pool = SlotPool::try_init(slot_size, total, 16)?;
         self.current_heap_size += new_pool.layout.size();
@@ -267,16 +297,22 @@ impl<'alloc> PoolAllocator<'alloc> {
         false
     }
 
-    /// drop empty slot pools and bump pages
+    /// Reclaim slot pool pages that became empty after a GC sweep.
+    ///
+    /// Empty pages are parked in a recycle list (up to `max_recycled`)
+    /// to avoid global allocator round trips on the next allocation.
     pub fn drop_empty_pools(&mut self) {
-        self.slot_pools.retain(|p| {
-            if p.run_drop_check() {
-                self.current_heap_size = self.current_heap_size.saturating_sub(p.layout.size());
-                false
+        // Drain fully empty slot pools into the recycle list.
+        for pool in self.slot_pools.extract_if(.., |p| p.run_drop_check()) {
+            if self.recycled_pools.len() < self.max_recycled {
+                pool.reset();
+                self.recycled_pools.push(pool);
             } else {
-                true
+                self.current_heap_size = self.current_heap_size.saturating_sub(pool.layout.size());
             }
-        });
+        }
+
+        // Bump pages have no size class affinity so we always free them.
         self.bump_pages.retain(|p| {
             if p.run_drop_check() {
                 self.current_heap_size = self.current_heap_size.saturating_sub(p.layout.size());

@@ -642,3 +642,282 @@ mod gc_edge_cases {
         collector.collect();
     }
 }
+
+#[cfg(feature = "thin-vec")]
+mod thin_vec_trace {
+    use thin_vec::ThinVec;
+
+    use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
+    use crate::collectors::mark_sweep::cell::GcRefCell;
+    use crate::collectors::mark_sweep::pointers::Gc;
+    use crate::{Finalize, Trace};
+
+    /// `ThinVec<Gc<T>>` keeps inner `Gc` values alive across collections.
+    #[test]
+    fn thin_vec_keeps_inner_gc_alive() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(4096)
+            .with_heap_threshold(8_192);
+
+        let a = Gc::new_in(GcRefCell::new(1u64), collector);
+        let b = Gc::new_in(GcRefCell::new(2u64), collector);
+        let c = Gc::new_in(GcRefCell::new(3u64), collector);
+
+        let mut vec: ThinVec<Gc<GcRefCell<u64>>> = ThinVec::new();
+        vec.push(a.clone());
+        vec.push(b.clone());
+        vec.push(c.clone());
+
+        let container = Gc::new_in(vec, collector);
+
+        collector.collect();
+
+        assert_eq!(*a.borrow(), 1u64, "a was incorrectly swept");
+        assert_eq!(*b.borrow(), 2u64, "b was incorrectly swept");
+        assert_eq!(*c.borrow(), 3u64, "c was incorrectly swept");
+
+        drop(container);
+        drop(a);
+        drop(b);
+        drop(c);
+        collector.collect();
+    }
+
+    /// An empty `ThinVec` does not cause panics during tracing.
+    #[test]
+    fn thin_vec_empty_trace() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(256)
+            .with_heap_threshold(512);
+
+        let empty: ThinVec<Gc<u64>> = ThinVec::new();
+        let gc = Gc::new_in(empty, collector);
+
+        collector.collect();
+
+        drop(gc);
+        collector.collect();
+    }
+
+    /// `ThinVec` can be embedded inside a derived `Trace` struct.
+    #[test]
+    fn thin_vec_in_derived_trace_struct() {
+        #[derive(Finalize, Trace)]
+        struct AstNode {
+            value: u64,
+            children: ThinVec<Gc<AstNode>>,
+        }
+
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(4096)
+            .with_heap_threshold(8_192);
+
+        let leaf = Gc::new_in(
+            AstNode {
+                value: 42,
+                children: ThinVec::new(),
+            },
+            collector,
+        );
+
+        let mut root_children = ThinVec::new();
+        root_children.push(leaf.clone());
+
+        let root = Gc::new_in(
+            AstNode {
+                value: 0,
+                children: root_children,
+            },
+            collector,
+        );
+
+        collector.collect();
+
+        assert_eq!(root.value, 0);
+        assert_eq!(leaf.value, 42);
+
+        drop(root);
+        drop(leaf);
+        collector.collect();
+    }
+}
+
+#[test]
+fn collector_drop_runs_destructors_for_live_gc_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct DropSpy {
+        drops: Rc<Cell<u32>>,
+    }
+
+    impl Drop for DropSpy {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    impl Finalize for DropSpy {}
+
+    // SAFETY: `DropSpy` has no traceable children.
+    unsafe impl Trace for DropSpy {
+        crate::empty_trace!();
+    }
+
+    let drops = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(128)
+            .with_heap_threshold(256);
+
+        let _gc = Gc::new_in(
+            DropSpy {
+                drops: Rc::clone(&drops),
+            },
+            collector,
+        );
+
+        assert_eq!(drops.get(), 0);
+    }
+
+    assert_eq!(drops.get(), 1, "collector drop should run value destructor");
+}
+
+#[test]
+fn collector_drop_runs_ephemeron_value_destructors_for_live_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct DropSpy {
+        drops: Rc<Cell<u32>>,
+    }
+
+    impl Drop for DropSpy {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    impl Finalize for DropSpy {}
+
+    // SAFETY: `DropSpy` has no traceable children.
+    unsafe impl Trace for DropSpy {
+        crate::empty_trace!();
+    }
+
+    let drops = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(128)
+            .with_heap_threshold(256);
+
+        let mut map = WeakMap::new(collector);
+        let key = Gc::new_in(1u64, collector);
+
+        map.insert(
+            &key,
+            DropSpy {
+                drops: Rc::clone(&drops),
+            },
+            collector,
+        );
+
+        assert_eq!(drops.get(), 0);
+    }
+
+    assert_eq!(
+        drops.get(),
+        1,
+        "collector drop should run ephemeron value destructor"
+    );
+}
+
+#[test]
+fn collector_drop_runs_finalizers_for_live_gc_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct FinalizeSpy {
+        finalized: Rc<Cell<u32>>,
+    }
+
+    impl Finalize for FinalizeSpy {
+        fn finalize(&self) {
+            self.finalized.set(self.finalized.get() + 1);
+        }
+    }
+
+    // SAFETY: `FinalizeSpy` has no traceable children.
+    unsafe impl Trace for FinalizeSpy {
+        crate::empty_trace!();
+    }
+
+    let finalized = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(128)
+            .with_heap_threshold(256);
+
+        let _gc = Gc::new_in(
+            FinalizeSpy {
+                finalized: Rc::clone(&finalized),
+            },
+            collector,
+        );
+
+        assert_eq!(finalized.get(), 0);
+    }
+
+    assert_eq!(
+        finalized.get(),
+        1,
+        "collector drop should run value finalizer"
+    );
+}
+
+#[test]
+fn collector_drop_runs_ephemeron_value_finalizers_for_live_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct FinalizeSpy {
+        finalized: Rc<Cell<u32>>,
+    }
+
+    impl Finalize for FinalizeSpy {
+        fn finalize(&self) {
+            self.finalized.set(self.finalized.get() + 1);
+        }
+    }
+
+    // SAFETY: `FinalizeSpy` has no traceable children.
+    unsafe impl Trace for FinalizeSpy {
+        crate::empty_trace!();
+    }
+
+    let finalized = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(128)
+            .with_heap_threshold(256);
+
+        let mut map = WeakMap::new(collector);
+        let key = Gc::new_in(1u64, collector);
+
+        map.insert(
+            &key,
+            FinalizeSpy {
+                finalized: Rc::clone(&finalized),
+            },
+            collector,
+        );
+
+        assert_eq!(finalized.get(), 0);
+    }
+
+    assert_eq!(
+        finalized.get(),
+        1,
+        "collector drop should run ephemeron value finalizer"
+    );
+}

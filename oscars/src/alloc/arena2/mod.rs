@@ -1,5 +1,7 @@
 //! An Arena allocator that manages multiple backing arenas
 
+use core::mem;
+
 use rust_alloc::alloc::LayoutError;
 use rust_alloc::collections::LinkedList;
 
@@ -48,11 +50,22 @@ const DEFAULT_ARENA_SIZE: usize = 4096;
 /// Default upper limit of 2MB (2 ^ 21)
 const DEFAULT_HEAP_THRESHOLD: usize = 2_097_152;
 
+/// Minimum guaranteed alignment for every arena buffer.
+const DEFAULT_MIN_ALIGNMENT: usize = 8;
+
+/// Maximum number of idle arenas held (4 idle pages x 4KB = 16KB of OS memory pressure buffered)
+const MAX_RECYCLED_ARENAS: usize = 4;
+
 #[derive(Debug)]
 pub struct ArenaAllocator<'alloc> {
     heap_threshold: usize,
     arena_size: usize,
+    min_alignment: usize,
     arenas: LinkedList<Arena<'alloc>>,
+    // empty arenas kept alive to avoid OS reallocation on the next cycle
+    recycled_arenas: [Option<Arena<'alloc>>; MAX_RECYCLED_ARENAS],
+    // number of idle arenas currently held
+    recycled_count: usize,
 }
 
 impl<'alloc> Default for ArenaAllocator<'alloc> {
@@ -60,7 +73,10 @@ impl<'alloc> Default for ArenaAllocator<'alloc> {
         Self {
             heap_threshold: DEFAULT_HEAP_THRESHOLD,
             arena_size: DEFAULT_ARENA_SIZE,
+            min_alignment: DEFAULT_MIN_ALIGNMENT,
             arenas: LinkedList::default(),
+            recycled_arenas: core::array::from_fn(|_| None),
+            recycled_count: 0,
         }
     }
 }
@@ -74,17 +90,24 @@ impl<'alloc> ArenaAllocator<'alloc> {
         self.heap_threshold = heap_threshold;
         self
     }
+    /// Override the baseline alignment for every new arena buffer.
+    pub fn with_min_alignment(mut self, min_alignment: usize) -> Self {
+        self.min_alignment = min_alignment;
+        self
+    }
 
     pub fn arenas_len(&self) -> usize {
         self.arenas.len()
     }
 
     pub fn heap_size(&self) -> usize {
+        // recycled arenas hold no live objects, exclude them from GC pressure
         self.arenas_len() * self.arena_size
     }
 
     pub fn is_below_threshold(&self) -> bool {
-        self.heap_size() <= self.heap_threshold - self.arena_size
+        // saturating_sub avoids underflow when heap_threshold < arena_size
+        self.heap_size() <= self.heap_threshold.saturating_sub(self.arena_size)
     }
 
     pub fn increase_threshold(&mut self) {
@@ -94,13 +117,13 @@ impl<'alloc> ArenaAllocator<'alloc> {
 
 impl<'alloc> ArenaAllocator<'alloc> {
     pub fn try_alloc<T>(&mut self, value: T) -> Result<ArenaPointer<'alloc, T>, ArenaAllocError> {
+        // Determine the minimum alignment this type requires.
+        let required_alignment = mem::align_of::<alloc::ArenaHeapItem<T>>();
+
         let active = match self.get_active_arena() {
             Some(arena) => arena,
             None => {
-                // TODO: don't hard code alignment
-                //
-                // TODO: also, we need a min-alignment
-                self.initialize_new_arena()?;
+                self.initialize_new_arena(required_alignment)?;
                 self.get_active_arena().expect("must exist, we just set it")
             }
         };
@@ -108,8 +131,12 @@ impl<'alloc> ArenaAllocator<'alloc> {
         match active.get_allocation_data(&value) {
             // SAFETY: TODO
             Ok(data) => unsafe { Ok(active.alloc_unchecked::<T>(value, data)) },
-            Err(ArenaAllocError::OutOfMemory) => {
-                self.initialize_new_arena()?;
+            // The active arena is either full or was created with an alignment
+            // that is too small for this type. Either way, close it and spin up
+            // a fresh arena that satisfies the alignment requirement.
+            Err(ArenaAllocError::OutOfMemory | ArenaAllocError::AlignmentNotPossible) => {
+                active.close();
+                self.initialize_new_arena(required_alignment)?;
                 let new_active = self.get_active_arena().expect("must exist");
                 new_active.try_alloc(value)
             }
@@ -127,8 +154,28 @@ impl<'alloc> ArenaAllocator<'alloc> {
             .transpose()
     }
 
-    pub fn initialize_new_arena(&mut self) -> Result<(), ArenaAllocError> {
-        let new_arena = Arena::try_init(self.arena_size, 16)?;
+    /// Initialize a fresh arena, attempting to reuse a recycled one first.
+    pub fn initialize_new_arena(
+        &mut self,
+        required_alignment: usize,
+    ) -> Result<(), ArenaAllocError> {
+        let alignment = self.min_alignment.max(required_alignment);
+
+        // Check the recycle list first to avoid an OS allocation.
+        if self.recycled_count > 0 {
+            self.recycled_count -= 1;
+            if let Some(recycled) = self.recycled_arenas[self.recycled_count].take() {
+                // arena.reset() was already called when it was parked.
+                // Only reuse if its original alignment satisfies the current requirement,
+                // otherwise drop it and fall through to a fresh OS allocation.
+                if recycled.layout.align() >= alignment {
+                    self.arenas.push_front(recycled);
+                    return Ok(());
+                }
+            }
+        }
+
+        let new_arena = Arena::try_init(self.arena_size, alignment)?;
         self.arenas.push_front(new_arena);
         Ok(())
     }
@@ -138,8 +185,14 @@ impl<'alloc> ArenaAllocator<'alloc> {
     }
 
     pub fn drop_dead_arenas(&mut self) {
-        for dead_arenas in self.arenas.extract_if(|a| a.run_drop_check()) {
-            drop(dead_arenas)
+        for arena in self.arenas.extract_if(|a| a.run_drop_check()) {
+            if self.recycled_count < MAX_RECYCLED_ARENAS {
+                //reset in place and park in the reserve.
+                arena.reset();
+                self.recycled_arenas[self.recycled_count] = Some(arena);
+                self.recycled_count += 1;
+            }
+            // else: arena drops here, returning memory to the OS
         }
     }
 

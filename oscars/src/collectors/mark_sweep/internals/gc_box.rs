@@ -6,7 +6,7 @@ use crate::collectors::mark_sweep::Finalize;
 use crate::collectors::mark_sweep::internals::gc_header::{GcHeader, HeaderColor};
 use crate::collectors::mark_sweep::{Trace, TraceColor};
 
-use super::{DropFn, TraceFn, VTable, vtable_of};
+use super::{DropFn, FinalizeFn, TraceFn, VTable, vtable_of};
 
 pub struct NonTraceable(());
 
@@ -164,6 +164,10 @@ impl<T: Trace + ?Sized> GcBox<T> {
 
     pub(crate) fn drop_fn(&self) -> DropFn {
         self.vtable.drop_fn()
+    }
+
+    pub(crate) fn finalize_fn(&self) -> FinalizeFn {
+        self.vtable.finalize_fn()
     }
 
     pub(crate) fn size(&self) -> usize {
