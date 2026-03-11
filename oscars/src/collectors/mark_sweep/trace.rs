@@ -311,14 +311,11 @@ unsafe impl<T: Trace, C: allocator_api2::alloc::Allocator> Trace
     });
 }
 
-// TODO: Needed for boa_engine
-
-/*
 #[cfg(feature = "thin-vec")]
 impl<T: Trace> Finalize for thin_vec::ThinVec<T> {}
 
 #[cfg(feature = "thin-vec")]
-// SAFETY: All the inner elements of the `Vec` are correctly marked.
+// SAFETY: All the inner elements of the `ThinVec` are correctly marked.
 unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
     custom_trace!(this, mark, {
         for e in this {
@@ -326,7 +323,6 @@ unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
         }
     });
 }
-*/
 
 impl<T: Trace> Finalize for Option<T> {}
 // SAFETY: The inner value of the `Option` is correctly marked.

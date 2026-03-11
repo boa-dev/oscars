@@ -642,3 +642,102 @@ mod gc_edge_cases {
         collector.collect();
     }
 }
+
+#[cfg(feature = "thin-vec")]
+mod thin_vec_trace {
+    use thin_vec::ThinVec;
+
+    use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
+    use crate::collectors::mark_sweep::cell::GcRefCell;
+    use crate::collectors::mark_sweep::pointers::Gc;
+    use crate::{Finalize, Trace};
+
+    /// `ThinVec<Gc<T>>` keeps inner `Gc` values alive across collections.
+    #[test]
+    fn thin_vec_keeps_inner_gc_alive() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(4096)
+            .with_heap_threshold(8_192);
+
+        let a = Gc::new_in(GcRefCell::new(1u64), collector);
+        let b = Gc::new_in(GcRefCell::new(2u64), collector);
+        let c = Gc::new_in(GcRefCell::new(3u64), collector);
+
+        let mut vec: ThinVec<Gc<GcRefCell<u64>>> = ThinVec::new();
+        vec.push(a.clone());
+        vec.push(b.clone());
+        vec.push(c.clone());
+
+        let container = Gc::new_in(vec, collector);
+
+        collector.collect();
+
+        assert_eq!(*a.borrow(), 1u64, "a was incorrectly swept");
+        assert_eq!(*b.borrow(), 2u64, "b was incorrectly swept");
+        assert_eq!(*c.borrow(), 3u64, "c was incorrectly swept");
+
+        drop(container);
+        drop(a);
+        drop(b);
+        drop(c);
+        collector.collect();
+    }
+
+    /// An empty `ThinVec` does not cause panics during tracing.
+    #[test]
+    fn thin_vec_empty_trace() {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(256)
+            .with_heap_threshold(512);
+
+        let empty: ThinVec<Gc<u64>> = ThinVec::new();
+        let gc = Gc::new_in(empty, collector);
+
+        collector.collect();
+
+        drop(gc);
+        collector.collect();
+    }
+
+    /// `ThinVec` can be embedded inside a derived `Trace` struct.
+    #[test]
+    fn thin_vec_in_derived_trace_struct() {
+        #[derive(Finalize, Trace)]
+        struct AstNode {
+            value: u64,
+            children: ThinVec<Gc<AstNode>>,
+        }
+
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(4096)
+            .with_heap_threshold(8_192);
+
+        let leaf = Gc::new_in(
+            AstNode {
+                value: 42,
+                children: ThinVec::new(),
+            },
+            collector,
+        );
+
+        let mut root_children = ThinVec::new();
+        root_children.push(leaf.clone());
+
+        let root = Gc::new_in(
+            AstNode {
+                value: 0,
+                children: root_children,
+            },
+            collector,
+        );
+
+        collector.collect();
+
+        assert_eq!(root.value, 0);
+        assert_eq!(leaf.value, 42);
+
+        drop(root);
+        drop(leaf);
+        collector.collect();
+    }
+}
