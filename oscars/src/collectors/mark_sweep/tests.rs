@@ -627,5 +627,3 @@ mod gc_edge_cases {
         collector.collect();
     }
 }
-
-
