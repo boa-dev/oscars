@@ -185,41 +185,75 @@ impl MarkSweepGarbageCollector {
     // arena2 uses a bitmap (`mark_dropped`) and reclaims automatically
     fn sweep_all_queues(&self) {
         let ephemerons = core::mem::take(&mut *self.ephemeron_queue.borrow_mut());
-        for ephemeron in ephemerons {
+        let roots = core::mem::take(&mut *self.root_queue.borrow_mut());
+        let pending_e = core::mem::take(&mut *self.pending_ephemeron_queue.borrow_mut());
+        let pending_r = core::mem::take(&mut *self.pending_root_queue.borrow_mut());
+
+        // Phase 1: finalize everything without dropping/freeing.
+        for ephemeron in ephemerons.iter().copied() {
             let ephemeron_ref = unsafe { ephemeron.as_ref() };
             let vtable = ephemeron_ref.value();
             unsafe { vtable.finalize_fn()(ephemeron) };
+        }
+
+        for node in roots.iter().copied() {
+            let node_ref = unsafe { node.as_ref() };
+            let gc_box = node_ref.value();
+            unsafe { gc_box.finalize_fn()(node) };
+        }
+
+        for ephemeron in pending_e.iter().copied() {
+            let ephemeron_ref = unsafe { ephemeron.as_ref() };
+            let vtable = ephemeron_ref.value();
+            unsafe { vtable.finalize_fn()(ephemeron) };
+        }
+
+        for node in pending_r.iter().copied() {
+            let node_ref = unsafe { node.as_ref() };
+            let gc_box = node_ref.value();
+            unsafe { gc_box.finalize_fn()(node) };
+        }
+
+        // Phase 2: if finalization revived any roots, do not drop/free now.
+        // Dropping immediately after revival would be unsound.
+        let revived_rooted = roots
+            .iter()
+            .chain(pending_r.iter())
+            .any(|node| unsafe { node.as_ref().value().is_rooted() });
+
+        if revived_rooted {
+            return;
+        }
+
+        // Phase 3: no revival happened, so it's safe to drop and reclaim slots.
+        for ephemeron in ephemerons {
+            let ephemeron_ref = unsafe { ephemeron.as_ref() };
+            let vtable = ephemeron_ref.value();
             unsafe { vtable.drop_fn()(ephemeron) };
             self.allocator
                 .borrow_mut()
                 .free_slot(ephemeron.cast::<u8>());
         }
 
-        let roots = core::mem::take(&mut *self.root_queue.borrow_mut());
         for node in roots {
             let node_ref = unsafe { node.as_ref() };
             let gc_box = node_ref.value();
-            unsafe { gc_box.finalize_fn()(node) };
             unsafe { gc_box.drop_fn()(node) };
             self.allocator.borrow_mut().free_slot(node.cast::<u8>());
         }
 
-        let pending_e = core::mem::take(&mut *self.pending_ephemeron_queue.borrow_mut());
         for ephemeron in pending_e {
             let ephemeron_ref = unsafe { ephemeron.as_ref() };
             let vtable = ephemeron_ref.value();
-            unsafe { vtable.finalize_fn()(ephemeron) };
             unsafe { vtable.drop_fn()(ephemeron) };
             self.allocator
                 .borrow_mut()
                 .free_slot(ephemeron.cast::<u8>());
         }
 
-        let pending_r = core::mem::take(&mut *self.pending_root_queue.borrow_mut());
         for node in pending_r {
             let node_ref = unsafe { node.as_ref() };
             let gc_box = node_ref.value();
-            unsafe { gc_box.finalize_fn()(node) };
             unsafe { gc_box.drop_fn()(node) };
             self.allocator.borrow_mut().free_slot(node.cast::<u8>());
         }
