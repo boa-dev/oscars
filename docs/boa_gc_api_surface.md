@@ -10,6 +10,24 @@ Any alternative garbage collector aiming to replace `boa_gc` (for example, Oscar
 **must implement this interface** to serve as a drop-in replacement. APIs not listed here
 are internal to the collector and are not part of the engine-facing contract.
 
+## Methodology
+
+The API surface documented here was derived by inspecting the current
+`boa_gc` usage inside the Boa repository.
+
+The process included:
+
+- Searching for `use boa_gc::` imports across the engine
+- Inspecting how core types (`Gc`, `WeakGc`, `GcCell`, `Trace`, `Finalize`)
+  are used throughout the codebase
+- Reviewing `Trace` and `Finalize` implementations to understand the
+  traversal contract
+- Inspecting weak structures (`WeakMap`, `WeakRef`) to identify required
+  weak reference semantics
+
+This was done through manual inspection of the Boa engine source to
+extract the GC interface boundary relied upon by the runtime.
+
 ---
 
 ## 2. Core Pointer Types
@@ -24,6 +42,11 @@ are internal to the collector and are not part of the engine-facing contract.
 
 These five types appear in virtually every subsystem of the engine: the object model,
 environments, bytecode compiler, module system, and builtins.
+
+Example usage in Boa:
+
+- https://github.com/boa-dev/boa/blob/main/core/engine/src/object/jsobject.rs
+- https://github.com/boa-dev/boa/blob/main/core/engine/src/value/mod.rs
 
 ---
 
@@ -166,6 +189,11 @@ pub unsafe trait Trace {
 
 Every type stored inside a `Gc<T>` must implement `Trace`. The collector calls `trace`
 during the mark phase to discover reachable objects.
+
+Example implementations:
+
+- https://github.com/boa-dev/boa/blob/main/core/engine/src/object/jsobject.rs
+- https://github.com/boa-dev/boa/blob/main/core/engine/src/context/mod.rs
 
 ### Finalize
 
