@@ -67,7 +67,7 @@ jobs:
       - name: Set up Miri
         run: cargo +nightly miri setup
       - name: Run tests under Miri
-        run: cargo +nightly miri test -p oscars
+        run: cargo +nightly miri test -p oscars --all-features
 
   docs:
     name: Documentation
