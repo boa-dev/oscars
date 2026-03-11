@@ -115,7 +115,7 @@ impl<T> TaggedPtr<T> {
     }
 
     fn as_ptr(&self) -> *mut T {
-        self.0.map_addr(|addr| addr ^ MASK)
+        self.0.map_addr(|addr| addr & !MASK)
     }
 }
 
