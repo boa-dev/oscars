@@ -114,14 +114,6 @@ impl Drop for MarkSweepGarbageCollector {
             }
         }
 
-        // Reclaim all collector-owned weak maps.
-        // Single-threaded, so this is safe.
-        for &map_ptr in self.weak_maps.borrow().iter() {
-            unsafe {
-                let _ = rust_alloc::boxed::Box::from_raw(map_ptr.as_ptr());
-            }
-        }
-
         // SAFETY:
         // `Gc<T>` pointers act as if they live forever (`'static`).
         // if the GC drops while rooted values still exist, we leak memory to prevent UAF.
@@ -144,7 +136,9 @@ impl Drop for MarkSweepGarbageCollector {
         } else {
             // No rooted items are alive. Sweep and clean up the remaining
             // cycles and loose allocations before the allocator natively drops.
-            self.sweep_all_queues();
+            if self.sweep_all_queues() {
+                self.reclaim_dead_weak_maps();
+            }
         }
     }
 }
@@ -177,13 +171,16 @@ impl MarkSweepGarbageCollector {
         self.allocator.borrow_mut().drop_empty_pools();
     }
 
-    // Force drops all elements in the internal tracking queues and clears
-    // them without regard for reachability.
+    // Force-finalizes all tracked items and, when safe, drops/frees all queue
+    // allocations without regard for reachability.
     //
     // NOTE: This intentionally differs from arena2's sweep_all_queues.
     // arena3 uses`free_slot` calls to reclaim memory.
     // arena2 uses a bitmap (`mark_dropped`) and reclaims automatically
-    fn sweep_all_queues(&self) {
+    //
+    // Returns `false` if finalization revived roots, because dropping/freeing
+    // immediately after revival is unsound.
+    fn sweep_all_queues(&self) -> bool {
         let ephemerons = core::mem::take(&mut *self.ephemeron_queue.borrow_mut());
         let roots = core::mem::take(&mut *self.root_queue.borrow_mut());
         let pending_e = core::mem::take(&mut *self.pending_ephemeron_queue.borrow_mut());
@@ -222,7 +219,7 @@ impl MarkSweepGarbageCollector {
             .any(|node| unsafe { node.as_ref().value().is_rooted() });
 
         if revived_rooted {
-            return;
+            return false;
         }
 
         // Phase 3: no revival happened, so it's safe to drop and reclaim slots.
@@ -257,6 +254,25 @@ impl MarkSweepGarbageCollector {
             unsafe { gc_box.drop_fn()(node) };
             self.allocator.borrow_mut().free_slot(node.cast::<u8>());
         }
+
+        true
+    }
+
+    fn reclaim_dead_weak_maps(&self) {
+        // During collector teardown, reclaim only maps that have already been
+        // marked dead by `WeakMap::drop` to avoid freeing inners that are still
+        // observable through live/revived wrappers.
+        self.weak_maps.borrow_mut().retain(|&map_ptr| {
+            let map = unsafe { map_ptr.as_ref() };
+            if map.is_alive() {
+                true
+            } else {
+                unsafe {
+                    let _ = rust_alloc::boxed::Box::from_raw(map_ptr.as_ptr());
+                }
+                false
+            }
+        });
     }
 
     // Extracts and sweeps items that are considered dead (different trace color).
