@@ -136,9 +136,8 @@ impl Drop for MarkSweepGarbageCollector {
         } else {
             // No rooted items are alive. Sweep and clean up the remaining
             // cycles and loose allocations before the allocator natively drops.
-            if self.sweep_all_queues() {
-                self.reclaim_dead_weak_maps();
-            }
+            self.sweep_all_queues();
+            self.reclaim_dead_weak_maps();
         }
     }
 }
@@ -174,130 +173,71 @@ impl MarkSweepGarbageCollector {
     // Force-collect all tracked items in collector teardown.
     //
     // Phases:
-    // 1. mark
-    // 2. finalize unreachable
-    // 3. mark again (finalizers can resurrect)
-    // 4. drop + free still-unreachable
+    // 1. finalize everything
+    // 2. drop + free everything
+    //
+    // Since this runs only during collector drop (not a normal collection
+    // cycle), we don't need reachability marking here.
     //
     // NOTE: This intentionally differs from arena2's sweep_all_queues.
     // arena3 uses`free_slot` calls to reclaim memory.
     // arena2 uses a bitmap (`mark_dropped`) and reclaims automatically
-    fn sweep_all_queues(&self) -> bool {
+    fn sweep_all_queues(&self) {
         let ephemerons = core::mem::take(&mut *self.ephemeron_queue.borrow_mut());
         let roots = core::mem::take(&mut *self.root_queue.borrow_mut());
         let pending_e = core::mem::take(&mut *self.pending_ephemeron_queue.borrow_mut());
         let pending_r = core::mem::take(&mut *self.pending_root_queue.borrow_mut());
-        let color = self.trace_color.get();
 
-        let mark_pass = || {
-            // Mark rooted roots first.
-            for node in roots.iter().chain(pending_r.iter()).copied() {
-                let node_ref = unsafe { node.as_ref() };
-                let gc_box = node_ref.value();
-                if gc_box.is_rooted() {
-                    unsafe { gc_box.trace_fn()(node, color) };
-                }
-            }
-
-            // Then mark ephemeron values with live keys.
-            for ephemeron in ephemerons.iter().chain(pending_e.iter()).copied() {
-                let ephemeron_ref = unsafe { ephemeron.as_ref() };
-                let vtable = ephemeron_ref.value();
-                if unsafe { vtable.is_reachable_fn()(ephemeron, color) } {
-                    unsafe { vtable.trace_fn()(ephemeron, color) };
-                }
-            }
-        };
-
-        // Phase 1: mark.
-        mark_pass();
-
-        // Phase 2: finalize unreachable only.
+        // Phase 1: finalize everything while all allocations are still alive.
         for node in roots.iter().chain(pending_r.iter()).copied() {
             let node_ref = unsafe { node.as_ref() };
             let gc_box = node_ref.value();
-            if !gc_box.is_reachable(color) {
-                unsafe { gc_box.finalize_fn()(node) };
-            }
+            unsafe { gc_box.finalize_fn()(node) };
         }
 
         for ephemeron in ephemerons.iter().chain(pending_e.iter()).copied() {
             let ephemeron_ref = unsafe { ephemeron.as_ref() };
             let vtable = ephemeron_ref.value();
-            if !unsafe { vtable.is_reachable_fn()(ephemeron, color) } {
-                unsafe { vtable.finalize_fn()(ephemeron) };
-            }
+            unsafe { vtable.finalize_fn()(ephemeron) };
         }
 
-        // Phase 3: mark again after finalization.
-        mark_pass();
-
-        // Phase 4: drop and free only values that are still unreachable.
+        // Phase 2: drop and free all tracked values.
         for node in roots {
-            let (is_reachable, drop_fn) = {
-                let node_ref = unsafe { node.as_ref() };
-                let gc_box = node_ref.value();
-                (gc_box.is_reachable(color), gc_box.drop_fn())
-            };
-            if !is_reachable {
-                unsafe { drop_fn(node) };
-                self.allocator.borrow_mut().free_slot(node.cast::<u8>());
-            }
+            let node_ref = unsafe { node.as_ref() };
+            let gc_box = node_ref.value();
+            unsafe { gc_box.drop_fn()(node) };
+            self.allocator.borrow_mut().free_slot(node.cast::<u8>());
         }
 
         for node in pending_r {
-            let (is_reachable, drop_fn) = {
-                let node_ref = unsafe { node.as_ref() };
-                let gc_box = node_ref.value();
-                (gc_box.is_reachable(color), gc_box.drop_fn())
-            };
-            if !is_reachable {
-                unsafe { drop_fn(node) };
-                self.allocator.borrow_mut().free_slot(node.cast::<u8>());
-            }
+            let node_ref = unsafe { node.as_ref() };
+            let gc_box = node_ref.value();
+            unsafe { gc_box.drop_fn()(node) };
+            self.allocator.borrow_mut().free_slot(node.cast::<u8>());
         }
 
         for ephemeron in ephemerons {
-            let (is_reachable, drop_fn) = {
-                let ephemeron_ref = unsafe { ephemeron.as_ref() };
-                let vtable = ephemeron_ref.value();
-                (
-                    unsafe { vtable.is_reachable_fn()(ephemeron, color) },
-                    vtable.drop_fn(),
-                )
-            };
-            if !is_reachable {
-                unsafe { drop_fn(ephemeron) };
-                self.allocator
-                    .borrow_mut()
-                    .free_slot(ephemeron.cast::<u8>());
-            }
+            let ephemeron_ref = unsafe { ephemeron.as_ref() };
+            let vtable = ephemeron_ref.value();
+            unsafe { vtable.drop_fn()(ephemeron) };
+            self.allocator
+                .borrow_mut()
+                .free_slot(ephemeron.cast::<u8>());
         }
 
         for ephemeron in pending_e {
-            let (is_reachable, drop_fn) = {
-                let ephemeron_ref = unsafe { ephemeron.as_ref() };
-                let vtable = ephemeron_ref.value();
-                (
-                    unsafe { vtable.is_reachable_fn()(ephemeron, color) },
-                    vtable.drop_fn(),
-                )
-            };
-            if !is_reachable {
-                unsafe { drop_fn(ephemeron) };
-                self.allocator
-                    .borrow_mut()
-                    .free_slot(ephemeron.cast::<u8>());
-            }
+            let ephemeron_ref = unsafe { ephemeron.as_ref() };
+            let vtable = ephemeron_ref.value();
+            unsafe { vtable.drop_fn()(ephemeron) };
+            self.allocator
+                .borrow_mut()
+                .free_slot(ephemeron.cast::<u8>());
         }
-
-        true
     }
 
     fn reclaim_dead_weak_maps(&self) {
         // During collector teardown, reclaim only maps that have already been
-        // marked dead by `WeakMap::drop` to avoid freeing inners that are still
-        // observable through live/revived wrappers.
+        // marked dead by `WeakMap::drop`.
         self.weak_maps.borrow_mut().retain(|&map_ptr| {
             let map = unsafe { map_ptr.as_ref() };
             if map.is_alive() {
