@@ -422,6 +422,118 @@ fn alive_wm() {
     );
 }
 
+#[test]
+fn two_distinct_keys_wm() {
+    // Ensure two distinct Gc keys produce unique addresses and don't collide
+    // in the HashTable or corrupt each other's entries
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_page_size(256)
+        .with_heap_threshold(512);
+
+    let mut map = WeakMap::new(collector);
+    let key1 = Gc::new_in(1u64, collector);
+    let key2 = Gc::new_in(2u64, collector);
+
+    map.insert(&key1, 10u64, collector);
+    map.insert(&key2, 20u64, collector);
+
+    // Verify both entries are independent and accessible
+    assert_eq!(
+        map.get(&key1),
+        Some(&10u64),
+        "key1 lookup returned wrong value"
+    );
+    assert_eq!(
+        map.get(&key2),
+        Some(&20u64),
+        "key2 lookup returned wrong value"
+    );
+    assert!(map.is_key_alive(&key1), "key1 should be alive");
+    assert!(map.is_key_alive(&key2), "key2 should be alive");
+
+    // Dropping one key must prune only its entry, leaving the other intact
+    drop(key1);
+    collector.collect();
+
+    assert_eq!(
+        map.get(&key2),
+        Some(&20u64),
+        "key2 incorrectly pruned after key1 was collected",
+    );
+    assert!(
+        map.is_key_alive(&key2),
+        "key2 reported dead while still rooted",
+    );
+
+    // Both keys dead and collected means no leaks
+    drop(key2);
+    collector.collect();
+
+    assert_eq!(
+        collector.allocator.borrow().pools_len(),
+        0,
+        "ephemerons leaked after both keys collected",
+    );
+}
+
+#[test]
+fn two_maps_same_key_wm() {
+    // Same Gc key registered in two independent WeakMaps, each must hold its
+    // own value and neither map's operations must bleed into the other
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_page_size(256)
+        .with_heap_threshold(512);
+
+    let key = Gc::new_in(1u64, collector);
+    let mut map1 = WeakMap::new(collector);
+    let mut map2 = WeakMap::new(collector);
+
+    map1.insert(&key, 10u64, collector);
+    map2.insert(&key, 20u64, collector);
+
+    assert_eq!(map1.get(&key), Some(&10u64));
+    assert_eq!(map2.get(&key), Some(&20u64));
+
+    drop(key);
+    collector.collect();
+
+    assert_eq!(
+        collector.allocator.borrow().pools_len(),
+        0,
+        "ephemerons leaked after key collected"
+    );
+}
+
+#[test]
+fn drop_map_with_live_key_wm() {
+    // Dropping a WeakMap while its key is still alive must not corrupt the
+    // collector, it skips dead maps during prune_dead_entries
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_page_size(256)
+        .with_heap_threshold(512);
+
+    let key = Gc::new_in(42u64, collector);
+
+    {
+        let mut map = WeakMap::new(collector);
+        map.insert(&key, 100u64, collector);
+        // Map dropped here, WeakMap::drop sets is_alive = false
+    }
+
+    // Collector must handle the dead map entry without panic
+    collector.collect();
+
+    // Key still live, drop it then collect to verify no leak
+    drop(key);
+    collector.collect();
+
+    assert_eq!(
+        collector.allocator.borrow().pools_len(),
+        0,
+        "ephemerons leaked after map dropped with live key"
+    );
+}
+
 /// Edge-case stability tests for the mark-sweep garbage collector.
 ///
 /// These tests exercise corner cases that could cause crashes, stack overflows,
@@ -740,4 +852,184 @@ mod thin_vec_trace {
         drop(leaf);
         collector.collect();
     }
+}
+
+#[test]
+fn collector_drop_runs_destructors_for_live_gc_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct DropSpy {
+        drops: Rc<Cell<u32>>,
+    }
+
+    impl Drop for DropSpy {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    impl Finalize for DropSpy {}
+
+    // SAFETY: `DropSpy` has no traceable children.
+    unsafe impl Trace for DropSpy {
+        crate::empty_trace!();
+    }
+
+    let drops = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(128)
+            .with_heap_threshold(256);
+
+        let _gc = Gc::new_in(
+            DropSpy {
+                drops: Rc::clone(&drops),
+            },
+            collector,
+        );
+
+        assert_eq!(drops.get(), 0);
+    }
+
+    assert_eq!(drops.get(), 1, "collector drop should run value destructor");
+}
+
+#[test]
+fn collector_drop_runs_ephemeron_value_destructors_for_live_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct DropSpy {
+        drops: Rc<Cell<u32>>,
+    }
+
+    impl Drop for DropSpy {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    impl Finalize for DropSpy {}
+
+    // SAFETY: `DropSpy` has no traceable children.
+    unsafe impl Trace for DropSpy {
+        crate::empty_trace!();
+    }
+
+    let drops = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(128)
+            .with_heap_threshold(256);
+
+        let mut map = WeakMap::new(collector);
+        let key = Gc::new_in(1u64, collector);
+
+        map.insert(
+            &key,
+            DropSpy {
+                drops: Rc::clone(&drops),
+            },
+            collector,
+        );
+
+        assert_eq!(drops.get(), 0);
+    }
+
+    assert_eq!(
+        drops.get(),
+        1,
+        "collector drop should run ephemeron value destructor"
+    );
+}
+
+#[test]
+fn collector_drop_runs_finalizers_for_live_gc_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct FinalizeSpy {
+        finalized: Rc<Cell<u32>>,
+    }
+
+    impl Finalize for FinalizeSpy {
+        fn finalize(&self) {
+            self.finalized.set(self.finalized.get() + 1);
+        }
+    }
+
+    // SAFETY: `FinalizeSpy` has no traceable children.
+    unsafe impl Trace for FinalizeSpy {
+        crate::empty_trace!();
+    }
+
+    let finalized = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(128)
+            .with_heap_threshold(256);
+
+        let _gc = Gc::new_in(
+            FinalizeSpy {
+                finalized: Rc::clone(&finalized),
+            },
+            collector,
+        );
+
+        assert_eq!(finalized.get(), 0);
+    }
+
+    assert_eq!(
+        finalized.get(),
+        1,
+        "collector drop should run value finalizer"
+    );
+}
+
+#[test]
+fn collector_drop_runs_ephemeron_value_finalizers_for_live_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct FinalizeSpy {
+        finalized: Rc<Cell<u32>>,
+    }
+
+    impl Finalize for FinalizeSpy {
+        fn finalize(&self) {
+            self.finalized.set(self.finalized.get() + 1);
+        }
+    }
+
+    // SAFETY: `FinalizeSpy` has no traceable children.
+    unsafe impl Trace for FinalizeSpy {
+        crate::empty_trace!();
+    }
+
+    let finalized = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(128)
+            .with_heap_threshold(256);
+
+        let mut map = WeakMap::new(collector);
+        let key = Gc::new_in(1u64, collector);
+
+        map.insert(
+            &key,
+            FinalizeSpy {
+                finalized: Rc::clone(&finalized),
+            },
+            collector,
+        );
+
+        assert_eq!(finalized.get(), 0);
+    }
+
+    assert_eq!(
+        finalized.get(),
+        1,
+        "collector drop should run ephemeron value finalizer"
+    );
 }

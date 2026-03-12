@@ -142,7 +142,7 @@ pub(crate) const fn vtable_of<K: Trace + 'static, V: Trace + 'static>() -> &'sta
             },
             finalize_fn: |this| unsafe {
                 let ephemeron = this.cast::<PoolItem<Ephemeron<K, V>>>().as_ref().value();
-                Finalize::finalize(ephemeron);
+                Trace::run_finalizer(ephemeron);
             },
             _key_type_id: TypeId::of::<K>(),
             _key_size: size_of::<WeakGcBox<K>>(),

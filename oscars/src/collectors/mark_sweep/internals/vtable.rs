@@ -27,12 +27,20 @@ pub(crate) const fn vtable_of<T: Trace + 'static>() -> &'static VTable {
             // SAFETY: The caller must ensure the erased pointer is not dropped or deallocated.
             unsafe { core::ptr::drop_in_place(this.as_mut()) };
         }
+
+        // SAFETY: The caller must ensure that the passed erased pointer is `GcBox<Self>`.
+        unsafe fn finalize_fn(this: GcErasedPointer) {
+            // SAFETY: The caller must ensure that the passed erased pointer is `GcBox<Self>`.
+            let value = unsafe { this.cast::<PoolItem<GcBox<Self>>>().as_ref().value() };
+            Trace::run_finalizer(value);
+        }
     }
 
     impl<T: Trace + 'static> HasVTable for T {
         const VTABLE: &'static VTable = &VTable {
             trace_fn: T::trace_fn,
             drop_fn: T::drop_fn,
+            finalize_fn: T::finalize_fn,
             type_id: TypeId::of::<T>(),
             size: size_of::<GcBox<T>>(),
         };
@@ -43,11 +51,13 @@ pub(crate) const fn vtable_of<T: Trace + 'static>() -> &'static VTable {
 
 pub(crate) type TraceFn = unsafe fn(this: GcErasedPointer, color: TraceColor);
 pub(crate) type DropFn = unsafe fn(this: GcErasedPointer);
+pub(crate) type FinalizeFn = unsafe fn(this: GcErasedPointer);
 
 #[derive(Debug)]
 pub(crate) struct VTable {
     trace_fn: TraceFn,
     drop_fn: DropFn,
+    finalize_fn: FinalizeFn,
     type_id: TypeId,
     size: usize,
 }
@@ -59,6 +69,10 @@ impl VTable {
 
     pub(crate) fn drop_fn(&self) -> DropFn {
         self.drop_fn
+    }
+
+    pub(crate) fn finalize_fn(&self) -> FinalizeFn {
+        self.finalize_fn
     }
 
     pub(crate) const fn type_id(&self) -> TypeId {

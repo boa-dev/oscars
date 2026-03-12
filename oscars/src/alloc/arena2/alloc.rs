@@ -203,7 +203,8 @@ impl<'arena, T> ArenaPointer<'arena, T> {
     ///
     /// safe because the gc collector owns the arena and keeps it alive
     pub(crate) unsafe fn extend_lifetime(self) -> ArenaPointer<'static, T> {
-        ArenaPointer(self.0.extend_lifetime(), PhantomData)
+        // SAFETY: upheld by caller
+        ArenaPointer(unsafe { self.0.extend_lifetime() }, PhantomData)
     }
 }
 
@@ -341,9 +342,12 @@ impl<'arena> Arena<'arena> {
         value_ref: &T,
     ) -> Result<ArenaAllocationData, ArenaAllocError> {
         let size = core::mem::size_of::<ArenaHeapItem<T>>();
-        let alignment = core::mem::align_of_val(value_ref);
+        let alignment = core::mem::align_of::<ArenaHeapItem<T>>();
 
-        assert!(alignment <= self.layout.align());
+        // The arena's buffer must be at least as aligned as the value we are storing.
+        if alignment > self.layout.align() {
+            return Err(ArenaAllocError::AlignmentNotPossible);
+        }
 
         // Safety: This is safe as `current_offset` must be less then the length
         // of the buffer.
@@ -395,6 +399,22 @@ impl<'arena> Arena<'arena> {
             unchecked_ptr = item.next.as_ptr() as *mut ErasedHeapItem
         }
         result
+    }
+
+    /// Reset arena to its initial empty state, reusing the existing OS buffer.
+    /// Must only be called when `run_drop_check()` is true (all items dropped).
+    pub fn reset(&self) {
+        debug_assert!(
+            self.run_drop_check(),
+            "reset() called on an arena with live items"
+        );
+        // Zero the buffer so stale object graphs are not observable after recycling.
+        // SAFETY: buffer is valid for the full layout size and was allocated with
+        // the same layout in try_init.
+        unsafe { core::ptr::write_bytes(self.buffer.as_ptr(), 0, self.layout.size()) };
+        self.flags.set(ArenaState::default());
+        self.last_allocation.set(core::ptr::null_mut());
+        self.current_offset.set(0);
     }
 }
 
