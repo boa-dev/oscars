@@ -39,22 +39,23 @@ impl<K: Trace, V: Trace> WeakMapInner<K, V> {
         }
     }
 
-    // replace an existing entry in one lookup, invalidating the old ephemeron
-    fn replace_or_insert(
+    // insert an entry, returns the old ephemeron pointer if one was replaced, None otherwise
+    fn insert(
         &mut self,
         key_addr: usize,
         new_ptr: ArenaPointer<'static, Ephemeron<K, V>>,
-    ) {
+    ) -> Option<ArenaPointer<'static, Ephemeron<K, V>>> {
         let hash = hash_addr(key_addr);
         match self.entries.find_entry(hash, |e| e.0 == key_addr) {
             Ok(mut entry) => {
-                // swap without probing again
+                // swap without probing again, caller is responsible for invalidating
                 let old = core::mem::replace(entry.get_mut(), (key_addr, new_ptr));
-                old.1.as_inner_ref().invalidate();
+                Some(old.1)
             }
             Err(_absent) => {
                 self.entries
                     .insert_unique(hash, (key_addr, new_ptr), |e| hash_addr(e.0));
+                None
             }
         }
     }
@@ -149,11 +150,9 @@ impl<K: Trace, V: Trace> WeakMap<K, V> {
             unsafe { ephemeron_ptr.extend_lifetime() };
 
         // SAFETY: `&mut self` gives exclusive access to `inner`
-        unsafe {
-            self.inner
-                .as_mut()
-                .replace_or_insert(key_addr, ephemeron_ptr)
-        };
+        if let Some(old) = unsafe { self.inner.as_mut().insert(key_addr, ephemeron_ptr) } {
+            old.as_inner_ref().invalidate();
+        }
     }
 
     pub fn get(&self, key: &Gc<K>) -> Option<&V> {
