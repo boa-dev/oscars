@@ -17,8 +17,6 @@ use rust_alloc::vec::Vec;
 
 #[cfg(feature = "std")]
 use std::collections::{HashMap, HashSet};
-#[cfg(feature = "std")]
-use std::path::{Path, PathBuf};
 
 /// Substitute for the [`Drop`] trait for garbage collected types.
 pub trait Finalize {
@@ -299,14 +297,25 @@ unsafe impl<T: Trace> Trace for Vec<T> {
     });
 }
 
-// TODO: Needed for boa_engine
+#[cfg(feature = "gc_allocator")]
+impl<T: Trace, C: allocator_api2::alloc::Allocator> Finalize for allocator_api2::vec::Vec<T, C> {}
+#[cfg(feature = "gc_allocator")]
+// SAFETY: All the inner elements of the `Vec` are correctly marked
+unsafe impl<T: Trace, C: allocator_api2::alloc::Allocator> Trace
+    for allocator_api2::vec::Vec<T, C>
+{
+    custom_trace!(this, mark, {
+        for e in this {
+            mark(e);
+        }
+    });
+}
 
-/*
 #[cfg(feature = "thin-vec")]
 impl<T: Trace> Finalize for thin_vec::ThinVec<T> {}
 
 #[cfg(feature = "thin-vec")]
-// SAFETY: All the inner elements of the `Vec` are correctly marked.
+// SAFETY: All the inner elements of the `ThinVec` are correctly marked.
 unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
     custom_trace!(this, mark, {
         for e in this {
@@ -314,7 +323,6 @@ unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
         }
     });
 }
-*/
 
 impl<T: Trace> Finalize for Option<T> {}
 // SAFETY: The inner value of the `Option` is correctly marked.

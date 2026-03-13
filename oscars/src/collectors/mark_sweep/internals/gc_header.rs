@@ -18,7 +18,8 @@ impl HeaderFlags {
     }
 
     pub const fn is_white(self) -> bool {
-        self.0 | WHITE_MARK_BITS == WHITE_MARK_BITS
+        // check only the color bits, ignoring IS_WEAK
+        self.0 & BLACK_MARK_BITS == 0
     }
 
     pub const fn is_black(self) -> bool {
@@ -30,11 +31,10 @@ impl HeaderFlags {
     }
 
     pub fn mark_grey(self) -> Self {
-        if self.is_white() {
-            Self(self.0 | GREY_MARK_BITS)
-        } else {
-            Self(self.0 & GREY_MARK_BITS)
-        }
+        // set color bits to GREY (0b01) while preserving IS_WEAK
+        // we must clear both color bits before ORing to prevent
+        // silently turning weak-black (0b0011) into weak-grey (0b0011)
+        Self((self.0 & !BLACK_MARK_BITS) | GREY_MARK_BITS)
     }
 
     pub const fn mark_black(self) -> Self {
@@ -42,7 +42,8 @@ impl HeaderFlags {
     }
 
     pub const fn mark_white(self) -> Self {
-        Self((self.0 | BLACK_MARK_BITS) & WHITE_MARK_BITS)
+        // Clear the color bits while preserving IS_WEAK and any other flag bits
+        Self(self.0 & !BLACK_MARK_BITS)
     }
 }
 
@@ -100,20 +101,18 @@ impl GcHeader {
     }
 
     pub fn inc_roots(&self) {
-        // Prevent silent overflow of root_count.
-        // In release builds, `u16::MAX + 1` would wrap to 0 and break GC invariants,
-        // potentially allowing live objects to be collected incorrectly.
-        let current = self.root_count.get();
-        let new = current
-            .checked_add(1)
-            .expect("GcHeader root_count overflow");
-
-        self.root_count.set(new);
+        // crash on overflow to prevent memory bugs
+        // having 65535 roots is practically impossible
+        self.root_count.set(
+            self.root_count
+                .get()
+                .checked_add(1)
+                .expect("root count overflow: more than u16::MAX roots on a single GcBox"),
+        );
     }
 
     pub fn dec_roots(&self) {
-        // NOTE: if we are underflowing on subtraction, something is seriously wrong
-        // with the codebase.
+        // avoid crashing in a destructor if the root count somehow breaks
         self.root_count.set(self.root_count.get().saturating_sub(1));
     }
 
@@ -150,6 +149,7 @@ impl GcHeader {
 mod tests {
     use super::{BLACK_MARK_BITS, GREY_MARK_BITS, WHITE_MARK_BITS};
     use super::{GcHeader, HeaderColor};
+
     #[test]
     fn header_marking() {
         let header = GcHeader::new_white();

@@ -1,9 +1,8 @@
 use rustc_hash::FxHashMap;
 
 use crate::{
-    alloc::mempool3::PoolPointer,
-    collectors::collector::Collector,
-    collectors::mark_sweep::{Finalize, TraceColor, internals::Ephemeron, trace::Trace},
+    alloc::arena2::ArenaPointer,
+    collectors::mark_sweep_arena2::{Finalize, TraceColor, internals::Ephemeron, trace::Trace},
 };
 use core::ptr::NonNull;
 
@@ -20,7 +19,7 @@ pub trait ErasedWeakMap {
 //
 // TODO: a HashTable might be a better approach here
 struct WeakMapInner<K: Trace + 'static, V: Trace + 'static> {
-    entries: FxHashMap<usize, PoolPointer<'static, Ephemeron<K, V>>>,
+    entries: FxHashMap<usize, ArenaPointer<'static, Ephemeron<K, V>>>,
     is_alive: core::cell::Cell<bool>,
 }
 
@@ -41,7 +40,7 @@ impl<K: Trace, V: Trace> WeakMapInner<K, V> {
     fn insert_ptr(
         &mut self,
         key_addr: usize,
-        ephemeron_ptr: PoolPointer<'static, Ephemeron<K, V>>,
+        ephemeron_ptr: ArenaPointer<'static, Ephemeron<K, V>>,
     ) {
         self.entries.insert(key_addr, ephemeron_ptr);
     }
@@ -99,7 +98,9 @@ pub struct WeakMap<K: Trace + 'static, V: Trace + 'static> {
 
 impl<K: Trace, V: Trace> WeakMap<K, V> {
     // create a new map and give the collector ownership of its memory
-    pub fn new<C: Collector>(collector: &C) -> Self {
+    pub fn new(
+        collector: &crate::collectors::mark_sweep_arena2::MarkSweepGarbageCollector,
+    ) -> Self {
         let boxed: rust_alloc::boxed::Box<WeakMapInner<K, V>> =
             rust_alloc::boxed::Box::new(WeakMapInner::<K, V>::new());
 
@@ -112,7 +113,12 @@ impl<K: Trace, V: Trace> WeakMap<K, V> {
         Self { inner }
     }
 
-    pub fn insert<C: Collector>(&mut self, key: &Gc<K>, value: V, collector: &C) {
+    pub fn insert(
+        &mut self,
+        key: &Gc<K>,
+        value: V,
+        collector: &crate::collectors::mark_sweep_arena2::MarkSweepGarbageCollector,
+    ) {
         let key_addr = key.inner_ptr.as_non_null().as_ptr() as usize;
 
         // remove and invalidate any existing ephemeron for this key
@@ -125,7 +131,8 @@ impl<K: Trace, V: Trace> WeakMap<K, V> {
             .expect("Failed to allocate ephemeron");
 
         // SAFETY: safe because the gc tracks this
-        let ephemeron_ptr = unsafe { ephemeron_ptr.extend_lifetime() };
+        let ephemeron_ptr: ArenaPointer<'static, Ephemeron<K, V>> =
+            unsafe { ephemeron_ptr.extend_lifetime() };
 
         //insert the new node using another short lived mutable borrow
         // SAFETY: we have unique access to `self`

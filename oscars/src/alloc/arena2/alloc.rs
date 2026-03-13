@@ -44,7 +44,16 @@ impl<T: ?Sized> ArenaHeapItem<T> {
         &mut self.value as *mut T
     }
 
-    pub(crate) fn value_mut(&mut self) -> &mut T {
+    /// Returns a raw mutable pointer to the value
+    ///
+    /// This avoids creating a `&mut self` reference, which can lead to stacked borrows
+    /// if shared references to the heap item exist
+    pub(crate) fn as_value_ptr(ptr: NonNull<Self>) -> *mut T {
+        // SAFETY: `&raw mut` computes the field address without creating a reference
+        unsafe { &raw mut (*ptr.as_ptr()).value }
+    }
+
+    fn value_mut(&mut self) -> &mut T {
         &mut self.value
     }
 }
@@ -106,7 +115,7 @@ impl<T> TaggedPtr<T> {
     }
 
     fn as_ptr(&self) -> *mut T {
-        self.0.map_addr(|addr| addr ^ MASK)
+        self.0.map_addr(|addr| addr & !MASK)
     }
 }
 
@@ -131,6 +140,15 @@ impl<'arena> ErasedArenaPointer<'arena> {
 
     pub fn as_raw_ptr(&self) -> *mut ErasedHeapItem {
         self.0.as_ptr()
+    }
+
+    /// Extend the lifetime of this erased arena pointer to 'static
+    ///
+    /// SAFETY:
+    ///
+    /// safe because the gc collector owns the arena and keeps it alive
+    pub(crate) unsafe fn extend_lifetime(self) -> ErasedArenaPointer<'static> {
+        ErasedArenaPointer(self.0, PhantomData)
     }
 
     /// Returns an [`ArenaPointer`] for the current [`ErasedArenaPointer`]
@@ -177,6 +195,16 @@ impl<'arena, T> ArenaPointer<'arena, T> {
     /// Convert the current ArenaPointer into an `ErasedArenaPointer`
     pub fn to_erased(self) -> ErasedArenaPointer<'arena> {
         self.0
+    }
+
+    /// Extend the lifetime of this arena pointer to 'static
+    ///
+    /// SAFETY:
+    ///
+    /// safe because the gc collector owns the arena and keeps it alive
+    pub(crate) unsafe fn extend_lifetime(self) -> ArenaPointer<'static, T> {
+        // SAFETY: upheld by caller
+        ArenaPointer(unsafe { self.0.extend_lifetime() }, PhantomData)
     }
 }
 
@@ -368,6 +396,22 @@ impl<'arena> Arena<'arena> {
             unchecked_ptr = item.next.as_ptr() as *mut ErasedHeapItem
         }
         result
+    }
+
+    /// Reset arena to its initial empty state, reusing the existing OS buffer.
+    /// Must only be called when `run_drop_check()` is true (all items dropped).
+    pub fn reset(&self) {
+        debug_assert!(
+            self.run_drop_check(),
+            "reset() called on an arena with live items"
+        );
+        // Zero the buffer so stale object graphs are not observable after recycling.
+        // SAFETY: buffer is valid for the full layout size and was allocated with
+        // the same layout in try_init.
+        unsafe { core::ptr::write_bytes(self.buffer.as_ptr(), 0, self.layout.size()) };
+        self.flags.set(ArenaState::default());
+        self.last_allocation.set(core::ptr::null_mut());
+        self.current_offset.set(0);
     }
 }
 
