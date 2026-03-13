@@ -741,3 +741,183 @@ mod thin_vec_trace {
         collector.collect();
     }
 }
+
+#[test]
+fn collector_drop_runs_destructors_for_live_gc_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct DropSpy {
+        drops: Rc<Cell<u32>>,
+    }
+
+    impl Drop for DropSpy {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    impl Finalize for DropSpy {}
+
+    // SAFETY: `DropSpy` has no traceable children.
+    unsafe impl Trace for DropSpy {
+        crate::empty_trace!();
+    }
+
+    let drops = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(128)
+            .with_heap_threshold(256);
+
+        let _gc = Gc::new_in(
+            DropSpy {
+                drops: Rc::clone(&drops),
+            },
+            collector,
+        );
+
+        assert_eq!(drops.get(), 0);
+    }
+
+    assert_eq!(drops.get(), 1, "collector drop should run value destructor");
+}
+
+#[test]
+fn collector_drop_runs_ephemeron_value_destructors_for_live_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct DropSpy {
+        drops: Rc<Cell<u32>>,
+    }
+
+    impl Drop for DropSpy {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    impl Finalize for DropSpy {}
+
+    // SAFETY: `DropSpy` has no traceable children.
+    unsafe impl Trace for DropSpy {
+        crate::empty_trace!();
+    }
+
+    let drops = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(128)
+            .with_heap_threshold(256);
+
+        let mut map = WeakMap::new(collector);
+        let key = Gc::new_in(1u64, collector);
+
+        map.insert(
+            &key,
+            DropSpy {
+                drops: Rc::clone(&drops),
+            },
+            collector,
+        );
+
+        assert_eq!(drops.get(), 0);
+    }
+
+    assert_eq!(
+        drops.get(),
+        1,
+        "collector drop should run ephemeron value destructor"
+    );
+}
+
+#[test]
+fn collector_drop_runs_finalizers_for_live_gc_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct FinalizeSpy {
+        finalized: Rc<Cell<u32>>,
+    }
+
+    impl Finalize for FinalizeSpy {
+        fn finalize(&self) {
+            self.finalized.set(self.finalized.get() + 1);
+        }
+    }
+
+    // SAFETY: `FinalizeSpy` has no traceable children.
+    unsafe impl Trace for FinalizeSpy {
+        crate::empty_trace!();
+    }
+
+    let finalized = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(128)
+            .with_heap_threshold(256);
+
+        let _gc = Gc::new_in(
+            FinalizeSpy {
+                finalized: Rc::clone(&finalized),
+            },
+            collector,
+        );
+
+        assert_eq!(finalized.get(), 0);
+    }
+
+    assert_eq!(
+        finalized.get(),
+        1,
+        "collector drop should run value finalizer"
+    );
+}
+
+#[test]
+fn collector_drop_runs_ephemeron_value_finalizers_for_live_values() {
+    use core::cell::Cell;
+    use rust_alloc::rc::Rc;
+
+    struct FinalizeSpy {
+        finalized: Rc<Cell<u32>>,
+    }
+
+    impl Finalize for FinalizeSpy {
+        fn finalize(&self) {
+            self.finalized.set(self.finalized.get() + 1);
+        }
+    }
+
+    // SAFETY: `FinalizeSpy` has no traceable children.
+    unsafe impl Trace for FinalizeSpy {
+        crate::empty_trace!();
+    }
+
+    let finalized = Rc::new(Cell::new(0));
+    {
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(128)
+            .with_heap_threshold(256);
+
+        let mut map = WeakMap::new(collector);
+        let key = Gc::new_in(1u64, collector);
+
+        map.insert(
+            &key,
+            FinalizeSpy {
+                finalized: Rc::clone(&finalized),
+            },
+            collector,
+        );
+
+        assert_eq!(finalized.get(), 0);
+    }
+
+    assert_eq!(
+        finalized.get(),
+        1,
+        "collector drop should run ephemeron value finalizer"
+    );
+}

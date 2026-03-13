@@ -221,12 +221,12 @@ mod tests {
 
     #[test]
     fn gc_alloc_vec_survives_collection() {
-        let collector = &mut MarkSweepGarbageCollector::default()
+        let collector = MarkSweepGarbageCollector::default()
             .with_page_size(256)
             .with_heap_threshold(512);
 
-        let vec = GcAllocVec::with_capacity(100, collector);
-        let gc_vec = Gc::new_in(GcRefCell::new(vec), collector);
+        let vec = GcAllocVec::with_capacity(100, &collector);
+        let gc_vec = Gc::new_in(GcRefCell::new(vec), &collector);
 
         for i in 0..100u64 {
             gc_vec.borrow_mut().push(i);
@@ -236,6 +236,11 @@ mod tests {
 
         assert_eq!(gc_vec.borrow().len(), 100);
         assert_eq!(gc_vec.borrow()[50], 50);
+
+        // Drop the handle and run a normal collection cycle so cleanup happens
+        // through regular sweep logic instead of collector-drop teardown.
+        drop(gc_vec);
+        collector.collect();
     }
 
     #[test]
