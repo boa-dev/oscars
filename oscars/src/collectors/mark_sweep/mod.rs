@@ -239,15 +239,18 @@ impl MarkSweepGarbageCollector {
         // During collector teardown, reclaim only maps that have already been
         // marked dead by `WeakMap::drop`.
         self.weak_maps.borrow_mut().retain(|&map_ptr| {
+            // SAFETY: the pointer is valid as long as it's in this list.
             let map = unsafe { map_ptr.as_ref() };
-            if map.is_alive() {
-                true
-            } else {
+            let is_map_alive = map.is_alive();
+            if !is_map_alive {
+                // SAFETY: `map_ptr` came from `rust_alloc::boxed::Box::into_raw` when
+                // the weak map was registered, so it must be reclaimed with
+                // `rust_alloc::boxed::Box::from_raw` (not allocator-api2 `Box`).
                 unsafe {
                     let _ = rust_alloc::boxed::Box::from_raw(map_ptr.as_ptr());
                 }
-                false
             }
+            is_map_alive
         });
     }
 
@@ -258,17 +261,21 @@ impl MarkSweepGarbageCollector {
         self.weak_maps.borrow_mut().retain(|&map_ptr| {
             // SAFETY: the pointer is valid as long as it's in this list.
             let map = unsafe { map_ptr.as_ref() };
-            if map.is_alive() {
+            let is_map_alive = map.is_alive();
+            if is_map_alive {
                 // We need mut access to prune.
                 unsafe { (&mut *map_ptr.as_ptr()).prune_dead_entries(sweep_color) };
-                true
             } else {
                 // WeakMap was dropped, reclaim the inner allocation.
+                //
+                // SAFETY: `map_ptr` came from `rust_alloc::boxed::Box::into_raw` when
+                // the weak map was registered, so it must be reclaimed with
+                // `rust_alloc::boxed::Box::from_raw` (not allocator-api2 `Box`).
                 unsafe {
                     let _ = rust_alloc::boxed::Box::from_raw(map_ptr.as_ptr());
                 }
-                false
             }
+            is_map_alive
         });
 
         self.run_sweep_phase();
