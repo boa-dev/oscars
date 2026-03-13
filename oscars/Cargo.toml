@@ -8,6 +8,7 @@ allocator-api2 = { version = "0.4.0", optional = true }
 hashbrown = "0.16.1"
 oscars_derive = { path = "../oscars_derive", version = "0.1.0" }
 rustc-hash = "2.1.1"
+thin-vec = { version = "0.2", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -20,7 +21,11 @@ harness = false
 required-features = ["gc_allocator"]
 
 [[bench]]
-name = "arena2_vs_arena3"
+name = "arena2_vs_mempool3"
+harness = false
+
+[[bench]]
+name = "arena2_vs_boa_gc"
 harness = false
 
 [features]
@@ -28,3 +33,4 @@ default = ["mark_sweep"]
 std = []
 mark_sweep = []
 gc_allocator = ["dep:allocator-api2", "mark_sweep"]
+thin-vec = ["dep:thin-vec", "mark_sweep"]
