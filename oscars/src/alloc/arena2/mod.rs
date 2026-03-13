@@ -48,11 +48,18 @@ const DEFAULT_ARENA_SIZE: usize = 4096;
 /// Default upper limit of 2MB (2 ^ 21)
 const DEFAULT_HEAP_THRESHOLD: usize = 2_097_152;
 
+/// Maximum number of idle arenas held (4 idle pages x 4KB = 16KB of OS memory pressure buffered)
+const MAX_RECYCLED_ARENAS: usize = 4;
+
 #[derive(Debug)]
 pub struct ArenaAllocator<'alloc> {
     heap_threshold: usize,
     arena_size: usize,
     arenas: LinkedList<Arena<'alloc>>,
+    // empty arenas kept alive to avoid OS reallocation on the next cycle
+    recycled_arenas: [Option<Arena<'alloc>>; MAX_RECYCLED_ARENAS],
+    // number of idle arenas currently held
+    recycled_count: usize,
 }
 
 impl<'alloc> Default for ArenaAllocator<'alloc> {
@@ -61,6 +68,8 @@ impl<'alloc> Default for ArenaAllocator<'alloc> {
             heap_threshold: DEFAULT_HEAP_THRESHOLD,
             arena_size: DEFAULT_ARENA_SIZE,
             arenas: LinkedList::default(),
+            recycled_arenas: core::array::from_fn(|_| None),
+            recycled_count: 0,
         }
     }
 }
@@ -80,11 +89,13 @@ impl<'alloc> ArenaAllocator<'alloc> {
     }
 
     pub fn heap_size(&self) -> usize {
+        // recycled arenas hold no live objects, exclude them from GC pressure
         self.arenas_len() * self.arena_size
     }
 
     pub fn is_below_threshold(&self) -> bool {
-        self.heap_size() <= self.heap_threshold - self.arena_size
+        // saturating_sub avoids underflow when heap_threshold < arena_size
+        self.heap_size() <= self.heap_threshold.saturating_sub(self.arena_size)
     }
 
     pub fn increase_threshold(&mut self) {
@@ -128,6 +139,16 @@ impl<'alloc> ArenaAllocator<'alloc> {
     }
 
     pub fn initialize_new_arena(&mut self) -> Result<(), ArenaAllocError> {
+        // Check the recycle list first to avoid an OS allocation.
+        if self.recycled_count > 0 {
+            self.recycled_count -= 1;
+            if let Some(recycled) = self.recycled_arenas[self.recycled_count].take() {
+                // arena.reset() was already called when it was parked
+                self.arenas.push_front(recycled);
+                return Ok(());
+            }
+        }
+
         let new_arena = Arena::try_init(self.arena_size, 16)?;
         self.arenas.push_front(new_arena);
         Ok(())
@@ -138,8 +159,14 @@ impl<'alloc> ArenaAllocator<'alloc> {
     }
 
     pub fn drop_dead_arenas(&mut self) {
-        for dead_arenas in self.arenas.extract_if(|a| a.run_drop_check()) {
-            drop(dead_arenas)
+        for arena in self.arenas.extract_if(|a| a.run_drop_check()) {
+            if self.recycled_count < MAX_RECYCLED_ARENAS {
+                //reset in place and park in the reserve.
+                arena.reset();
+                self.recycled_arenas[self.recycled_count] = Some(arena);
+                self.recycled_count += 1;
+            }
+            // else: arena drops here, returning memory to the OS
         }
     }
 

@@ -32,6 +32,7 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
         }
     }
 
+    #[allow(dead_code)] // TODO: figure out what to do with this
     pub fn key(&self) -> &K {
         self.key.value()
     }

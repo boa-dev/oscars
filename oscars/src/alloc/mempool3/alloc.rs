@@ -277,6 +277,29 @@ impl SlotPool {
     pub fn run_drop_check(&self) -> bool {
         self.live.get() == 0
     }
+
+    /// Reset this pool to the empty state it had after `try_init`, reusing the
+    /// existing OS buffer. Must only be called when `run_drop_check()` is true.
+    ///
+    /// After `reset()` the pool is ready for `alloc_slot` without any further
+    /// OS interaction, avoiding a round trip through the global allocator.
+    pub fn reset(&self) {
+        debug_assert_eq!(
+            self.live.get(),
+            0,
+            "reset() called on a non-empty SlotPool (live = {})",
+            self.live.get()
+        );
+        // Clear the bitmap so all slots become free again.
+        //
+        // SAFETY: buffer is valid for at least `bitmap_bytes` and was
+        // originally zero initialised in try_init with the same length.
+        unsafe {
+            core::ptr::write_bytes(self.buffer.as_ptr(), 0, self.bitmap_bytes);
+        }
+        self.bump.set(0);
+        self.free_list.set(None);
+    }
 }
 
 impl Drop for SlotPool {
