@@ -184,3 +184,62 @@ fn as_ptr_clears_not_flips_tag_bit() {
         ptr_a.as_mut().mark_dropped();
     }
 }
+
+// === test for Dynamic Alignment === //
+
+#[test]
+fn test_over_aligned_type() {
+    #[repr(C, align(512))]
+    struct HighlyAligned {
+        _data: [u8; 128],
+    }
+
+    let mut allocator = ArenaAllocator::default().with_arena_size(4096);
+    let ptr = allocator
+        .try_alloc(HighlyAligned { _data: [0; 128] })
+        .unwrap();
+
+    let addr = ptr.as_ptr().as_ptr() as usize;
+    assert_eq!(addr % 512, 0);
+    assert_eq!(allocator.arenas_len(), 1);
+}
+
+#[test]
+fn test_alignment_upgrade_after_small_alloc() {
+    #[repr(C, align(512))]
+    struct BigAlign([u8; 16]);
+
+    let mut allocator = ArenaAllocator::default().with_arena_size(4096);
+
+    // force the first arena to use 8-byte alignment
+    let _small = allocator.try_alloc(0u8).unwrap();
+    assert_eq!(allocator.arenas_len(), 1);
+
+    let ptr = allocator.try_alloc(BigAlign([0; 16])).unwrap();
+
+    let addr = ptr.as_ptr().as_ptr() as usize;
+    assert_eq!(addr % 512, 0);
+    assert_eq!(allocator.arenas_len(), 2);
+}
+
+#[test]
+fn test_alignment_upgrade_on_full_arena() {
+    #[repr(C, align(512))]
+    struct BigAlign([u8; 16]);
+
+    let mut allocator = ArenaAllocator::default().with_arena_size(4096);
+
+    // fill the first arena
+    let mut count = 0usize;
+    while allocator.arenas_len() < 2 {
+        let _ = allocator.try_alloc(0u64).unwrap();
+        count += 1;
+        assert!(count < 1024);
+    }
+
+    let ptr = allocator.try_alloc(BigAlign([0; 16])).unwrap();
+
+    let addr = ptr.as_ptr().as_ptr() as usize;
+    assert_eq!(addr % 512, 0);
+    assert_eq!(allocator.arenas_len(), 3);
+}

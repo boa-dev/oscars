@@ -342,9 +342,12 @@ impl<'arena> Arena<'arena> {
         value_ref: &T,
     ) -> Result<ArenaAllocationData, ArenaAllocError> {
         let size = core::mem::size_of::<ArenaHeapItem<T>>();
-        let alignment = core::mem::align_of_val(value_ref);
+        let alignment = core::mem::align_of::<ArenaHeapItem<T>>();
 
-        assert!(alignment <= self.layout.align());
+        // The arena's buffer must be at least as aligned as the value we are storing.
+        if alignment > self.layout.align() {
+            return Err(ArenaAllocError::AlignmentNotPossible);
+        }
 
         // Safety: This is safe as `current_offset` must be less then the length
         // of the buffer.
