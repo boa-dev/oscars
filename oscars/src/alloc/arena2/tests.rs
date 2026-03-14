@@ -6,23 +6,27 @@ use crate::alloc::arena2::ArenaHeapItem;
 
 use super::ArenaAllocator;
 
-// TODO: Needs testing on a 32bit system
 #[test]
 fn alloc_dealloc() {
-    // Let's just allocate with a half a Kb per arena
-    let mut allocator = ArenaAllocator::default().with_arena_size(512);
+    // Ensure the arena holds exactly `BATCH` `ArenaHeapItem<i32>` values.
+    //
+    // Note: we calculate this with `size_of` because ArenaHeapItem<i32> is
+    // smaller on 32-bit targets than on 64-bit targets, so a fixed byte size
+    // would not test the same item count on both.
+    const BATCH: usize = 32;
+    const ARENA_SIZE: usize = BATCH * core::mem::size_of::<ArenaHeapItem<i32>>();
 
-    // An Arena heap object has an overhead of 4-8 bytes, depending on the platform
+    let mut allocator = ArenaAllocator::default().with_arena_size(ARENA_SIZE);
 
     let mut first_region = Vec::default();
-    for i in 0..32 {
+    for i in 0..32_i32 {
         let value = allocator.try_alloc(i).unwrap();
         first_region.push(value.as_ptr());
     }
     assert_eq!(allocator.arenas_len(), 1);
 
     let mut second_region = Vec::default();
-    for i in 0..32 {
+    for i in 0..32_i32 {
         let value = allocator.try_alloc(i).unwrap();
         second_region.push(value.as_ptr());
     }
@@ -31,7 +35,8 @@ fn alloc_dealloc() {
     // Drop all the items in the first region
     manual_drop(first_region);
 
-    // Drop dead pages
+    // Drop dead pages, only the first arena is fully dropped, the second
+    // arena remains live because none of its items have been marked dropped.
     allocator.drop_dead_arenas();
 
     assert_eq!(allocator.arenas_len(), 1);
