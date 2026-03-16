@@ -40,26 +40,25 @@ impl<K: Trace, V: Trace> WeakMapInner<K, V> {
         }
     }
 
-    fn remove_and_invalidate(&mut self, key_addr: usize) {
-        if let Ok(entry) = self
-            .entries
-            .find_entry(hash_addr(key_addr), |e| e.0 == key_addr)
-        {
-            let ((_, old_ephemeron), _) = entry.remove();
-            old_ephemeron.as_inner_ref().invalidate();
-        }
-    }
-
-    fn insert_ptr(
+    // insert an entry, returns the old ephemeron pointer if one was replaced, None otherwise
+    fn insert(
         &mut self,
         key_addr: usize,
-        ephemeron_ptr: PoolPointer<'static, Ephemeron<K, V>>,
-    ) {
-        // caller guarantees no duplicate exists since remove_and_invalidate was called first
-        self.entries
-            .insert_unique(hash_addr(key_addr), (key_addr, ephemeron_ptr), |e| {
-                hash_addr(e.0)
-            });
+        new_ptr: PoolPointer<'static, Ephemeron<K, V>>,
+    ) -> Option<PoolPointer<'static, Ephemeron<K, V>>> {
+        let hash = hash_addr(key_addr);
+        match self.entries.find_entry(hash, |e| e.0 == key_addr) {
+            Ok(mut entry) => {
+                // swap without probing again, caller is responsible for invalidating
+                let old = core::mem::replace(entry.get_mut(), (key_addr, new_ptr));
+                Some(old.1)
+            }
+            Err(_absent) => {
+                self.entries
+                    .insert_unique(hash, (key_addr, new_ptr), |e| hash_addr(e.0));
+                None
+            }
+        }
     }
 
     fn get(&self, key: &Gc<K>) -> Option<&V> {
@@ -132,24 +131,21 @@ impl<K: Trace, V: Trace> WeakMap<K, V> {
         Self { inner }
     }
 
+    // insert a value for `key`, replacing and invalidating any old ephemeron
     pub fn insert<C: Collector>(&mut self, key: &Gc<K>, value: V, collector: &C) {
         let key_addr = key.inner_ptr.as_non_null().as_ptr() as usize;
 
-        // remove and invalidate any existing ephemeron for this key
-        // SAFETY: we have unique access to `self`
-        unsafe { self.inner.as_mut().remove_and_invalidate(key_addr) };
-
-        //allocate the new ephemeron node
         let ephemeron_ptr = collector
             .alloc_ephemeron_node(key, value)
             .expect("Failed to allocate ephemeron");
 
-        // SAFETY: safe because the gc tracks this
+        // SAFETY: the collector keeps the pool alive for the map lifetime
         let ephemeron_ptr = unsafe { ephemeron_ptr.extend_lifetime() };
 
-        //insert the new node using another short lived mutable borrow
-        // SAFETY: we have unique access to `self`
-        unsafe { self.inner.as_mut().insert_ptr(key_addr, ephemeron_ptr) };
+        // SAFETY: `&mut self` gives exclusive access to `inner`
+        if let Some(old) = unsafe { self.inner.as_mut().insert(key_addr, ephemeron_ptr) } {
+            old.as_inner_ref().invalidate();
+        }
     }
 
     pub fn get(&self, key: &Gc<K>) -> Option<&V> {
