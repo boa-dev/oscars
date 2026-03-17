@@ -485,7 +485,7 @@ unsafe impl<T: Trace> Trace for OnceCell<T> {
 mod icu {
     use icu_locale_core::{LanguageIdentifier, Locale};
 
-    use crate::{Finalize, Trace};
+    use crate::mark_sweep::{Finalize, Trace};
 
     impl Finalize for LanguageIdentifier {}
 
@@ -504,7 +504,7 @@ mod icu {
 
 #[cfg(feature = "boa_string")]
 mod boa_string_trace {
-    use crate::{Finalize, Trace};
+    use crate::mark_sweep::{Finalize, Trace};
 
     // SAFETY: `boa_string::JsString` doesn't have any traceable data.
     unsafe impl Trace for boa_string::JsString {
@@ -516,7 +516,7 @@ mod boa_string_trace {
 
 #[cfg(feature = "either")]
 mod either_trace {
-    use crate::{Finalize, Trace};
+    use crate::mark_sweep::{Finalize, Trace};
 
     impl<L: Trace, R: Trace> Finalize for either::Either<L, R> {}
 
