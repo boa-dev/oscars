@@ -1,7 +1,6 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use oscars::collectors::mark_sweep_arena2::{
-    Gc as OscarsGc, MarkSweepGarbageCollector,
-    cell::GcRefCell as OscarsGcRefCell,
+    Gc as OscarsGc, MarkSweepGarbageCollector, cell::GcRefCell as OscarsGcRefCell,
 };
 
 use boa_gc::{Gc as BoaGc, GcRefCell as BoaGcRefCell, force_collect as boa_force_collect};
