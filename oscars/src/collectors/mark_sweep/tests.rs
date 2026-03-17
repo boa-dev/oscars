@@ -1,5 +1,5 @@
 use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
-use crate::{Finalize, Trace};
+use crate::mark_sweep::{Finalize, Trace};
 
 use super::Gc;
 use super::WeakMap;
@@ -546,7 +546,7 @@ mod gc_edge_cases {
     use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
     use crate::collectors::mark_sweep::cell::GcRefCell;
     use crate::collectors::mark_sweep::pointers::{Gc, WeakMap};
-    use crate::{Finalize, Trace};
+    use crate::mark_sweep::{Finalize, Trace};
 
     // ---- Deep object graph ------------------------------------------------
 
@@ -762,7 +762,7 @@ mod thin_vec_trace {
     use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
     use crate::collectors::mark_sweep::cell::GcRefCell;
     use crate::collectors::mark_sweep::pointers::Gc;
-    use crate::{Finalize, Trace};
+    use crate::mark_sweep::{Finalize, Trace};
 
     /// `ThinVec<Gc<T>>` keeps inner `Gc` values alive across collections.
     #[test]

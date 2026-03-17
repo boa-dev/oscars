@@ -60,7 +60,7 @@ fn gc_recursion() {
         .with_heap_threshold(8_192);
 
     struct S {
-        i: usize,
+        _i: usize,
         next: Option<Gc<S>>,
     }
 
@@ -82,11 +82,11 @@ fn gc_recursion() {
     #[cfg(not(miri))]
     const COUNT: usize = 2_000;
 
-    let mut root = Gc::new_in(S { i: 0, next: None }, collector);
+    let mut root = Gc::new_in(S { _i: 0, next: None }, collector);
     for i in 1..COUNT {
         root = Gc::new_in(
             S {
-                i,
+                _i: i,
                 next: Some(root.clone()),
             },
             collector,
@@ -637,7 +637,7 @@ mod gc_edge_cases {
 
         unsafe impl Trace for CycleNode {
             unsafe fn trace(&self, color: TraceColor) {
-                self.next.trace(color);
+                unsafe { self.next.trace(color) };
             }
 
             fn run_finalizer(&self) {}

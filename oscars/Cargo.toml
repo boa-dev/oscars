@@ -32,5 +32,6 @@ harness = false
 default = ["mark_sweep"]
 std = []
 mark_sweep = []
+mark_sweep2 = ["mark_sweep"]
 gc_allocator = ["dep:allocator-api2", "mark_sweep"]
 thin-vec = ["dep:thin-vec", "mark_sweep"]
