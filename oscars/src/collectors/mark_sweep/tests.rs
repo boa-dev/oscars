@@ -86,6 +86,31 @@ fn gc_recursion() {
     collector.collect();
 }
 
+#[cfg(feature = "gc_allocator")]
+#[test]
+fn external_allocations_set_deferred_collection_flag_when_threshold_exceeded() {
+    let collector = MarkSweepGarbageCollector::default()
+        .with_page_size(128)
+        .with_heap_threshold(1_024);
+
+    assert!(
+        !collector.collect_needed.get(),
+        "collect_needed should start false"
+    );
+
+    let mut external = allocator_api2::vec::Vec::<u8, &MarkSweepGarbageCollector>::with_capacity_in(
+        2_048, &collector,
+    );
+    external.push(1);
+
+    assert!(
+        collector.collect_needed.get(),
+        "raw allocator pressure should set deferred collection"
+    );
+
+    drop(external);
+}
+
 #[test]
 fn drop_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()

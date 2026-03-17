@@ -471,11 +471,19 @@ unsafe impl allocator_api2::alloc::Allocator for MarkSweepGarbageCollector {
 
         // raw byte allocations skip ensure_capacity
         // and go straight to try_alloc_bytes
-        let result = self
-            .allocator
-            .borrow_mut()
-            .try_alloc_bytes(layout)
-            .map_err(|_| allocator_api2::alloc::AllocError)?;
+        let (result, needs_collect) = {
+            let mut alloc = self.allocator.borrow_mut();
+            let result = alloc
+                .try_alloc_bytes(layout)
+                .map_err(|_| allocator_api2::alloc::AllocError)?;
+            let needs_collect = !alloc.is_below_threshold();
+            (result, needs_collect)
+        };
+
+        // Keep deferred-collection behavior consistent with GC-node allocations.
+        if needs_collect {
+            self.collect_needed.set(true);
+        }
 
         // debug only: track raw allocations for leak detection
         #[cfg(all(debug_assertions, feature = "gc_allocator"))]
