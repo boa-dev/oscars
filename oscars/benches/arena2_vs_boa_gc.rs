@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use oscars::collectors::mark_sweep_arena2::{
-    Finalize, Gc as OscarsGc, MarkSweepGarbageCollector, Trace, TraceColor,
+    Gc as OscarsGc, MarkSweepGarbageCollector,
     cell::GcRefCell as OscarsGcRefCell,
 };
 

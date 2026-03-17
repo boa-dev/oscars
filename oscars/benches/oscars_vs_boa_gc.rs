@@ -1,5 +1,5 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use oscars::{
+use oscars::mark_sweep::{
     Gc as OscarsGc, GcAllocVec, MarkSweepGarbageCollector, cell::GcRefCell as OscarsGcRefCell,
 };
 
@@ -296,21 +296,21 @@ fn bench_deep(c: &mut Criterion) {
     #[derive(Clone)]
     struct Node {
         value: usize,
-        children: Vec<oscars::Gc<OscarsGcRefCell<Node>>>,
+        children: Vec<OscarsGc<OscarsGcRefCell<Node>>>,
     }
 
-    impl oscars::Finalize for Node {}
+    impl oscars::mark_sweep::Finalize for Node {}
 
     // SAFETY: we trace all children, making them visible to the collector
-    unsafe impl oscars::Trace for Node {
-        unsafe fn trace(&self, color: oscars::TraceColor) {
+    unsafe impl oscars::mark_sweep::Trace for Node {
+        unsafe fn trace(&self, color: oscars::mark_sweep::TraceColor) {
             for child in &self.children {
                 unsafe { child.trace(color) };
             }
         }
 
         fn run_finalizer(&self) {
-            oscars::Finalize::finalize(self);
+            oscars::mark_sweep::Finalize::finalize(self);
         }
     }
 
@@ -323,7 +323,7 @@ fn bench_deep(c: &mut Criterion) {
             fn build_tree(
                 depth: usize,
                 collector: &MarkSweepGarbageCollector,
-            ) -> oscars::Gc<OscarsGcRefCell<Node>> {
+            ) -> OscarsGc<OscarsGcRefCell<Node>> {
                 let node = if depth == 0 {
                     Node {
                         value: depth,
