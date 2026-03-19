@@ -23,10 +23,7 @@ pub mod mark_sweep2 {
 }
 
 #[cfg(feature = "mark_sweep")]
-pub use crate::collectors::collector::Collector;
-
-#[cfg(feature = "gc_allocator")]
-pub use crate::collectors::mark_sweep::{GcAllocBox, GcAllocVec};
+pub use crate::collectors::mark_sweep::Collector;
 
 pub mod alloc;
 pub mod collectors;

@@ -128,7 +128,7 @@ impl<'alloc> ArenaAllocator<'alloc> {
             }
         };
 
-        match active.get_allocation_data(&value) {
+        match active.get_allocation_data::<T>() {
             // SAFETY: TODO
             Ok(data) => unsafe { Ok(active.alloc_unchecked::<T>(value, data)) },
             // The active arena is either full or was created with an alignment
@@ -144,13 +144,10 @@ impl<'alloc> ArenaAllocator<'alloc> {
         }
     }
 
-    pub fn get_allocation_data<T>(
-        &self,
-        value: &T,
-    ) -> Result<Option<ArenaAllocationData>, ArenaAllocError> {
+    pub fn get_allocation_data<T>(&self) -> Result<Option<ArenaAllocationData>, ArenaAllocError> {
         self.arenas
             .front()
-            .map(|a| a.get_allocation_data(value))
+            .map(|a| a.get_allocation_data::<T>())
             .transpose()
     }
 

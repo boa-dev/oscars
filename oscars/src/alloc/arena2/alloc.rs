@@ -308,7 +308,7 @@ impl<'arena> Arena<'arena> {
 
     /// Allocate a value and return that value.
     pub fn try_alloc<T>(&self, value: T) -> Result<ArenaPointer<'arena, T>, ArenaAllocError> {
-        let allocation_data = self.get_allocation_data(&value)?;
+        let allocation_data = self.get_allocation_data::<T>()?;
         // SAFETY: We have checked that the allocation is valid.
         unsafe { Ok(self.alloc_unchecked(value, allocation_data)) }
     }
@@ -337,10 +337,7 @@ impl<'arena> Arena<'arena> {
         }
     }
 
-    pub fn get_allocation_data<T>(
-        &self,
-        value_ref: &T,
-    ) -> Result<ArenaAllocationData, ArenaAllocError> {
+    pub fn get_allocation_data<T>(&self) -> Result<ArenaAllocationData, ArenaAllocError> {
         let size = core::mem::size_of::<ArenaHeapItem<T>>();
         let alignment = core::mem::align_of::<ArenaHeapItem<T>>();
 

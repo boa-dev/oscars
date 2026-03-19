@@ -62,9 +62,6 @@ pub struct MarkSweepGarbageCollector {
     pending_root_queue: RefCell<Vec<GcErasedPointer>>,
     pending_ephemeron_queue: RefCell<Vec<ErasedEphemeron>>,
     pub(crate) weak_maps: RefCell<Vec<NonNull<dyn ErasedWeakMap>>>,
-    // debug only: track raw byte allocations from the Allocator impl for leak detection
-    #[cfg(all(debug_assertions, feature = "gc_allocator"))]
-    debug_raw_allocs: RefCell<hashbrown::HashSet<core::ptr::NonNull<u8>>>,
 }
 
 impl MarkSweepGarbageCollector {
@@ -91,25 +88,6 @@ impl MarkSweepGarbageCollector {
 
 impl Drop for MarkSweepGarbageCollector {
     fn drop(&mut self) {
-        // debug only: check for leaked raw allocations
-        #[cfg(all(debug_assertions, feature = "gc_allocator", feature = "std"))]
-        {
-            let leaked_count = self.debug_raw_allocs.borrow().len();
-            if leaked_count > 0 {
-                std::eprintln!(
-                    "WARNING: {} raw byte allocations were not deallocated before collector drop",
-                    leaked_count
-                );
-                std::eprintln!(
-                    "this indicates Vec/Box/etc created with the collector as allocator"
-                );
-                std::eprintln!(
-                    "but not stored inside a traced GC object (e.g., Gc<GcAllocVec<T>>),"
-                );
-                std::eprintln!("use GcAllocVec and GcAllocBox wrappers for safe usage.");
-            }
-        }
-
         // Reclaim all collector-owned weak maps.
         // Single-threaded, so this is safe.
         for &map_ptr in self.weak_maps.borrow().iter() {

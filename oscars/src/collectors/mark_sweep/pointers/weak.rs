@@ -3,8 +3,7 @@
 // optimized in the future
 use crate::{
     alloc::mempool3::PoolPointer,
-    collectors::collector::Collector,
-    collectors::mark_sweep::{Trace, internals::Ephemeron},
+    collectors::mark_sweep::{Collector, Trace, internals::Ephemeron},
 };
 
 #[repr(transparent)]

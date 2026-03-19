@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use oscars::mark_sweep::{
-    Gc as OscarsGc, GcAllocVec, MarkSweepGarbageCollector, cell::GcRefCell as OscarsGcRefCell,
+    Gc as OscarsGc, MarkSweepGarbageCollector, cell::GcRefCell as OscarsGcRefCell,
 };
 
 use boa_gc::{Gc as BoaGc, GcRefCell as BoaGcRefCell, force_collect as boa_force_collect};
@@ -94,99 +94,6 @@ fn bench_collection(c: &mut Criterion) {
                     },
                     criterion::BatchSize::SmallInput,
                 );
-            },
-        );
-    }
-
-    group.finish();
-}
-
-fn bench_vec_create(c: &mut Criterion) {
-    let mut group = c.benchmark_group("vector_creation");
-
-    for size in [10, 100, 1000].iter() {
-        group.bench_with_input(
-            BenchmarkId::new("oscars_gc_allocator", size),
-            size,
-            |b, &size| {
-                let collector = MarkSweepGarbageCollector::default()
-                    .with_page_size(65536)
-                    .with_heap_threshold(262144);
-
-                b.iter(|| {
-                    let vec = GcAllocVec::with_capacity(size, &collector);
-                    let gc_vec = OscarsGc::new_in(OscarsGcRefCell::new(vec), &collector);
-
-                    for i in 0..size {
-                        gc_vec.borrow_mut().push(black_box(i));
-                    }
-
-                    black_box(gc_vec.borrow().len())
-                });
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("boa_gc_std_vec", size),
-            size,
-            |b, &size| {
-                b.iter(|| {
-                    let gc_vec = BoaGc::new(BoaGcRefCell::new(Vec::with_capacity(size)));
-                    for i in 0..size {
-                        gc_vec.borrow_mut().push(black_box(i));
-                    }
-                    black_box(gc_vec.borrow().len())
-                });
-            },
-        );
-    }
-
-    group.finish();
-}
-
-fn bench_vec_ptrs(c: &mut Criterion) {
-    let mut group = c.benchmark_group("vec_of_gc_pointers");
-
-    for num_elements in [10, 50, 100].iter() {
-        group.bench_with_input(
-            BenchmarkId::new("oscars", num_elements),
-            num_elements,
-            |b, &num_elements| {
-                let collector = MarkSweepGarbageCollector::default()
-                    .with_page_size(65536)
-                    .with_heap_threshold(262144);
-
-                b.iter(|| {
-                    let vec = GcAllocVec::with_capacity(num_elements, &collector);
-                    let gc_vec = OscarsGc::new_in(OscarsGcRefCell::new(vec), &collector);
-
-                    for i in 0..num_elements {
-                        let inner = OscarsGc::new_in(OscarsGcRefCell::new(i), &collector);
-                        gc_vec.borrow_mut().push(inner);
-                    }
-
-                    let sum: usize = gc_vec.borrow().iter().map(|gc| *gc.borrow()).sum();
-                    black_box(sum)
-                });
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("boa_gc", num_elements),
-            num_elements,
-            |b, &num_elements| {
-                b.iter(|| {
-                    let mut vec = Vec::with_capacity(num_elements);
-
-                    for i in 0..num_elements {
-                        let gc = BoaGc::new(BoaGcRefCell::new(i));
-                        vec.push(gc);
-                    }
-
-                    let gc_vec = BoaGc::new(BoaGcRefCell::new(vec));
-                    let sum: usize = gc_vec.borrow().iter().map(|gc| *gc.borrow()).sum();
-                    black_box(sum)
-                });
             },
         );
     }
@@ -382,8 +289,6 @@ criterion_group!(
     benches,
     bench_alloc,
     bench_collection,
-    bench_vec_create,
-    bench_vec_ptrs,
     bench_mixed,
     bench_pressure,
     bench_deep,

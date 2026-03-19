@@ -1,5 +1,5 @@
 use crate::alloc::mempool3::{ErasedPoolPointer, PoolItem, PoolPointer};
-use crate::collectors::collector::Collector;
+use crate::collectors::mark_sweep::Collector;
 use crate::collectors::mark_sweep::Finalize;
 use crate::collectors::mark_sweep::internals::NonTraceable;
 use crate::collectors::mark_sweep::{internals::GcBox, trace::Trace};

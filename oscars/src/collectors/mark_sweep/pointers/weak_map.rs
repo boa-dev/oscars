@@ -3,8 +3,7 @@ use rustc_hash::FxHasher;
 
 use crate::{
     alloc::mempool3::PoolPointer,
-    collectors::collector::Collector,
-    collectors::mark_sweep::{Finalize, TraceColor, internals::Ephemeron, trace::Trace},
+    collectors::mark_sweep::{Collector, Finalize, TraceColor, internals::Ephemeron, trace::Trace},
 };
 use core::{hash::Hasher, ptr::NonNull};
 
