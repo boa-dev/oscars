@@ -59,22 +59,6 @@ pub trait Collector {
 type GcErasedPointer = NonNull<PoolItem<GcBox<NonTraceable>>>;
 pub(crate) type ErasedEphemeron = NonNull<PoolItem<Ephemeron<NonTraceable, NonTraceable>>>;
 
-/* TODO: Figure out the best way to adapt the thread local concept in no_std
-*
-* NOTE: Maybe, the thread_local should be left up to the user or a std feature
-*
-* use core::cell::{RefCell, Cell};
-*
-* thread_local!(static GC_DROPPING: Cell<bool> = const { Cell::new(false) });
-* thread_local!(static BOA_GC: RefCell<BoaGc> = RefCell::new( BoaGc {
-*     config: GcConfig::default(),
-*     runtime: GcRuntimeData::default(),
-*     strongs: Vec::default(),
-*     weaks: Vec::default(),
-*     weak_maps: Vec::default(),
-* }));
-*/
-
 #[derive(Default)]
 pub struct MarkSweepGarbageCollector {
     // we use RefCell so we can borrow the arena mutably via &self

@@ -27,72 +27,87 @@ unsafe impl Trace for NonTraceable {
 // NOTE: This may not be the best idea, but let's find out.
 //
 use crate::alloc::mempool3::{ErasedPoolPointer, PoolItem};
+use core::cell::Cell;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
+#[derive(Debug)]
 pub struct WeakGcBox<T: Trace + ?Sized + 'static> {
-    pub(crate) inner_ptr: ErasedPoolPointer<'static>,
+    pub(crate) inner_ptr: Cell<Option<ErasedPoolPointer<'static>>>,
     pub(crate) marker: PhantomData<T>,
 }
 
 impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
     pub fn new(inner_ptr: ErasedPoolPointer<'static>) -> Self {
         Self {
-            inner_ptr,
+            inner_ptr: Cell::new(Some(inner_ptr)),
             marker: PhantomData,
         }
     }
 
-    pub(crate) fn erased_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
+    pub(crate) fn erased_inner_ptr(&self) -> Option<NonNull<GcBox<NonTraceable>>> {
         // SAFETY: `as_heap_ptr` returns a valid pointer to
         // `PoolItem` whose lifetime is tied to the pool
-        let heap_item: *mut PoolItem<GcBox<NonTraceable>> = self.as_heap_ptr().as_ptr();
-        // SAFETY: `PoolItem` is repr(transparent), so pointing to and returning field 0 is valid.
-        unsafe { NonNull::new_unchecked(&raw mut (*heap_item).0) }
+        self.as_heap_ptr().map(|hp| {
+            let heap_item: *mut PoolItem<GcBox<NonTraceable>> = hp.as_ptr();
+            // SAFETY: `PoolItem` is repr(transparent), so pointing to and returning field 0 is valid.
+            unsafe { NonNull::new_unchecked(&raw mut (*heap_item).0) }
+        })
     }
 
-    pub(crate) fn as_heap_ptr(&self) -> NonNull<PoolItem<GcBox<NonTraceable>>> {
+    pub(crate) fn as_heap_ptr(&self) -> Option<NonNull<PoolItem<GcBox<NonTraceable>>>> {
         self.inner_ptr
-            .as_non_null()
-            .cast::<PoolItem<GcBox<NonTraceable>>>()
+            .get()
+            .map(|k| k.as_non_null().cast::<PoolItem<GcBox<NonTraceable>>>())
     }
 
-    pub(crate) fn inner_ref(&self) -> &GcBox<NonTraceable> {
+    pub(crate) fn inner_ref(&self) -> Option<&GcBox<NonTraceable>> {
         // SAFETY: `erased_inner_ptr` returns a valid pointer
         // the pointed-to value lives for at least as long as `self`
-        unsafe { self.erased_inner_ptr().as_ref() }
+        unsafe { self.erased_inner_ptr().map(|ptr| ptr.as_ref()) }
     }
 
     pub fn is_reachable(&self, color: TraceColor) -> bool {
-        self.inner_ref().is_reachable(color)
+        self.inner_ref().is_some_and(|wb| wb.is_reachable(color))
     }
 }
 
 impl<T: Trace> WeakGcBox<T> {
-    pub(crate) fn inner_ptr(&self) -> crate::alloc::mempool3::PoolPointer<'static, GcBox<T>> {
+    pub(crate) fn inner_ptr(
+        &self,
+    ) -> Option<crate::alloc::mempool3::PoolPointer<'static, GcBox<T>>> {
         // SAFETY: This pointer started out as a `GcBox<T>`, so it's safe to cast
         // it back, the `PhantomData` guarantees that the type `T` is still correct
-        unsafe { self.inner_ptr.to_typed_pool_pointer::<GcBox<T>>() }
+        unsafe {
+            self.inner_ptr
+                .get()
+                .map(|pp| pp.to_typed_pool_pointer::<GcBox<T>>())
+        }
     }
 
-    pub fn value(&self) -> &T {
-        self.inner_ptr().as_inner_ref().value()
+    pub fn value(&self) -> Option<&T> {
+        self.inner_ptr().map(|ptr| ptr.as_inner_ref().value())
     }
 }
 
 impl<T: Trace + ?Sized> Finalize for WeakGcBox<T> {
     #[inline]
     fn finalize(&self) {
-        self.inner_ref().finalize()
+        let _ = self.inner_ptr.take();
     }
 }
 
 // NOTE: A weak gc box will mark the box, but it will not continue the trace forward.
 unsafe impl<T: Trace + ?Sized> Trace for WeakGcBox<T> {
     unsafe fn trace(&self, color: TraceColor) {
+        // TODO: add safety comments here
         unsafe {
-            let trace_fn = self.inner_ref().trace_fn();
-            trace_fn(self.as_heap_ptr(), color);
+            if let Some(erased_box) = self.inner_ref()
+                && let Some(heap_ptr) = self.as_heap_ptr()
+            {
+                let trace_fn = erased_box.trace_fn();
+                trace_fn(heap_ptr, color);
+            }
         }
     }
 
