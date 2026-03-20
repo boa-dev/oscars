@@ -246,7 +246,7 @@ fn simple_weak_gc_validate() {
 
     let weak = {
         let gc_two = gc.clone();
-        
+
         WeakGc::new_in(&gc_two, collector)
     };
 
