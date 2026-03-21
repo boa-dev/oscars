@@ -187,6 +187,7 @@ impl SlotPool {
         (addr - base) / self.slot_size
     }
 
+    #[inline]
     pub(crate) fn owns(&self, ptr: NonNull<u8>) -> bool {
         let buf_start = self.slot_base() as usize;
         let buf_end = buf_start + self.slot_count * self.slot_size;
@@ -209,6 +210,7 @@ impl SlotPool {
     }
 
     /// mark the slot as occupied outside of alloc_slot
+    #[inline]
     pub fn mark_slot(&self, ptr: NonNull<u8>) {
         let idx = self.slot_index(ptr);
         self.bitmap_set(idx);
@@ -226,6 +228,7 @@ impl SlotPool {
     }
 
     /// allocate a slot, returns None if full.
+    #[inline]
     pub fn alloc_slot(&self) -> Option<NonNull<u8>> {
         // pop from free list if available
         if let Some(head) = self.free_list.get() {
@@ -253,6 +256,7 @@ impl SlotPool {
     }
 
     /// return a slot to the free list
+    #[inline]
     pub fn free_slot(&self, ptr: NonNull<u8>) {
         let idx = self.slot_index(ptr);
         self.bitmap_clear(idx);
