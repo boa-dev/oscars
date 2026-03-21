@@ -29,18 +29,20 @@ impl From<LayoutError> for PoolAllocError {
 
 const SIZE_CLASSES: &[usize] = &[16, 24, 32, 48, 64, 96, 128, 192, 256, 512, 1024, 2048];
 
+#[inline(always)]
 fn size_class_index_for(size: usize) -> usize {
-    let idx = SIZE_CLASSES.iter().copied().position(|sc| sc >= size);
+    // binary search over size classes
+    let idx = SIZE_CLASSES.partition_point(|&sc| sc < size);
     debug_assert!(
-        idx.is_some(),
+        idx < SIZE_CLASSES.len(),
         "object size {size}B exceeds the largest size class ({}B); \
          consider adding a larger class",
         SIZE_CLASSES.last().unwrap()
     );
-    idx.unwrap_or(SIZE_CLASSES.len() - 1)
+    idx.min(SIZE_CLASSES.len() - 1)
 }
 
-const DEFAULT_PAGE_SIZE: usize = 4096;
+const DEFAULT_PAGE_SIZE: usize = 65536;
 const DEFAULT_HEAP_THRESHOLD: usize = 2_097_152;
 
 #[derive(Debug)]
@@ -126,6 +128,7 @@ impl<'alloc> PoolAllocator<'alloc> {
 }
 
 impl<'alloc> PoolAllocator<'alloc> {
+    #[inline]
     pub fn try_alloc<T>(&mut self, value: T) -> Result<PoolPointer<'alloc, T>, PoolAllocError> {
         let needed = core::mem::size_of::<PoolItem<T>>().max(8);
         let sc_idx = size_class_index_for(needed);
@@ -206,12 +209,14 @@ impl<'alloc> PoolAllocator<'alloc> {
     /// # Safety
     /// `ptr` must be a live `PoolItem<T>` allocated by this allocator,
     /// must not be used after this call
+    #[inline]
     pub unsafe fn free_slot_typed<T>(&mut self, ptr: NonNull<PoolItem<T>>) {
         // SAFETY: guaranteed by caller
         unsafe { core::ptr::drop_in_place(ptr.as_ptr()) };
         self.free_slot(ptr.cast::<u8>());
     }
 
+    #[inline]
     pub fn free_slot(&mut self, ptr: NonNull<u8>) {
         let cached = self.free_cache.get();
         if cached < self.slot_pools.len() {
@@ -328,6 +333,7 @@ impl<'alloc> PoolAllocator<'alloc> {
     }
 
     /// mark the slot at `ptr` as occupied (only slot pools have a bitmap)
+    #[inline]
     pub fn mark_slot(&self, ptr: NonNull<u8>) {
         for pool in self.slot_pools.iter() {
             if pool.owns(ptr) {
