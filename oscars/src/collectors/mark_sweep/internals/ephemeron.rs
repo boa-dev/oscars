@@ -36,16 +36,19 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
         }
     }
 
-    pub fn key(&self) -> &K {
+    pub fn key(&self) -> Option<&K> {
         self.key.value()
     }
 
-    pub fn value(&self) -> &V {
-        self.value.value()
+    pub fn value(&self) -> Option<&V> {
+        if self.key.value().is_some() {
+            return Some(self.value.value());
+        }
+        None
     }
 
     pub fn is_reachable(&self, color: TraceColor) -> bool {
-        self.active.get() && self.key.is_reachable(color)
+        self.key.is_reachable(color)
     }
 
     pub(crate) fn invalidate(&self) {
@@ -73,7 +76,9 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
     }
 }
 
-impl<K: Trace, V: Trace> Finalize for Ephemeron<K, V> {}
+impl<K: Trace, V: Trace> Finalize for Ephemeron<K, V> {
+    fn finalize(&self) {}
+}
 
 // NOTE on Trace for Ephemeron:
 // this impl only satisfies `Trace` bounds, actual GC tracing goes through the
@@ -138,7 +143,7 @@ pub(crate) const fn vtable_of<K: Trace + 'static, V: Trace + 'static>() -> &'sta
             drop_fn: EphemeronMarker::<K, V>::drop_fn::<K, V>,
             is_reachable_fn: |this, color| unsafe {
                 let ephemeron = this.cast::<PoolItem<Ephemeron<K, V>>>().as_ref().value();
-                ephemeron.active.get() && ephemeron.key.is_reachable(color)
+                ephemeron.key.is_reachable(color)
             },
             finalize_fn: |this| unsafe {
                 let ephemeron = this.cast::<PoolItem<Ephemeron<K, V>>>().as_ref().value();

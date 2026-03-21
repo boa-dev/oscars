@@ -2,6 +2,7 @@ use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
 use crate::mark_sweep::{Finalize, Trace};
 
 use super::Gc;
+use super::WeakGc;
 use super::WeakMap;
 use super::cell::GcRefCell;
 
@@ -197,6 +198,68 @@ fn long_lived_gc() {
         1,
         "pool freed while live"
     );
+}
+
+#[test]
+fn simple_weak_gc_validate() {
+    // Define some intrinsics
+    use core::cell::Cell;
+
+    struct DropSpy {
+        dropped: Cell<bool>,
+        value: u32,
+    }
+
+    impl DropSpy {
+        fn new(value: u32) -> Self {
+            Self {
+                dropped: Cell::new(false),
+                value,
+            }
+        }
+
+        fn value(&self) -> u32 {
+            self.value
+        }
+    }
+
+    impl Drop for DropSpy {
+        fn drop(&mut self) {
+            self.dropped.set(true);
+        }
+    }
+
+    impl Finalize for DropSpy {}
+
+    // SAFETY: `DropSpy` has no traceable children.
+    unsafe impl Trace for DropSpy {
+        crate::empty_trace!();
+    }
+
+    // Create collector
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_page_size(256)
+        .with_heap_threshold(512);
+
+    // New item!
+    let gc = Gc::new_in(DropSpy::new(10), collector);
+
+    let weak = {
+        let gc_two = gc.clone();
+
+        WeakGc::new_in(&gc_two, collector)
+    };
+
+    collector.collect();
+
+    let weak_value = weak.value().unwrap();
+    assert!(!weak_value.dropped.get());
+    assert_eq!(weak_value.value(), 10);
+
+    drop(gc);
+    collector.collect();
+
+    assert!(weak.value().is_none());
 }
 
 #[test]

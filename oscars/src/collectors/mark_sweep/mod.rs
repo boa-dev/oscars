@@ -59,22 +59,6 @@ pub trait Collector {
 type GcErasedPointer = NonNull<PoolItem<GcBox<NonTraceable>>>;
 pub(crate) type ErasedEphemeron = NonNull<PoolItem<Ephemeron<NonTraceable, NonTraceable>>>;
 
-/* TODO: Figure out the best way to adapt the thread local concept in no_std
-*
-* NOTE: Maybe, the thread_local should be left up to the user or a std feature
-*
-* use core::cell::{RefCell, Cell};
-*
-* thread_local!(static GC_DROPPING: Cell<bool> = const { Cell::new(false) });
-* thread_local!(static BOA_GC: RefCell<BoaGc> = RefCell::new( BoaGc {
-*     config: GcConfig::default(),
-*     runtime: GcRuntimeData::default(),
-*     strongs: Vec::default(),
-*     weaks: Vec::default(),
-*     weak_maps: Vec::default(),
-* }));
-*/
-
 #[derive(Default)]
 pub struct MarkSweepGarbageCollector {
     // we use RefCell so we can borrow the arena mutably via &self
@@ -356,21 +340,16 @@ impl MarkSweepGarbageCollector {
             .ephemeron_queue
             .borrow_mut()
             .extract_if(.., |node| {
-                let ephemeron_ref = unsafe { node.as_ref() };
-                let vtable = ephemeron_ref.value();
+                let ephemeron_ref = unsafe { node.as_ref().value() };
 
-                let is_reachable = unsafe { vtable.is_reachable_fn()(*node, color) };
+                let is_reachable = unsafe { ephemeron_ref.is_reachable_fn()(*node, color) };
                 if !is_reachable {
-                    unsafe { vtable.finalize_fn()(*node) };
-                    // Recheck after finalization
-                    if unsafe { vtable.is_reachable_fn()(*node, color) } {
-                        unsafe { vtable.trace_fn()(*node, color) };
-                    }
+                    unsafe { ephemeron_ref.finalize_fn()(*node) };
                 }
 
                 // Check whether the ephemeron is reachable.
                 // An inactive ephemeron should be dropped.
-                !unsafe { vtable.is_reachable_fn()(*node, color) }
+                !is_reachable
             })
             .collect::<Vec<_>>();
 

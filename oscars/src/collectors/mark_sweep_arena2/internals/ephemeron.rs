@@ -32,17 +32,19 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
         }
     }
 
-    #[allow(dead_code)] // TODO: figure out what to do with this
-    pub fn key(&self) -> &K {
+    pub fn key(&self) -> Option<&K> {
         self.key.value()
     }
 
-    pub fn value(&self) -> &V {
-        self.value.value()
+    pub fn value(&self) -> Option<&V> {
+        if self.key().is_some() {
+            return Some(self.value.value());
+        }
+        None
     }
 
     pub fn is_reachable(&self, color: TraceColor) -> bool {
-        self.active.get() && self.key.is_reachable(color)
+        self.key.is_reachable(color)
     }
 
     pub(crate) fn invalidate(&self) {

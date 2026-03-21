@@ -64,7 +64,7 @@ impl<K: Trace, V: Trace> WeakMapInner<K, V> {
         let key_addr = key.inner_ptr.as_non_null().as_ptr() as usize;
         self.entries
             .find(hash_addr(key_addr), |e| e.0 == key_addr)
-            .map(|(_, p)| p.as_inner_ref().value())
+            .and_then(|(_, p)| p.as_inner_ref().value())
     }
 
     fn is_key_alive(&self, key: &Gc<K>) -> bool {

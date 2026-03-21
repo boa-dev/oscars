@@ -29,4 +29,8 @@ impl<T: Trace> WeakGc<T> {
 
         Self { inner_ptr }
     }
+
+    pub fn value(&self) -> Option<&T> {
+        self.inner_ptr.as_inner_ref().key()
+    }
 }
