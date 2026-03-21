@@ -31,10 +31,15 @@ use core::cell::Cell;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
-#[derive(Debug)]
 pub struct WeakGcBox<T: Trace + ?Sized + 'static> {
     pub(crate) inner_ptr: Cell<Option<ErasedPoolPointer<'static>>>,
     pub(crate) marker: PhantomData<T>,
+}
+
+impl<T: Trace + ?Sized + 'static> core::fmt::Debug for WeakGcBox<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self.inner_ptr)
+    }
 }
 
 impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
@@ -86,7 +91,8 @@ impl<T: Trace> WeakGcBox<T> {
     }
 
     pub fn value(&self) -> Option<&T> {
-        self.inner_ptr().map(|ptr| ptr.as_inner_ref().value())
+        let val = self.inner_ptr().map(|ptr| ptr.as_inner_ref().value());
+        val
     }
 }
 

@@ -340,21 +340,16 @@ impl MarkSweepGarbageCollector {
             .ephemeron_queue
             .borrow_mut()
             .extract_if(.., |node| {
-                let ephemeron_ref = unsafe { node.as_ref() };
-                let vtable = ephemeron_ref.value();
+                let ephemeron_ref = unsafe { node.as_ref().value() };
 
-                let is_reachable = unsafe { vtable.is_reachable_fn()(*node, color) };
+                let is_reachable = unsafe { ephemeron_ref.is_reachable_fn()(*node, color) };
                 if !is_reachable {
-                    unsafe { vtable.finalize_fn()(*node) };
-                    // Recheck after finalization
-                    if unsafe { vtable.is_reachable_fn()(*node, color) } {
-                        unsafe { vtable.trace_fn()(*node, color) };
-                    }
+                    unsafe { ephemeron_ref.finalize_fn()(*node) };
                 }
 
                 // Check whether the ephemeron is reachable.
                 // An inactive ephemeron should be dropped.
-                !unsafe { vtable.is_reachable_fn()(*node, color) }
+                !is_reachable
             })
             .collect::<Vec<_>>();
 
