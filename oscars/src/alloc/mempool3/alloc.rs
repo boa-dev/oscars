@@ -196,35 +196,31 @@ impl SlotPool {
     }
 
     #[inline]
-    fn bitmap_set(&self, i: usize) {
+    fn bitmap_chunk(&self, i: usize) -> &Cell<u64> {
         // SAFETY: pointer addition and cast are within the bitmap bounds
-        let chunk = unsafe { &*(self.buffer.as_ptr().add((i / 64) * 8) as *const Cell<u64>) };
+        unsafe { &*(self.buffer.as_ptr().add((i / 64) * 8) as *const Cell<u64>) }
+    }
+
+    #[inline]
+    fn bitmap_set(&self, i: usize) {
+        let chunk = self.bitmap_chunk(i);
         chunk.set(chunk.get() | (1u64 << (i % 64)));
     }
 
     #[inline]
     fn bitmap_clear(&self, i: usize) {
-        // SAFETY: pointer addition and cast are within the bitmap bounds
-        let chunk = unsafe { &*(self.buffer.as_ptr().add((i / 64) * 8) as *const Cell<u64>) };
+        let chunk = self.bitmap_chunk(i);
         chunk.set(chunk.get() & !(1u64 << (i % 64)));
     }
 
-    /// mark the slot as occupied outside of alloc_slot
+    /// returns the `(slot_base, slot_end)` address range owned by this pool
+    ///
+    /// used by `PoolAllocator` to build the O(log n) pool lookup index
     #[inline]
-    pub fn mark_slot(&self, ptr: NonNull<u8>) {
-        let idx = self.slot_index(ptr);
-        self.bitmap_set(idx);
-    }
-
-    /// returns true if the slot at `ptr` is marked as occupied in the bitmap
-    //
-    // TODO: for the planned bitmap based sweep, unused until then
-    #[allow(dead_code)]
-    pub fn is_marked(&self, ptr: NonNull<u8>) -> bool {
-        let i = self.slot_index(ptr);
-        // SAFETY: pointer addition and cast are within the bitmap bounds
-        let chunk = unsafe { &*(self.buffer.as_ptr().add((i / 64) * 8) as *const Cell<u64>) };
-        (chunk.get() & (1u64 << (i % 64))) != 0
+    pub(crate) fn slot_range(&self) -> (usize, usize) {
+        let base = self.slot_base() as usize;
+        let end = base + self.slot_count * self.slot_size;
+        (base, end)
     }
 
     /// allocate a slot, returns None if full.
@@ -264,13 +260,11 @@ impl SlotPool {
         // we reinterpret the slot's memory as a free list node.
         unsafe {
             let node = ptr.cast::<FreeSlot>();
-            node.as_ptr().write(FreeSlot {
-                next: self
-                    .free_list
-                    .get()
-                    .map(NonNull::as_ptr)
-                    .unwrap_or(core::ptr::null_mut()),
-            });
+            let next = match self.free_list.get() {
+                Some(head) => head.as_ptr(),
+                None => core::ptr::null_mut(),
+            };
+            node.as_ptr().write(FreeSlot { next });
             self.free_list.set(Some(node));
         }
         self.live.set(self.live.get().saturating_sub(1));

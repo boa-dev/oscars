@@ -4,10 +4,10 @@ extern crate synstructure;
 
 use quote::quote;
 use syn::{
-    parse::{Parse, ParseStream},
     Ident,
+    parse::{Parse, ParseStream},
 };
-use synstructure::{decl_derive, AddBounds, Structure};
+use synstructure::{AddBounds, Structure, decl_derive};
 
 decl_derive! {
     [Trace, attributes(oscars_gc, unsafe_ignore_trace)] =>
