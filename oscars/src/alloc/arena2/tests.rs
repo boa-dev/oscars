@@ -33,7 +33,7 @@ fn alloc_dealloc() {
     assert_eq!(allocator.arenas_len(), 2);
 
     // Drop all the items in the first region
-    manual_drop(first_region);
+    manual_drop(&mut allocator, first_region);
 
     // Drop dead pages, only the first arena is fully dropped, the second
     // arena remains live because none of its items have been marked dropped.
@@ -42,10 +42,10 @@ fn alloc_dealloc() {
     assert_eq!(allocator.arenas_len(), 1);
 }
 
-fn manual_drop(region: Vec<NonNull<ArenaHeapItem<i32>>>) {
-    for mut item in region {
+fn manual_drop(allocator: &mut ArenaAllocator<'_>, region: Vec<NonNull<ArenaHeapItem<i32>>>) {
+    for item in region {
         unsafe {
-            item.as_mut().mark_dropped();
+            allocator.mark_dropped(item.as_ptr() as *const u8);
         }
     }
 }
@@ -77,12 +77,11 @@ fn arc_drop() {
     assert_eq!(allocator.arenas_len(), 1);
 
     // dropping a box just runs its finalizer.
-    let mut heap_item = a.as_ptr();
+    let heap_item = a.as_ptr();
     unsafe {
-        let heap_item_mut = heap_item.as_mut();
         // Manually drop the heap item
-        heap_item_mut.mark_dropped();
         drop_in_place(ArenaHeapItem::as_value_ptr(heap_item));
+        allocator.mark_dropped(heap_item.as_ptr() as *const u8);
     };
 
     assert!(dropped.load(Ordering::SeqCst));
@@ -107,8 +106,8 @@ fn recycled_arena_avoids_realloc() {
     let heap_while_live = allocator.heap_size();
     assert_eq!(heap_while_live, 512);
 
-    for mut ptr in ptrs {
-        unsafe { ptr.as_mut().mark_dropped() };
+    for ptr in ptrs {
+        unsafe { allocator.mark_dropped(ptr.as_ptr() as *const u8) };
     }
     allocator.drop_dead_arenas();
 
@@ -146,8 +145,8 @@ fn max_recycled_cap_respected() {
     assert_eq!(allocator.arenas_len(), 5);
 
     for ptrs in ptrs_per_arena {
-        for mut ptr in ptrs {
-            unsafe { ptr.as_mut().mark_dropped() };
+        for ptr in ptrs {
+            unsafe { allocator.mark_dropped(ptr.as_ptr() as *const u8) };
         }
     }
 
@@ -159,35 +158,28 @@ fn max_recycled_cap_respected() {
     assert_eq!(allocator.recycled_count, 4);
 }
 
-// === test for TaggedPtr::as_ptr === //
+// === test for counter based drop tracking === //
 
-// `TaggedPtr::as_ptr` must use `addr & !MASK` to unconditionally clear the high
-// bit rather than XORing it out. The XOR approach worked for tagged items
-// but incorrectly flipped the bit on untagged items, corrupting the pointer.
+// With counter based tracking instead of linkedlist, verify that
+// alloc_count and drop_count are properly tracked.
 #[test]
-fn as_ptr_clears_not_flips_tag_bit() {
+fn counter_based_drop_tracking() {
     let mut allocator = ArenaAllocator::default();
 
-    let mut ptr_a = allocator.try_alloc(1u64).unwrap().as_ptr();
-    let mut ptr_b = allocator.try_alloc(2u64).unwrap().as_ptr();
+    let ptr_a = allocator.try_alloc(1u64).unwrap().as_ptr();
+    let ptr_b = allocator.try_alloc(2u64).unwrap().as_ptr();
     let _ptr_c = allocator.try_alloc(3u64).unwrap().as_ptr();
     assert_eq!(allocator.arenas_len(), 1);
 
-    // Mark B and C as dropped, leave A live.
+    // Mark A and B as dropped (don't mark C)
     unsafe {
-        ptr_b.as_mut().mark_dropped();
+        allocator.mark_dropped(ptr_a.as_ptr() as *const u8);
+        allocator.mark_dropped(ptr_b.as_ptr() as *const u8);
     }
 
-    let states = allocator.arena_drop_states();
-    assert_eq!(
-        states[0].as_slice(),
-        &[false, true, false],
-        "item_drop_states must correctly report live/dropped status for all nodes"
-    );
-
-    unsafe {
-        ptr_a.as_mut().mark_dropped();
-    }
+    // Arena should NOT be recyclable yet (C is still live)
+    allocator.drop_dead_arenas();
+    assert_eq!(allocator.arenas_len(), 1, "arena should still be live");
 }
 
 // === test for Dynamic Alignment === //
@@ -247,4 +239,30 @@ fn test_alignment_upgrade_on_full_arena() {
     let addr = ptr.as_ptr().as_ptr() as usize;
     assert_eq!(addr % 512, 0);
     assert_eq!(allocator.arenas_len(), 3);
+}
+
+// === test for transparent wrapper overhead === //
+
+#[test]
+fn arena_heap_item_is_transparent() {
+    // Verify that ArenaHeapItem<T> has the same size as T
+    // This proves we eliminated the 8 byte per allocation overhead
+    assert_eq!(
+        core::mem::size_of::<ArenaHeapItem<u64>>(),
+        core::mem::size_of::<u64>(),
+        "ArenaHeapItem should be transparent (same size as inner type)"
+    );
+
+    assert_eq!(
+        core::mem::size_of::<ArenaHeapItem<[u8; 128]>>(),
+        core::mem::size_of::<[u8; 128]>(),
+        "ArenaHeapItem should be transparent for larger types too"
+    );
+
+    // Verify alignment is preserved
+    assert_eq!(
+        core::mem::align_of::<ArenaHeapItem<u64>>(),
+        core::mem::align_of::<u64>(),
+        "ArenaHeapItem should preserve alignment"
+    );
 }

@@ -1,47 +1,29 @@
-use core::{
-    cell::Cell,
-    marker::PhantomData,
-    ptr::{NonNull, drop_in_place},
-};
+use core::{cell::Cell, marker::PhantomData, ptr::NonNull};
 
 use rust_alloc::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 
 use crate::alloc::arena2::ArenaAllocError;
 
+/// Transparent wrapper for a GC value.
+/// Drop state is tracked by the GC header and arena counters.
 #[derive(Debug)]
-#[repr(C)]
-pub struct ArenaHeapItem<T: ?Sized> {
-    next: TaggedPtr<ErasedHeapItem>,
-    value: T,
-}
+#[repr(transparent)]
+pub struct ArenaHeapItem<T: ?Sized>(pub T);
 
 impl<T: ?Sized> ArenaHeapItem<T> {
-    fn new(next: *mut ErasedHeapItem, value: T) -> Self
+    fn new(value: T) -> Self
     where
         T: Sized,
     {
-        Self {
-            next: TaggedPtr(next),
-            value,
-        }
-    }
-
-    pub fn mark_dropped(&mut self) {
-        if !self.next.is_tagged() {
-            self.next.tag()
-        }
-    }
-
-    pub fn is_dropped(&self) -> bool {
-        self.next.is_tagged()
+        Self(value)
     }
 
     pub fn value(&self) -> &T {
-        &self.value
+        &self.0
     }
 
     pub fn as_ptr(&mut self) -> *mut T {
-        &mut self.value as *mut T
+        &mut self.0 as *mut T
     }
 
     /// Returns a raw mutable pointer to the value
@@ -49,73 +31,26 @@ impl<T: ?Sized> ArenaHeapItem<T> {
     /// This avoids creating a `&mut self` reference, which can lead to stacked borrows
     /// if shared references to the heap item exist
     pub(crate) fn as_value_ptr(ptr: NonNull<Self>) -> *mut T {
-        // SAFETY: `&raw mut` computes the field address without creating a reference
-        unsafe { &raw mut (*ptr.as_ptr()).value }
-    }
-
-    fn value_mut(&mut self) -> &mut T {
-        &mut self.value
+        // With repr(transparent), the outer struct has the same address as the inner value
+        ptr.as_ptr() as *mut T
     }
 }
 
-impl<T: ?Sized> Drop for ArenaHeapItem<T> {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.is_dropped() {
-                self.mark_dropped();
-                drop_in_place(self.value_mut())
-            }
-        }
-    }
-}
-
+/// Type erased pointer for arena allocations.
 #[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct ErasedHeapItem {
-    next: TaggedPtr<usize>,
-    buf: NonNull<u8>, // Start of a byte buffer
-}
+#[repr(transparent)]
+pub struct ErasedHeapItem(NonNull<u8>);
 
 impl ErasedHeapItem {
     pub fn get<T>(&self) -> NonNull<T> {
-        self.buf.cast::<T>()
-    }
-
-    pub fn mark_dropped(&mut self) {
-        if !self.next.is_tagged() {
-            self.next.tag()
-        }
-    }
-
-    pub fn is_dropped(&self) -> bool {
-        self.next.is_tagged()
+        self.0.cast::<T>()
     }
 }
 
 impl<T> core::convert::AsRef<T> for ErasedHeapItem {
     fn as_ref(&self) -> &T {
-        // SAFETY: TODO
+        // SAFETY: caller ensures this pointer was allocated as T
         unsafe { self.get().as_ref() }
-    }
-}
-
-const MASK: usize = 1usize << (usize::BITS as usize - 1usize);
-
-#[derive(Debug, Clone, Copy)]
-#[repr(transparent)]
-pub struct TaggedPtr<T>(*mut T);
-
-impl<T> TaggedPtr<T> {
-    fn tag(&mut self) {
-        self.0 = self.0.map_addr(|addr| addr | MASK);
-    }
-
-    fn is_tagged(&self) -> bool {
-        self.0 as usize & MASK == MASK
-    }
-
-    fn as_ptr(&self) -> *mut T {
-        self.0.map_addr(|addr| addr & !MASK)
     }
 }
 
@@ -127,18 +62,19 @@ impl<T> TaggedPtr<T> {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct ErasedArenaPointer<'arena>(NonNull<ErasedHeapItem>, PhantomData<&'arena ()>);
+pub struct ErasedArenaPointer<'arena>(NonNull<u8>, PhantomData<&'arena ()>);
 
 impl<'arena> ErasedArenaPointer<'arena> {
-    fn from_raw(raw: NonNull<ErasedHeapItem>) -> Self {
+    fn from_raw(raw: NonNull<u8>) -> Self {
         Self(raw, PhantomData)
     }
 
     pub fn as_non_null(&self) -> NonNull<ErasedHeapItem> {
-        self.0
+        // Keep the old erased pointer API
+        ErasedHeapItem(self.0).get()
     }
 
-    pub fn as_raw_ptr(&self) -> *mut ErasedHeapItem {
+    pub fn as_raw_ptr(&self) -> *mut u8 {
         self.0.as_ptr()
     }
 
@@ -168,17 +104,14 @@ pub struct ArenaPointer<'arena, T>(ErasedArenaPointer<'arena>, PhantomData<&'are
 
 impl<'arena, T> ArenaPointer<'arena, T> {
     unsafe fn from_raw(raw: NonNull<ArenaHeapItem<T>>) -> Self {
-        Self(
-            ErasedArenaPointer::from_raw(raw.cast::<ErasedHeapItem>()),
-            PhantomData,
-        )
+        Self(ErasedArenaPointer::from_raw(raw.cast::<u8>()), PhantomData)
     }
 
     pub fn as_inner_ref(&self) -> &'arena T {
-        // SAFETY: HeapItem is non-null and valid for dereferencing.
+        // SAFETY: pointer is valid, ArenaHeapItem<T> is repr(transparent) over T.
         unsafe {
             let typed_ptr = self.0.as_raw_ptr().cast::<ArenaHeapItem<T>>();
-            &(*typed_ptr).value
+            &(*typed_ptr).0
         }
     }
 
@@ -189,7 +122,7 @@ impl<'arena, T> ArenaPointer<'arena, T> {
     /// - Caller must ensure that T is not dropped
     /// - Caller must ensure that the lifetime of T does not exceed it's Arena.
     pub fn as_ptr(&self) -> NonNull<ArenaHeapItem<T>> {
-        self.0.as_non_null().cast::<ArenaHeapItem<T>>()
+        self.0.0.cast::<ArenaHeapItem<T>>()
     }
 
     /// Convert the current ArenaPointer into an `ErasedArenaPointer`
@@ -242,7 +175,10 @@ pub struct ArenaAllocationData {
 pub struct Arena<'arena> {
     pub flags: Cell<ArenaState>,
     pub layout: Layout,
-    pub last_allocation: Cell<*mut ErasedHeapItem>,
+    /// Number of allocations made in this arena
+    alloc_count: Cell<usize>,
+    /// Number of items marked as dropped
+    drop_count: Cell<usize>,
     pub current_offset: Cell<usize>,
     pub buffer: NonNull<u8>,
     _marker: PhantomData<&'arena ()>,
@@ -266,7 +202,8 @@ impl<'arena> Arena<'arena> {
         Ok(Self {
             flags: Cell::new(ArenaState::default()),
             layout,
-            last_allocation: Cell::new(core::ptr::null_mut::<ErasedHeapItem>()), // NOTE: watch this one.
+            alloc_count: Cell::new(0),
+            drop_count: Cell::new(0),
             current_offset: Cell::new(0),
             buffer: data,
             _marker: PhantomData,
@@ -275,6 +212,11 @@ impl<'arena> Arena<'arena> {
 
     pub fn close(&self) {
         self.flags.set(self.flags.get().full());
+    }
+
+    /// Increment the drop counter.
+    pub fn mark_dropped(&self) {
+        self.drop_count.set(self.drop_count.get() + 1);
     }
 
     pub fn alloc<T>(&self, value: T) -> ArenaPointer<'arena, T> {
@@ -328,11 +270,11 @@ impl<'arena> Arena<'arena> {
             let dst = buffer_ptr
                 .add(allocation_data.buffer_offset)
                 .cast::<ArenaHeapItem<T>>();
-            // NOTE: everyI recomm next begin by pointing back to the start of the buffer rather than null.
-            let arena_heap_item = ArenaHeapItem::new(self.last_allocation.get(), value);
+            // Write the value
+            let arena_heap_item = ArenaHeapItem::new(value);
             dst.write(arena_heap_item);
-            // We've written the last_allocation to the heap, so update with a pointer to dst
-            self.last_allocation.set(dst as *mut ErasedHeapItem);
+            // Track live/drop state with counters.
+            self.alloc_count.set(self.alloc_count.get() + 1);
             ArenaPointer::from_raw(NonNull::new_unchecked(dst))
         }
     }
@@ -372,30 +314,9 @@ impl<'arena> Arena<'arena> {
         })
     }
 
-    /// Walks the Arena allocations to determine if the arena is droppable
+    /// Returns true when all allocations were marked dropped.
     pub fn run_drop_check(&self) -> bool {
-        let mut unchecked_ptr = self.last_allocation.get();
-        while let Some(node) = NonNull::new(unchecked_ptr) {
-            let item = unsafe { node.as_ref() };
-            if !item.is_dropped() {
-                return false;
-            }
-            unchecked_ptr = item.next.as_ptr() as *mut ErasedHeapItem
-        }
-        true
-    }
-
-    // checks dropped items in this arena
-    #[cfg(test)]
-    pub fn item_drop_states(&self) -> rust_alloc::vec::Vec<bool> {
-        let mut result = rust_alloc::vec::Vec::new();
-        let mut unchecked_ptr = self.last_allocation.get();
-        while let Some(node) = NonNull::new(unchecked_ptr) {
-            let item = unsafe { node.as_ref() };
-            result.push(item.is_dropped());
-            unchecked_ptr = item.next.as_ptr() as *mut ErasedHeapItem
-        }
-        result
+        self.alloc_count.get() == self.drop_count.get()
     }
 
     /// Reset arena to its initial empty state, reusing the existing OS buffer.
@@ -410,7 +331,8 @@ impl<'arena> Arena<'arena> {
         // the same layout in try_init.
         unsafe { core::ptr::write_bytes(self.buffer.as_ptr(), 0, self.layout.size()) };
         self.flags.set(ArenaState::default());
-        self.last_allocation.set(core::ptr::null_mut());
+        self.alloc_count.set(0);
+        self.drop_count.set(0);
         self.current_offset.set(0);
     }
 }
