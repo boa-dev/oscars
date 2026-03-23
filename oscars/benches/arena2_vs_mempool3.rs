@@ -382,10 +382,10 @@ fn bench_dealloc_speed(c: &mut Criterion) {
                     },
                     |(mut allocator, ptrs): (_, _)| {
                         for ptr in ptrs {
-                            let mut heap_item_ptr = ptr.as_ptr();
+                            let heap_item_ptr = ptr.as_ptr();
                             unsafe {
-                                core::ptr::drop_in_place(heap_item_ptr.as_mut().as_ptr());
-                                heap_item_ptr.as_mut().mark_dropped();
+                                core::ptr::drop_in_place(heap_item_ptr.cast::<usize>().as_ptr());
+                                allocator.mark_dropped(heap_item_ptr.as_ptr() as *const u8);
                             }
                         }
                         allocator.drop_dead_arenas();
