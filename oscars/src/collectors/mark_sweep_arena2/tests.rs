@@ -134,6 +134,30 @@ fn clone_gc() {
     collector.collect();
 
     assert_eq!(*gc_clone.borrow(), 42u32, "collected despite live clone");
+    assert!(
+        Gc::ptr_eq(&gc_clone, &gc_clone.clone()),
+        "cloned handles should compare equal by pointer identity"
+    );
+}
+
+#[test]
+fn ptr_eq_distinguishes_equal_values() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
+
+    let first = Gc::new_in(GcRefCell::new(42u32), collector);
+    let first_clone = first.clone();
+    let second = Gc::new_in(GcRefCell::new(42u32), collector);
+
+    assert!(
+        Gc::ptr_eq(&first, &first_clone),
+        "handles to the same allocation should compare equal"
+    );
+    assert!(
+        !Gc::ptr_eq(&first, &second),
+        "distinct allocations with equal values must not compare equal"
+    );
 }
 
 #[test]

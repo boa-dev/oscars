@@ -46,6 +46,10 @@ impl<T: Trace> Gc<T> {
 }
 
 impl<T: Trace + ?Sized> Gc<T> {
+    pub fn ptr_eq<U: Trace + ?Sized>(this: &Self, other: &Gc<U>) -> bool {
+        this.inner_ptr.as_non_null() == other.inner_ptr.as_non_null()
+    }
+
     pub(crate) fn as_sized_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
         // SAFETY: `&raw mut` prevents creating `&mut` reference into the
         // arena to avoid stacked borrows during Gc tracing
