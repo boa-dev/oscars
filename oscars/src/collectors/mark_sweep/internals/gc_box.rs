@@ -91,8 +91,7 @@ impl<T: Trace> WeakGcBox<T> {
     }
 
     pub fn value(&self) -> Option<&T> {
-        let val = self.inner_ptr().map(|ptr| ptr.as_inner_ref().value());
-        val
+        self.inner_ptr().map(|ptr| ptr.as_inner_ref().value())
     }
 }
 

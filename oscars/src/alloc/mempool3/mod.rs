@@ -42,7 +42,7 @@ fn size_class_index_for(size: usize) -> usize {
     idx.min(SIZE_CLASSES.len() - 1)
 }
 
-const DEFAULT_PAGE_SIZE: usize = 65536;
+const DEFAULT_PAGE_SIZE: usize = 262_144;
 const DEFAULT_HEAP_THRESHOLD: usize = 2_097_152;
 
 #[derive(Debug)]
@@ -62,6 +62,9 @@ pub struct PoolAllocator<'alloc> {
     pub(crate) recycled_pools: Vec<SlotPool>,
     // maximum number of idle pages held across all size classes
     pub(crate) max_recycled: usize,
+    // sorted (slot_base, slot_end, pool_idx) index for O(log n) lookups
+    pub(crate) sorted_ranges: Vec<(usize, usize, usize)>,
+
     _marker: core::marker::PhantomData<&'alloc ()>,
 }
 
@@ -89,8 +92,10 @@ impl<'alloc> Default for PoolAllocator<'alloc> {
                 Cell::new(usize::MAX),
             ],
             recycled_pools: Vec::new(),
-            // one idle page per size class keeps memory pressure manageable
-            max_recycled: SIZE_CLASSES.len(),
+            // keep two empty pages per size class to reduce OS overhead
+            max_recycled: SIZE_CLASSES.len() * 2,
+            sorted_ranges: Vec::new(),
+
             _marker: core::marker::PhantomData,
         }
     }
@@ -128,6 +133,37 @@ impl<'alloc> PoolAllocator<'alloc> {
 }
 
 impl<'alloc> PoolAllocator<'alloc> {
+    /// rebuild `sorted_ranges` from current `slot_pools`
+    ///
+    /// needed because removing empty pools changes the indices
+    fn rebuild_sorted_ranges(&mut self) {
+        self.sorted_ranges.clear();
+        for (i, pool) in self.slot_pools.iter().enumerate() {
+            let (base, end) = pool.slot_range();
+            self.sorted_ranges.push((base, end, i));
+        }
+        self.sorted_ranges
+            .sort_unstable_by_key(|&(base, _, _)| base);
+    }
+
+    /// binary search `sorted_ranges` for the pool owning `ptr`
+    ///
+    /// returns the `slot_pools` index or `None` if it belongs to a bump page
+    #[inline]
+    fn find_pool_idx(&self, ptr: NonNull<u8>) -> Option<usize> {
+        let addr = ptr.as_ptr() as usize;
+        // partition_point finds the first entry where slot_base > addr,
+        // so the candidate is at index - 1
+        let idx = self
+            .sorted_ranges
+            .partition_point(|&(base, _, _)| base <= addr);
+        if idx == 0 {
+            return None;
+        }
+        let &(_, end, pool_idx) = &self.sorted_ranges[idx - 1];
+        if addr < end { Some(pool_idx) } else { None }
+    }
+
     #[inline]
     pub fn try_alloc<T>(&mut self, value: T) -> Result<PoolPointer<'alloc, T>, PoolAllocError> {
         let needed = core::mem::size_of::<PoolItem<T>>().max(8);
@@ -176,6 +212,10 @@ impl<'alloc> PoolAllocator<'alloc> {
             // pool.reset() was already called in drop_empty_pools when it was parked
             let slot_ptr = pool.alloc_slot().ok_or(PoolAllocError::OutOfMemory)?;
             let insert_idx = self.slot_pools.len();
+            // insert new pool into sorted index
+            let (base, end) = pool.slot_range();
+            let spos = self.sorted_ranges.partition_point(|&(b, _, _)| b < base);
+            self.sorted_ranges.insert(spos, (base, end, insert_idx));
             self.slot_pools.push(pool);
             self.alloc_cache[sc_idx].set(insert_idx);
 
@@ -193,6 +233,10 @@ impl<'alloc> PoolAllocator<'alloc> {
         self.current_heap_size += new_pool.layout.size();
         let slot_ptr = new_pool.alloc_slot().ok_or(PoolAllocError::OutOfMemory)?;
         let insert_idx = self.slot_pools.len();
+        // insert new pool into sorted index
+        let (base, end) = new_pool.slot_range();
+        let spos = self.sorted_ranges.partition_point(|&(b, _, _)| b < base);
+        self.sorted_ranges.insert(spos, (base, end, insert_idx));
         self.slot_pools.push(new_pool);
         self.alloc_cache[sc_idx].set(insert_idx);
 
@@ -218,21 +262,18 @@ impl<'alloc> PoolAllocator<'alloc> {
 
     #[inline]
     pub fn free_slot(&mut self, ptr: NonNull<u8>) {
+        // Fast path: check if the pointer belongs to the last used pool
         let cached = self.free_cache.get();
-        if cached < self.slot_pools.len() {
-            let pool = &self.slot_pools[cached];
-            if pool.owns(ptr) {
-                pool.free_slot(ptr);
-                return;
-            }
+        if cached < self.slot_pools.len() && self.slot_pools[cached].owns(ptr) {
+            self.slot_pools[cached].free_slot(ptr);
+            return;
         }
 
-        for (i, pool) in self.slot_pools.iter().enumerate().rev() {
-            if pool.owns(ptr) {
-                pool.free_slot(ptr);
-                self.free_cache.set(i);
-                return;
-            }
+        // O(log n) binary search via the sorted address range index
+        if let Some(pool_idx) = self.find_pool_idx(ptr) {
+            self.slot_pools[pool_idx].free_slot(ptr);
+            self.free_cache.set(pool_idx);
+            return;
         }
         debug_assert!(
             false,
@@ -326,20 +367,13 @@ impl<'alloc> PoolAllocator<'alloc> {
                 true
             }
         });
+
+        // Reset all caches since pool indices are stale after extract_if.
         self.free_cache.set(usize::MAX);
         for cache in &self.alloc_cache {
             cache.set(usize::MAX);
         }
-    }
 
-    /// mark the slot at `ptr` as occupied (only slot pools have a bitmap)
-    #[inline]
-    pub fn mark_slot(&self, ptr: NonNull<u8>) {
-        for pool in self.slot_pools.iter() {
-            if pool.owns(ptr) {
-                pool.mark_slot(ptr);
-                return;
-            }
-        }
+        self.rebuild_sorted_ranges();
     }
 }
