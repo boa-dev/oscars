@@ -260,6 +260,7 @@ impl SlotPool {
         // we reinterpret the slot's memory as a free list node.
         unsafe {
             let node = ptr.cast::<FreeSlot>();
+            // null marks the end of the intrusive free list
             let next = match self.free_list.get() {
                 Some(head) => head.as_ptr(),
                 None => core::ptr::null_mut(),
