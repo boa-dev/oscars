@@ -43,7 +43,7 @@ impl<T: Trace> Gc<T> {
         this.inner_ptr()
     }
 
-    /// Creates a `Gc` from the provided [`PoolPointer`].
+    /// Creates a `Gc` from the provided [`ArenaPointer`].
     ///
     /// # Safety
     ///
@@ -51,6 +51,45 @@ impl<T: Trace> Gc<T> {
     pub unsafe fn from_raw(ptr: ArenaPointer<'static, GcBox<T>>) -> Self {
         Self {
             inner_ptr: ptr.to_erased(),
+            marker: PhantomData,
+        }
+    }
+
+    pub fn ptr_eq<U: Trace + ?Sized>(this: &Self, other: &Gc<U>) -> bool {
+        this.inner_ptr.as_non_null() == other.inner_ptr.as_non_null()
+    }
+
+    pub fn size(&self) -> usize {
+        self.inner_ref().size()
+    }
+
+    pub fn type_id(&self) -> TypeId {
+        self.inner_ref().type_id()
+    }
+
+    pub fn is<U: Trace + 'static>(this: &Self) -> bool {
+        Self::type_id(this) == TypeId::of::<U>()
+    }
+
+    #[inline]
+    pub fn downcast<U: Trace + 'static>(this: Self) -> Option<Gc<U>> {
+        if !Gc::is::<U>(&this) {
+            return None;
+        }
+        // Safety: We've validated that the type of `this`  is correct above.
+        Some(unsafe { Gc::cast_unchecked::<U>(this) })
+    }
+
+    /// Cast the `Gc` from `T` to `U`
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure that `U` is valid for `this`.
+    #[inline]
+    #[must_use]
+    pub unsafe fn cast_unchecked<U: Trace + 'static>(this: Self) -> Gc<U> {
+        Gc {
+            inner_ptr: this.inner_ptr,
             marker: PhantomData,
         }
     }
@@ -63,10 +102,6 @@ impl<T: Trace> Gc<T> {
 }
 
 impl<T: Trace + ?Sized> Gc<T> {
-    pub fn ptr_eq<U: Trace + ?Sized>(this: &Self, other: &Gc<U>) -> bool {
-        this.inner_ptr.as_non_null() == other.inner_ptr.as_non_null()
-    }
-
     pub(crate) fn as_sized_inner_ptr(&self) -> NonNull<GcBox<NonTraceable>> {
         // SAFETY: `&raw mut` prevents creating `&mut` reference into the
         // arena to avoid stacked borrows during Gc tracing
@@ -83,18 +118,6 @@ impl<T: Trace + ?Sized> Gc<T> {
 
     pub(crate) fn inner_ref(&self) -> &GcBox<NonTraceable> {
         unsafe { self.as_sized_inner_ptr().as_ref() }
-    }
-
-    pub fn size(&self) -> usize {
-        self.inner_ref().size()
-    }
-
-    pub fn type_id(&self) -> TypeId {
-        self.inner_ref().type_id()
-    }
-
-    pub fn is<U: Trace + 'static>(this: &Self) -> bool {
-        Self::type_id(this) == TypeId::of::<U>()
     }
 }
 
