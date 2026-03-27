@@ -34,6 +34,23 @@ impl<T: Trace> Gc<T> {
         gc.inner_ptr().as_inner_ref().inc_roots();
         gc
     }
+
+    /// Converts a `Gc` into a raw [`PoolPointer`].
+    pub fn into_raw(this: Self) -> PoolPointer<'static, GcBox<T>> {
+        this.inner_ptr()
+    }
+
+    /// Creates a `Gc` from the provided [`PoolPointer`].
+    ///
+    /// # Safety
+    ///
+    /// Incorrect usage of `from_raw` can lead to use after free.
+    pub unsafe fn from_raw(ptr: PoolPointer<'static, GcBox<T>>) -> Self {
+        Self {
+            inner_ptr: ptr.to_erased(),
+            marker: PhantomData,
+        }
+    }
 }
 
 impl<T: Trace> Gc<T> {
