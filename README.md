@@ -18,8 +18,8 @@ management and garbage collection experiments for Boa.
 The current API model investigation for Boa issue #2631 is documented in
 [`notes/gc_api_models.md`](./notes/gc_api_models.md).
 
-The current implementation-focused follow-up for a precise-tracing API (post
-`gc_allocator`) is documented in
+The current precise-tracing API redesign proposal (post `gc_allocator`) is
+documented in
 [`notes/precise_tracing_api_plan.md`](./notes/precise_tracing_api_plan.md).
 
 ## Project structure

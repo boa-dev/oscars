@@ -1,158 +1,206 @@
-# Precise-Tracing API Plan (Post `gc_allocator`)
+# Precise-Tracing API Redesign Proposal (Post `gc_allocator`)
 
 Date: 2026-03-19
 
 ## Context
 
-This note proposes a concrete API-design and implementation plan for the
-GC redesign track after removing the `Collector: Allocator` experiment
-(`#54`).
+After removing the `Collector: Allocator` experiment (`#54`), the next step is
+to propose a concrete API redesign shape that can be discussed and tested.
 
-It builds on:
+This note builds on:
 
 - `notes/gc_api_models.md` (model-family investigation for boa#2631)
 - `docs/boa_gc_api_surface.md` (current Boa-facing GC contract)
-- Oscars integration tracker issues (`#26`, `#27`, `#28`, `#30`)
+- Tracker issues `#26`, `#27`, `#28`, `#30`
 
-The objective is to design a GC API that does **not** rely on root/reference
-counting for liveness, while preserving precise tracing semantics and providing
-an incremental integration path into Boa.
+The core target is a precise-tracing API that does not use root/reference
+count arithmetic as the liveness authority.
 
 ## Problem statement
 
-Today, root/reference counts are coupled with public pointer ergonomics and
-collector internals. This coupling increases implementation complexity and
-makes it harder to evolve collector strategy.
+Today, `Gc<T>` ergonomics and liveness accounting are tightly coupled to root
+counting. That gives simple usage but makes collector internals harder to
+evolve and reason about.
 
-For a redesign to be integration-ready, we need:
+For redesign work to be useful to Boa, we need an API that:
 
-1. A pointer/rooting API where liveness is derived from precise tracing.
-2. Explicit invariants for weak/ephemeron/finalizer behavior.
-3. A staged migration path that can run behind feature gates in Boa.
+1. uses tracing as the single source of liveness truth,
+2. keeps weak/ephemeron/finalizer semantics explicit,
+3. remains adoptable against the current Boa-facing API surface.
 
-## Design goals
+## Proposed API (draft v0)
 
-1. Precise tracing as the source of truth for liveness.
-2. Context-safe pointer model (no accidental cross-context sharing).
-3. Weak and ephemeron behavior parity with current Boa semantics.
-4. Finalization semantics that are explicit and testable.
-5. Incremental adoption (no big-bang replacement).
+This proposal uses an explicit root-table model with scope handles.
 
-## Non-goals (for this phase)
+### Core types
 
-1. Generational or incremental collector algorithm rollout.
-2. Concurrent collector implementation.
-3. Full allocator-framework redesign in the same milestone.
-4. Public engine-wide API churn in one PR.
+```rust
+pub struct Gc<T: Trace + ?Sized> {
+    ptr: GcErasedPointer,
+    _marker: core::marker::PhantomData<T>,
+}
 
-## Core invariants
+pub struct Root<T: Trace + ?Sized> {
+    ptr: Gc<T>,
+    slot: RootSlotId,
+}
 
-### I1. Tracing invariant
+pub struct WeakGc<T: Trace + ?Sized> {
+    ptr: GcErasedPointer,
+    _marker: core::marker::PhantomData<T>,
+}
 
-Any object reachable from roots through strong edges must be marked alive in the
-same collection cycle.
+pub struct GcContext {
+    /* collector state + root table + weak queues */
+}
 
-### I2. Rooting invariant
+pub struct Scope<'gc> {
+    cx: &'gc mut GcContext,
+}
+```
 
-Rooting API must make temporary and long-lived roots explicit, and prevent
-silent loss of roots due to API misuse.
+### Allocation and rooting
 
-### I3. Weak invariant
+```rust
+impl GcContext {
+    pub fn scope<R>(&mut self, f: impl for<'gc> FnOnce(Scope<'gc>) -> R) -> R;
+    pub fn collect(&mut self);
+}
 
-Weak handles do not keep referents alive. Upgrades succeed only if referent is
-alive at upgrade time.
+impl<'gc> Scope<'gc> {
+    pub fn alloc<T: Trace + 'static>(&mut self, value: T) -> Gc<T>;
+    pub fn root<T: Trace + 'static>(&mut self, value: &Gc<T>) -> Root<T>;
+    pub fn downgrade<T: Trace + 'static>(&self, value: &Gc<T>) -> WeakGc<T>;
+}
 
-### I4. Ephemeron invariant
+impl<T: Trace + ?Sized> Root<T> {
+    pub fn gc(&self) -> &Gc<T>;
+}
+```
 
-Ephemeron value is considered reachable only when key is independently
-reachable by strong tracing rules.
+### Pointer identity and casts (parity-preserving)
 
-### I5. Finalizer invariant
+```rust
+impl<T: Trace + ?Sized> Gc<T> {
+    pub fn ptr_eq<U: Trace + ?Sized>(a: &Gc<T>, b: &Gc<U>) -> bool;
+    pub fn into_raw(this: Gc<T>) -> GcRaw;
+    pub unsafe fn from_raw(raw: GcRaw) -> Gc<T>;
 
-Finalization happens before drop/reclaim. If finalization can make objects
-reachable again, collection ordering must prevent use-after-free.
+    pub fn downcast<U: Trace + 'static>(this: Gc<T>) -> Option<Gc<U>>;
+    pub unsafe fn cast_unchecked<U: Trace + 'static>(this: Gc<T>) -> Gc<U>;
+    pub unsafe fn cast_ref_unchecked<U: Trace + 'static>(this: &Gc<T>) -> &Gc<U>;
+}
+```
 
-### I6. Teardown invariant
+### Weak behavior
 
-Collector-drop paths must preserve safety ordering and avoid freeing objects
-that may still be referenced by finalizer-triggered graph activity.
+```rust
+impl<T: Trace + ?Sized> WeakGc<T> {
+    pub fn new(value: &Gc<T>) -> WeakGc<T>;
+    pub fn upgrade(&self) -> Option<Gc<T>>;
+}
+```
 
-## Proposed API direction (high-level)
+### Runtime helpers
 
-1. Keep user-facing `Gc<T>` ergonomics close to current behavior where possible.
-2. Shift internal liveness authority to tracing rather than root/refcount
-   arithmetic.
-3. Make rooting scopes/handles explicit in API boundaries where ambiguity
-   exists.
-4. Keep weak and ephemeron APIs stable at surface level while tightening
-   internal reachability contracts.
+```rust
+impl GcContext {
+    pub fn finalizer_safe(&self) -> bool;
+}
+```
 
-This allows incremental migration while reducing dependence on reference-count
-based root detection.
+`force_collect()` compatibility can be provided by wiring to
+`MarkSweepGarbageCollector::collect` in integration mode.
 
-## Implementation phases
+## Semantics and invariants
 
-### Phase 1: API contract and invariant harness
+### I1. Tracing is authoritative
 
-1. Add a dedicated invariant checklist and edge-case test matrix.
-2. Expand coverage for rooting misuse, weak upgrades, ephemeron pruning, and
-   finalizer/resurrection-sensitive flows.
-3. Define acceptance criteria for parity against `docs/boa_gc_api_surface.md`.
+Reachability is determined only by tracing from root slots and strong graph
+edges in the same cycle.
 
-Deliverable:
+### I2. Root slots replace root counts
 
-- Invariant-driven test suite and API-diff checklist.
+A value is rooted when at least one root slot references it. Slot lifetime is
+explicit (`Root<T>` drop unregisters slot). No per-object root/refcount math is
+used for liveness.
 
-### Phase 2: Oscars prototype changes
+### I3. Weak upgrade semantics
 
-1. Prototype precise-tracing-first liveness flow in Oscars internals.
-2. Keep changes in reviewable slices (pointer semantics, tracing hooks, weak/
-   ephemeron behavior).
-3. Ensure Miri-clean behavior throughout.
+`WeakGc::upgrade` succeeds only if the referent is marked live in the current
+collector state.
 
-Deliverable:
+### I4. Ephemeron semantics
 
-- Prototype branch with passing invariants and stress tests.
+Ephemeron values are traced only when keys are independently reachable via
+strong edges.
 
-### Phase 3: Boa integration path (feature-gated)
+### I5. Finalizer ordering
 
-1. Map prototype API to Boa `core/gc` surface.
-2. Integrate behind unstable gate with fallback to existing path.
-3. Validate on Boa-relevant workloads, not only microbenchmarks.
+Finalize-before-drop ordering is preserved, and collector teardown runs
+finalizers before destructors for tracked live values.
 
-Deliverable:
+### I6. Teardown safety
 
-- Gated integration slices plus benchmark and migration notes.
+Collector drop does not free values in an order that can cause UAF via
+finalizer-triggered graph activity.
 
-## Validation strategy
+## Feasibility and adoption path
 
-1. Correctness
-   - Targeted unit/regression tests for each invariant.
-   - Workspace test suites pass.
-2. Safety
-   - Miri coverage for critical paths.
-3. Performance
-   - Boa workload benchmarks plus focused GC stress tests.
-4. Integration confidence
-   - API parity matrix against `docs/boa_gc_api_surface.md`.
+This proposal is intentionally structured in two layers:
 
-## Risk management
+1. Collector-native API in Oscars (`GcContext`, `Scope`, `Root<T>`).
+2. Boa-compat layer that preserves current surface where required.
 
-1. Scope creep
-   - Keep non-goals explicit and enforce slice-based PRs.
-2. Unsoundness regressions
-   - Require invariant tests before merging behavioral changes.
-3. Integration disruption
-   - Use feature-gated rollout and preserve fallback path.
+### Boa compatibility mapping
 
-## Relationship to active tracker work
+1. `Gc::new(value)`:
+   - compatibility shim calls `with_gc_context(|cx| cx.scope(|s| s.alloc(value)))`.
+2. `WeakGc::new/upgrade`, raw-pointer helpers, and cast helpers:
+   - keep the same signatures.
+3. `force_collect()`:
+   - routed to collector `collect()`.
+4. `finalizer_safe()`:
+   - routed to collector phase state.
 
-This plan is intended to feed directly into:
+This keeps migration incremental and avoids an all-at-once engine rewrite.
+
+## What this proposal deliberately does not include
+
+1. A new incremental/generational/concurrent algorithm.
+2. Full Boa integration in one milestone.
+3. Allocator-framework redesign in the same proposal.
+
+## Validation plan for this API proposal
+
+1. Contract tests:
+   - rooting slot lifetime and misuse resistance,
+   - weak upgrade behavior across collections,
+   - ephemeron key/value reachability behavior.
+2. Safety checks:
+   - Miri on root registration/unregistration paths and raw round-trips.
+3. Compatibility checks:
+   - parity checklist against `docs/boa_gc_api_surface.md`.
+4. Benchmarks:
+   - Boa workloads plus targeted GC stress cases.
+
+## Open review questions
+
+1. Should `Scope<'gc>` be mandatory for all allocations, or should we keep a
+   global-context fallback for Boa compatibility?
+2. Should `Root<T>` be cloneable (multiple slots) or explicitly unique?
+3. Is `cast_ref_unchecked` still desirable, or should compatibility rely on
+   value-consuming casts only?
+4. Which minimal Boa integration slice gives the best signal first:
+   pointer API parity, weak semantics parity, or runtime helpers?
+
+## Relationship to tracker work
+
+This proposal is intended to feed directly into:
 
 - `#26` Tracking issue for Boa integration
 - `#27` Coverage of `boa_gc` API surface area
 - `#28` Integration into Boa
 - `#30` Benchmark MarkSweepGarbageCollector in Boa with `arena3` allocator
 
-And it is explicitly aligned with the `#54` direction to remove the
-`gc_allocator` supertrait experiment.
+And it is aligned with `#54` (remove `gc_allocator` supertrait direction).
