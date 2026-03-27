@@ -40,9 +40,10 @@ pub struct Gc<T: Trace + ?Sized> {
     _marker: core::marker::PhantomData<T>,
 }
 
-pub struct Root<T: Trace + ?Sized> {
+pub struct Root<'gc, T: Trace + ?Sized> {
     ptr: Gc<T>,
     slot: RootSlotId,
+    _ctx: core::marker::PhantomData<&'gc mut GcContext>,
 }
 
 pub struct WeakGc<T: Trace + ?Sized> {
@@ -69,14 +70,17 @@ impl GcContext {
 
 impl<'gc> Scope<'gc> {
     pub fn alloc<T: Trace + 'static>(&mut self, value: T) -> Gc<T>;
-    pub fn root<T: Trace + 'static>(&mut self, value: &Gc<T>) -> Root<T>;
+    pub fn root<T: Trace + 'static>(&'gc mut self, value: &Gc<T>) -> Root<'gc, T>;
     pub fn downgrade<T: Trace + 'static>(&self, value: &Gc<T>) -> WeakGc<T>;
 }
 
-impl<T: Trace + ?Sized> Root<T> {
+impl<'gc, T: Trace + ?Sized> Root<'gc, T> {
     pub fn gc(&self) -> &Gc<T>;
 }
 ```
+
+Safety note: `Root<'gc, T>` is lifetime-branded to the same `GcContext` scope,
+so safe code cannot hold rooted references after the context/scope is dropped.
 
 ### Pointer identity and casts (parity-preserving)
 
@@ -122,8 +126,9 @@ edges in the same cycle.
 ### I2. Root slots replace root counts
 
 A value is rooted when at least one root slot references it. Slot lifetime is
-explicit (`Root<T>` drop unregisters slot). No per-object root/refcount math is
-used for liveness.
+explicit (`Root<'gc, T>` drop unregisters slot), and root handles are branded by
+the context/scope lifetime so they cannot outlive the owning GC context. No
+per-object root/refcount math is used for liveness.
 
 ### I3. Weak upgrade semantics
 
@@ -149,7 +154,7 @@ finalizer-triggered graph activity.
 
 This proposal is intentionally structured in two layers:
 
-1. Collector-native API in Oscars (`GcContext`, `Scope`, `Root<T>`).
+1. Collector-native API in Oscars (`GcContext`, `Scope`, `Root<'gc, T>`).
 2. Boa-compat layer that preserves current surface where required.
 
 ### Boa compatibility mapping
