@@ -47,6 +47,16 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
         None
     }
 
+    pub fn upgrade(&self) -> Option<Gc<K>> {
+        self.key.inner_ptr().map(|ptr| {
+            // Increment the roots, since we are creating a new root.
+            ptr.as_inner_ref().inc_roots();
+            // Safety: This is safe because WeakGc's collection insures
+            // the liveliness of the underlying pointer
+            unsafe { Gc::from_raw(ptr) }
+        })
+    }
+
     pub fn is_reachable(&self, color: TraceColor) -> bool {
         self.key.is_reachable(color)
     }

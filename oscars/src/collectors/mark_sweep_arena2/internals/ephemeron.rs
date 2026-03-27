@@ -50,6 +50,16 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
     pub(crate) fn invalidate(&self) {
         self.active.set(false);
     }
+
+    pub fn upgrade(&self) -> Option<Gc<K>> {
+        self.key.inner_ptr().map(|ptr| {
+            // Increment the root by one since we are upgrading this value.
+            ptr.as_inner_ref().inc_roots();
+            // Safety: This is safe because WeakGc's collection insures
+            // the liveliness of the underlying pointer
+            unsafe { Gc::from_raw(ptr) }
+        })
+    }
 }
 
 impl<K: Trace, V: Trace> Ephemeron<K, V> {

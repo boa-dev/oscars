@@ -40,7 +40,9 @@ impl<T: Trace> Gc<T> {
 
     /// Converts a `Gc` into a raw [`ArenaPointer`].
     pub fn into_raw(this: Self) -> ArenaPointer<'static, GcBox<T>> {
-        this.inner_ptr()
+        let ptr = this.inner_ptr();
+        core::mem::forget(this);
+        ptr
     }
 
     /// Creates a `Gc` from the provided [`ArenaPointer`].
@@ -88,8 +90,10 @@ impl<T: Trace> Gc<T> {
     #[inline]
     #[must_use]
     pub unsafe fn cast_unchecked<U: Trace + 'static>(this: Self) -> Gc<U> {
+        let inner_ptr = this.inner_ptr;
+        core::mem::forget(this);
         Gc {
-            inner_ptr: this.inner_ptr,
+            inner_ptr,
             marker: PhantomData,
         }
     }
