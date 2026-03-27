@@ -40,10 +40,10 @@ pub struct Gc<T: Trace + ?Sized> {
     _marker: core::marker::PhantomData<T>,
 }
 
-pub struct Root<'gc, T: Trace + ?Sized> {
+pub struct Root<'scope, 'gc, T: Trace + ?Sized> {
     ptr: Gc<T>,
     slot: RootSlotId,
-    _ctx: core::marker::PhantomData<&'gc mut GcContext>,
+    _scope: core::marker::PhantomData<&'scope Scope<'gc>>,
 }
 
 pub struct WeakGc<T: Trace + ?Sized> {
@@ -70,17 +70,25 @@ impl GcContext {
 
 impl<'gc> Scope<'gc> {
     pub fn alloc<T: Trace + 'static>(&mut self, value: T) -> Gc<T>;
-    pub fn root<T: Trace + 'static>(&'gc mut self, value: &Gc<T>) -> Root<'gc, T>;
+    pub fn root<'scope, T: Trace + 'static>(
+        &'scope self,
+        value: &Gc<T>,
+    ) -> Root<'scope, 'gc, T>;
     pub fn downgrade<T: Trace + 'static>(&self, value: &Gc<T>) -> WeakGc<T>;
 }
 
-impl<'gc, T: Trace + ?Sized> Root<'gc, T> {
+impl<'scope, 'gc, T: Trace + ?Sized> Root<'scope, 'gc, T> {
     pub fn gc(&self) -> &Gc<T>;
 }
 ```
 
-Safety note: `Root<'gc, T>` is lifetime-branded to the same `GcContext` scope,
-so safe code cannot hold rooted references after the context/scope is dropped.
+Safety note: `Root<'scope, 'gc, T>` is lifetime-branded to the borrowed scope,
+so safe code cannot hold rooted references after the owning scope/context is
+dropped.
+
+Implementation note: `Scope::root(&self, ...)` assumes root-slot registration is
+handled via internal mutability in collector internals, so multiple roots can
+coexist without requiring an exclusive borrow of `Scope`.
 
 ### Pointer identity and casts (parity-preserving)
 
@@ -126,9 +134,9 @@ edges in the same cycle.
 ### I2. Root slots replace root counts
 
 A value is rooted when at least one root slot references it. Slot lifetime is
-explicit (`Root<'gc, T>` drop unregisters slot), and root handles are branded by
-the context/scope lifetime so they cannot outlive the owning GC context. No
-per-object root/refcount math is used for liveness.
+explicit (`Root<'scope, 'gc, T>` drop unregisters slot), and root handles are
+branded by the scope/context lifetime so they cannot outlive the owning GC
+context. No per-object root/refcount math is used for liveness.
 
 ### I3. Weak upgrade semantics
 
@@ -154,13 +162,14 @@ finalizer-triggered graph activity.
 
 This proposal is intentionally structured in two layers:
 
-1. Collector-native API in Oscars (`GcContext`, `Scope`, `Root<'gc, T>`).
+1. Collector-native API in Oscars (`GcContext`, `Scope`, `Root<'scope, 'gc, T>`).
 2. Boa-compat layer that preserves current surface where required.
 
 ### Boa compatibility mapping
 
 1. `Gc::new(value)`:
-   - compatibility shim calls `with_gc_context(|cx| cx.scope(|s| s.alloc(value)))`.
+   - compatibility shim calls
+     `with_gc_context(|cx| cx.scope(|mut s| s.alloc(value)))`.
 2. `WeakGc::new/upgrade`, raw-pointer helpers, and cast helpers:
    - keep the same signatures.
 3. `force_collect()`:
@@ -193,11 +202,14 @@ This keeps migration incremental and avoids an all-at-once engine rewrite.
 
 1. Should `Scope<'gc>` be mandatory for all allocations, or should we keep a
    global-context fallback for Boa compatibility?
-2. Should `Root<T>` be cloneable (multiple slots) or explicitly unique?
+2. Should `Root<'scope, 'gc, T>` be cloneable (multiple slots) or explicitly
+   unique?
 3. Is `cast_ref_unchecked` still desirable, or should compatibility rely on
    value-consuming casts only?
 4. Which minimal Boa integration slice gives the best signal first:
    pointer API parity, weak semantics parity, or runtime helpers?
+5. Should reading `T` from `Gc<T>` require an explicit scope/root token, so
+   stale handles cannot be dereferenced after collection in safe code?
 
 ## Relationship to tracker work
 
