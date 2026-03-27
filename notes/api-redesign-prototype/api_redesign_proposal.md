@@ -13,15 +13,33 @@ This proposes lifetime-branded `Gc<'gc, T>` for zero cost pointers and explicit 
 ### Gc Pointer
 
 ```rust
-pub struct Gc<'gc, T: Trace> {
+pub struct Gc<'gc, T: Trace + ?Sized + 'gc> {
     ptr: NonNull<GcBox<T>>,
-    _marker: PhantomData<&'gc T>,
+    _marker: PhantomData<(&'gc T, *const ())>,
 }
 
-impl<'gc, T: Trace> Copy for Gc<'gc, T> {}
-impl<T: Trace + ?Sized> !Send for Gc<'_, T> {}
-impl<T: Trace + ?Sized> !Sync for Gc<'_, T> {}
+impl<'gc, T: Trace + ?Sized + 'gc> Copy for Gc<'gc, T> {}
 ```
+
+### Mutability via GcRefCell
+```rust
+pub struct GcRefCell<T: Trace> {
+    inner: RefCell<T>,
+}
+```
+`GcRefCell` safely traces internal values statically behind a dynamically borrowed `RefCell`, providing `GcRef` and `GcRefMut` access similar to native `Rc/RefCell` combinations. Allows internal JavaScript arrays and objects to be mutated during the GC trace safely.
+
+### Weak Reference Separation
+```rust
+pub struct WeakGc<T: Trace + ?Sized> {
+    ptr: NonNull<GcBox<T>>,
+}
+
+impl<T: Trace + ?Sized> WeakGc<T> {
+    pub fn upgrade<'gc>(&self, cx: &MutationContext<'gc>) -> Option<Gc<'gc, T>> { ... }
+}
+```
+Weak references drop their tie to the single `'gc` lifetime. Instead, they are upgraded back into strong `Gc` pointers only when explicitly bound against an active safe `MutationContext<'gc>`.
 
 The `'gc` lifetime ties the pointer to its collector. Copying is free, no root count manipulation.
 
@@ -68,13 +86,29 @@ Uses `&self` with `RefCell` inside for multiple concurrent allocations.
 ### Entry Point
 
 ```rust
-pub fn with_gc<R>(f: impl for<'gc> FnOnce(MutationContext<'gc>) -> R) -> R {
-    let collector = Collector::new();
-    f(MutationContext { collector: &collector })
+pub struct GcContext {
+    collector: Collector,
+}
+
+impl GcContext {
+    pub fn new() -> Self { ... }
+    pub fn mutate<R>(&self, f: impl for<'gc> FnOnce(&MutationContext<'gc>) -> R) -> R { ... }
 }
 ```
 
-The `for<'gc>` pattern from gc-arena creates unique lifetime per arena.
+By owning the `Collector`, `GcContext` defines the entire host timeline. The `for<'gc>` pattern from gc-arena creates a unique lifetime isolating active context mutations per arena.
+
+### Tracing Mechanism
+```rust
+pub trait Trace {
+    fn trace(&mut self, tracer: &mut Tracer);
+}
+
+pub trait Finalize {
+    fn finalize(&self) {}
+}
+```
+Note: `trace` takes `&mut self` instead of `&self`, ensuring that potential moving collectors have exclusive layout rights during traces.
 
 ## vs Current Oscars
 

@@ -76,15 +76,16 @@ Catches cross-collector misuse where lifetimes can't help.
 
 ### Root Cleanup
 
-Problem: Root registered but never removed → memory leak.
+Problem: Root registered but never removed → memory leak. Collector dropped before root → UAF if roots were a raw pointer.
 
-Solution: `Drop` unregisters:
+Solution: `Collector` stores an `Rc<RefCell<RootSet>>`, and `Root<T>` holds a clone of this `Rc`. `Drop` unregisters safely:
 
 ```rust
 impl<T: Trace + ?Sized> Drop for Root<T> {
     fn drop(&mut self) {
-        let roots = unsafe { &*self.collector_roots };
-        roots.borrow_mut().retain(|e| e.ptr != self.ptr.as_ptr() as *mut u8);
+        self.collector_roots
+            .borrow_mut()
+            .retain(|e| e.ptr != self.ptr.as_ptr() as *mut u8);
     }
 }
 ```
@@ -100,6 +101,12 @@ Single-threaded GC. Explicit bounds prevent cross-thread bugs.
 **Runtime cross-collector detection**: `Root::get()` panics on wrong collector.
 
 **Root cleanup**: Drop removes from root list.
+
+**Interior Mutability Tracing**: Using `GcRefCell<T>` allows `RefCell` semantics to persist efficiently while fulfilling `Trace` safety requirements without borrowing errors.
+
+**Scopeless Weak Binding**: `WeakGc<T>` survives successfully unbranded and can trace/upgrade against an arbitrary temporal `MutationContext` when actively touched again.
+
+**Functional Builtin Prototyping**: Explicit tests matching exactly against definitions like `Array.prototype.push` (taking a `&Gc<'gc, GcRefCell<JsArray<'gc>>>` + `arg` buffer bound to `_cx: &MutationContext<'gc>`) compiled gracefully and safely.
 
 ### Performance
 
