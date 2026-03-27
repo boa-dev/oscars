@@ -43,7 +43,7 @@ impl<T: Trace> Gc<T> {
         this.inner_ptr()
     }
 
-    /// Creates a `Gc` from the provided [`PoolPointer`].
+    /// Creates a `Gc` from the provided [`ArenaPointer`].
     ///
     /// # Safety
     ///
