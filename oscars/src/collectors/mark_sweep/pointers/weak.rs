@@ -3,7 +3,7 @@
 // optimized in the future
 use crate::{
     alloc::mempool3::PoolPointer,
-    collectors::mark_sweep::{Collector, Trace, internals::Ephemeron},
+    collectors::mark_sweep::{Collector, Gc, Trace, internals::Ephemeron},
 };
 
 #[repr(transparent)]
@@ -26,7 +26,12 @@ impl<T: Trace> WeakGc<T> {
         Self { inner_ptr }
     }
 
+    /// Returns the value of this [`WeakGc`] if the underlying value is alive.
     pub fn value(&self) -> Option<&T> {
         self.inner_ptr.as_inner_ref().key()
+    }
+
+    pub fn upgrade(&self) -> Option<Gc<T>> {
+        self.inner_ptr.as_inner_ref().upgrade()
     }
 }
