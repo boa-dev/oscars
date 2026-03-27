@@ -68,9 +68,14 @@ impl<T: Trace + ?Sized> Drop for Root<T> {
     }
 }
 
+struct Allocation {
+    ptr: *mut u8,
+    drop_fn: unsafe fn(*mut u8),
+}
+
 pub struct Collector {
     pub(crate) id: u64,
-    allocations: RefCell<Vec<*mut u8>>,
+    allocations: RefCell<Vec<Allocation>>,
     pub(crate) roots: Rc<RefCell<Vec<RootEntry>>>,
     allocation_count: Cell<usize>,
 }
@@ -91,7 +96,18 @@ impl Collector {
             value,
         });
         let ptr = NonNull::new(Box::into_raw(boxed)).unwrap();
-        self.allocations.borrow_mut().push(ptr.as_ptr() as *mut u8);
+
+        unsafe fn drop_alloc<T>(ptr: *mut u8) {
+            unsafe {
+                drop(Box::from_raw(ptr as *mut GcBox<T>));
+            }
+        }
+
+        self.allocations.borrow_mut().push(Allocation {
+            ptr: ptr.as_ptr() as *mut u8,
+            drop_fn: drop_alloc::<T>,
+        });
+
         self.allocation_count.set(self.allocation_count.get() + 1);
         Gc {
             ptr,
@@ -129,9 +145,9 @@ impl Default for Collector {
 
 impl Drop for Collector {
     fn drop(&mut self) {
-        for ptr in self.allocations.borrow().iter() {
+        for alloc in self.allocations.borrow().iter() {
             unsafe {
-                drop(Box::from_raw(*ptr as *mut GcBox<()>));
+                (alloc.drop_fn)(alloc.ptr);
             }
         }
     }

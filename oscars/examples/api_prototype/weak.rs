@@ -17,10 +17,7 @@ impl<T: Trace + ?Sized> WeakGc<T> {
                     _marker: PhantomData,
                 })
             } else {
-                Some(Gc {
-                    ptr: self.ptr,
-                    _marker: PhantomData,
-                })
+                None
             }
         }
     }

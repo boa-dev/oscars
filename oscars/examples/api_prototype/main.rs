@@ -166,4 +166,52 @@ mod tests {
             assert_eq!(*cell.get().borrow(), 200);
         });
     }
+
+    #[test]
+    fn root_outlives_context() {
+        // Ensures escaping roots do not trigger UAF after collector drops
+        let escaped_root = {
+            let ctx = GcContext::new();
+            ctx.mutate(|cx| cx.root(cx.alloc(555i32)))
+        };
+        drop(escaped_root);
+    }
+
+    #[test]
+    fn weak_upgrade() {
+        let ctx = GcContext::new();
+        ctx.mutate(|cx| {
+            let obj = cx.alloc(JsObject {
+                name: "test".into(),
+                value: 42,
+            });
+            let weak = cx.alloc_weak(JsObject {
+                name: "weak".into(),
+                value: 10,
+            });
+
+            // Sweep unrooted weak pointers.
+            cx.collect();
+            assert!(weak.upgrade(cx).is_none());
+
+            // Rooted objects remain alive
+            let root = cx.root(obj);
+            cx.collect();
+            let _ = root.get(cx);
+        });
+    }
+
+    #[test]
+    fn bulk_allocation_cleanup() {
+        let ctx = GcContext::new();
+        ctx.mutate(|cx| {
+            for i in 0..100 {
+                cx.alloc(JsObject {
+                    name: "bulk".into(),
+                    value: i,
+                });
+            }
+        });
+        // Deallocates out of scope without leaking
+    }
 }
