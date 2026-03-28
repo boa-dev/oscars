@@ -47,9 +47,11 @@ The `'gc` lifetime ties the pointer to its collector. Copying is free, no root c
 
 ```rust
 pub struct Root<T: Trace + ?Sized> {
-    ptr: NonNull<GcBox<T>>,
+    gc_ptr: NonNull<GcBox<T>>,
     collector_id: u64,
-    collector_roots: *const RefCell<Vec<RootEntry>>,
+    collector_roots: Rc<RefCell<RootList>>,
+    node: RootListNode,  // Intrusive list node
+    _marker: PhantomData<*const ()>,
 }
 
 impl<T: Trace> Root<T> {
@@ -61,12 +63,16 @@ impl<T: Trace> Root<T> {
 
 impl<T: Trace + ?Sized> Drop for Root<T> {
     fn drop(&mut self) {
-        // Unregister from root list
+        // O(1) removal from intrusive linked list
+        unsafe {
+            let node_ptr = NonNull::new_unchecked(&self.node as *const _ as *mut _);
+            self.collector_roots.borrow().remove(node_ptr);
+        }
     }
 }
 ```
 
-`Root<T>` escapes the `'gc` lifetime. Stores collector ID to catch cross-collector misuse.
+`Root<T>` escapes the `'gc` lifetime. Returns `Pin<Box<Root<T>>>` for stable addresses (required for intrusive list). Stores collector ID to catch cross-collector misuse.
 
 ### MutationContext
 
@@ -77,7 +83,8 @@ pub struct MutationContext<'gc> {
 
 impl<'gc> MutationContext<'gc> {
     pub fn alloc<T: Trace>(&self, value: T) -> Gc<'gc, T> { ... }
-    pub fn root<T: Trace>(&self, gc: Gc<'gc, T>) -> Root<T> { ... }
+    pub fn root<T: Trace>(&self, gc: Gc<'gc, T>) -> Pin<Box<Root<T>>> { ... }
+    pub fn collect(&self) { ... }
 }
 ```
 
@@ -118,6 +125,7 @@ Note: `trace` takes `&mut self` instead of `&self`, ensuring that potential movi
 | **Lifetime** | `'static` + `extend_lifetime()` | `'gc` branded |
 | **Rooting** | Implicit (inc/dec on clone/drop) | Explicit (`Root<T>`) |
 | **Copy cost** | Cell write | Zero |
+| **Drop cost** | TLS access (futex lock) | Zero (Copy type) |
 | **Isolation** | Runtime only | Compile-time + runtime validation |
 
 ## Why This Works
@@ -126,10 +134,13 @@ Note: `trace` takes `&mut self` instead of `&self`, ensuring that potential movi
 
 **Performance**: `Gc` copying is just memcpy, no root count overhead.
 
+**Allocation**: Uses `mempool3::PoolAllocator` with size-class pooling instead of individual `Box` allocations, avoiding fragmentation.
+
 **Safety**: 
 - Cross-context caught at compile time for `Gc`
 - Cross-collector caught at runtime for `Root`
 - Explicit `!Send`/`!Sync` prevents threading bugs
+- Intrusive linked list for O(1) root removal (avoiding O(n²) retain scans)
 
 ## Open Questions
 

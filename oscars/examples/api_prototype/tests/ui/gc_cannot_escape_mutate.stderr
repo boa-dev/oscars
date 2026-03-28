@@ -1,0 +1,9 @@
+error: lifetime may not live long enough
+  --> examples/api_prototype/tests/ui/gc_cannot_escape_mutate.rs:25:9
+   |
+24 |     let escaped = ctx.mutate(|cx| {
+   |                               --- return type of closure is Gc<'2, i32>
+   |                               |
+   |                               has type `&MutationContext<'1>`
+25 |         cx.alloc(42i32)  // Gc<'gc, i32> tied to closure lifetime
+   |         ^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`

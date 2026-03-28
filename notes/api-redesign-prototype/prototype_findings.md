@@ -74,25 +74,67 @@ impl<T: Trace> Root<T> {
 
 Catches cross-collector misuse where lifetimes can't help.
 
-### Root Cleanup
+### Gc Access Safety
 
-Problem: Root registered but never removed → memory leak. Collector dropped before root → UAF if roots were a raw pointer.
+**Q**: How do we prevent `Gc::get()` from accessing dead allocations?
 
-Solution: `Collector` stores an `Rc<RefCell<RootSet>>`, and `Root<T>` holds a clone of this `Rc`. `Drop` unregisters safely:
+Lifetime branding: `Gc<'gc, T>` can only exist within a `mutate()` closure and collection happens in the same scope via `cx.collect()`. The `'gc` lifetime ensures we can't hold a `Gc` pointer across a collection point. The compiler statically guarantees that all live `Gc<'gc, T>` values are on the stack during the `'gc` lifetime, so no runtime checks are needed in `Gc::get()`
 
 ```rust
+ctx.mutate(|cx| {
+    let obj = cx.alloc(JsObject { ... });  // Gc<'gc, JsObject>
+    cx.collect();
+    obj.get()  // Safe! 'gc lifetime proves it survived collection
+});
+// obj is gone here - 'gc lifetime ended
+```
+
+See compile-fail tests in `examples/api_prototype/tests/ui/` for examples of what the compiler prevents (escaping mutate(), cross context usage).
+
+### Root Cleanup
+
+Problem: Root registered but never removed -> memory leak. Collector dropped before root -> UAF if roots were a raw pointer.
+
+Solution: Roots use an **intrusive doubly linked list** with O(1) insertion/removal. Each `Root<T>` contains prev/next pointers, and `Pin<Box<Root<T>>>` ensures stable memory addresses. `Drop` unregisters in O(1):
+
+```rust
+pub struct Root<T: Trace + ?Sized> {
+    gc_ptr: NonNull<GcBox<T>>,
+    collector_id: u64,
+    collector_roots: Rc<RefCell<RootList>>,
+    node: RootListNode,  // Intrusive list node with prev/next pointers
+    _marker: PhantomData<*const ()>,
+}
+
 impl<T: Trace + ?Sized> Drop for Root<T> {
     fn drop(&mut self) {
-        self.collector_roots
-            .borrow_mut()
-            .retain(|e| e.ptr != self.ptr.as_ptr() as *mut u8);
+        // O(1) removal from intrusive linked list
+        unsafe {
+            let node_ptr = NonNull::new_unchecked(&self.node as *const _ as *mut RootListNode);
+            self.collector_roots.borrow().remove(node_ptr);
+        }
     }
 }
 ```
 
+The `Pin` wrapper guarantees roots have stable addresses, which is conceptually correct (roots shouldn't move) and enables the intrusive list optimization.
+
+**Previous approach** (Vec + retain): O(n²) worst case when dropping n roots (each scans entire list). Intrusive list is O(n) total.
+
+### Allocation Strategy
+
+Prototype now uses `mempool3::PoolAllocator`:
+
+- Size-class pooling with slot reuse
+- O(1) allocation with cached slot pools
+- O(log n) deallocation via sorted range index
+- Arena recycling reduces OS allocation pressure
+- Uses `try_alloc_bytes` for layout based allocation to support `'gc` lifetimes in user types
+
+
 ### !Send/!Sync
 
-Single-threaded GC. Explicit bounds prevent cross-thread bugs.
+Single threaded GC. Explicit bounds prevent cross thread bugs.
 
 ## Validated
 
@@ -115,7 +157,7 @@ Single-threaded GC. Explicit bounds prevent cross-thread bugs.
 | `Gc::clone()` | Cell write | memcpy |
 | `Gc::drop()` | Cell write | nothing |
 | Root creation | N/A | O(1) |
-| Root drop | N/A | O(n) |
+| Root drop | N/A | O(1) |
 
 ## Challenges
 
@@ -130,7 +172,7 @@ Single-threaded GC. Explicit bounds prevent cross-thread bugs.
 `Gc<'gc, T>` + `Root<T>` is:
 - **Sound**: Compile-time catches misuse
 - **Runtime-safe**: Collector ID validation catches Root misuse
-- **Fast**: Zero-cost transient pointers
+- **Fast**: Zero cost transient pointers
 - **Feasible**: Can coexist with current API
 
 Main risk is migration effort, we can go with the phased approach

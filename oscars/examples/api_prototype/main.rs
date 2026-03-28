@@ -8,6 +8,7 @@
 
 mod cell;
 mod gc;
+mod root_list;
 mod trace;
 mod weak;
 
@@ -213,5 +214,114 @@ mod tests {
             }
         });
         // Deallocates out of scope without leaking
+    }
+
+    #[test]
+    #[cfg_attr(not(debug_assertions), ignore)]
+    fn compile_fail_tests() {
+        let t = trybuild::TestCases::new();
+        t.compile_fail("examples/api_prototype/tests/ui/*.rs");
+    }
+
+    // Tests verifying the lifetime-bounded `'gc` invariant prevents UAF
+    #[test]
+    fn unrooted_allocs_are_collected() {
+        let ctx = GcContext::new();
+        ctx.mutate(|cx| {
+            let weak = cx.alloc_weak(JsObject {
+                name: "ephemeral".into(),
+                value: 999,
+            });
+
+            cx.collect();
+            assert!(weak.upgrade(cx).is_none());
+        });
+    }
+
+    #[test]
+    fn pinned_root_keeps_gc_alive() {
+        // Ensures Pin<Box<Root<T>>> keeps allocations alive.
+        let ctx = GcContext::new();
+        ctx.mutate(|cx| {
+            let obj = cx.alloc(JsObject {
+                name: "pinned".into(),
+                value: 42,
+            });
+
+            let pinned_root = cx.root(obj);
+            cx.collect();
+
+            let gc = pinned_root.get(cx);
+            assert_eq!(gc.get().value, 42);
+            assert_eq!(gc.get().name, "pinned");
+        });
+    }
+
+    #[test]
+    fn multiple_roots_are_independent() {
+        let ctx = GcContext::new();
+        ctx.mutate(|cx| {
+            let obj1 = cx.alloc(100i32);
+            let obj2 = cx.alloc(200i32);
+
+            let root1 = cx.root(obj1);
+            let root2 = cx.root(obj2);
+
+            cx.collect();
+
+            assert_eq!(*root1.get(cx).get(), 100);
+            assert_eq!(*root2.get(cx).get(), 200);
+
+            drop(root1);
+            cx.collect();
+
+            assert_eq!(*root2.get(cx).get(), 200);
+        });
+    }
+
+    #[test]
+    fn root_get_requires_mut_ctx() {
+        // Ensures Root::get() requires a valid MutationContext<'gc>.
+        let ctx = GcContext::new();
+
+        let root = ctx.mutate(|cx| {
+            let obj = cx.alloc(JsObject {
+                name: "escaped".into(),
+                value: 123,
+            });
+            cx.root(obj)
+        });
+
+        ctx.mutate(|cx| {
+            let gc = root.get(cx);
+            assert_eq!(gc.get().value, 123);
+        });
+    }
+
+    #[test]
+    fn gc_lifetime_tied_to_mut_ctx() {
+        // Ensures Gc<'gc, T> cannot outlive the mutation phase.
+        let ctx = GcContext::new();
+        ctx.mutate(|cx| {
+            let gc = cx.alloc(42i32);
+            assert_eq!(*gc.get(), 42);
+        });
+    }
+
+    #[test]
+    fn seq_mutations_independent() {
+        let ctx = GcContext::new();
+
+        let root = ctx.mutate(|cx| {
+            let obj = cx.alloc(1i32);
+            cx.root(obj)
+        });
+
+        ctx.mutate(|cx| {
+            let new_obj = cx.alloc(2i32);
+
+            assert_eq!(*root.get(cx).get(), 1);
+            assert_eq!(*new_obj.get(), 2);
+        });
     }
 }
