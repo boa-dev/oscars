@@ -103,7 +103,7 @@ Taking the `intrusive_collections` crate as inspiration, here is what we adopted
 2. **O(1) Self Removal**: `unlink` drops nodes safely without a reference to the `Collector`.
 3. **Double Unlink Protection**: `is_linked()` enforces safe dropping.
 4. **Sentinel Node**: `Collector` owns a pinned `RootLink` as the list head.
-5. **Type Erased Marking**: `Root<T>` is `#[repr(C)]` with `gc_ptr` at offset 0. The GC walks the links and recovers pointers using `offset_of!`. No `Trace` bound is needed.
+5. **Type Erased Marking**: `Root<T>` is `#[repr(C)]` with `link` at offset 0. The GC walks the links and recovers pointers using `offset_of!`. No `Trace` bound is needed.
 
 #### Evolution of approaches
 

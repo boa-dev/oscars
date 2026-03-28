@@ -46,13 +46,11 @@ The `'gc` lifetime ties the pointer to its collector. Copying is free, no root c
 ### Root for Persistence
 
 ```rust
-pub struct Root<T: Trace> {  // T: Sized — unsized T makes gc_ptr a fat pointer,
-                             // which shifts the offset of `link` and breaks the
-                             // type erased offset_of!(Root<i32>, link) used during collection.
-    gc_ptr: NonNull<GcBox<T>>,
+pub struct Root<T: Trace> {
+    link: RootLink,  // Intrusive list node (prev/next only), at offset 0 so bare link* == Root*
+    gc_ptr: NonNull<GcBox<T>>, // T: Sized keeps this thin for type erased offset_of!
     /// Cross collector misuse detection only, plays no role in unlinking.
     collector_id: u64,
-    link: RootLink,  // Intrusive list node (prev/next only), no Rc back pointer needed
     _marker: PhantomData<*const ()>,
 }
 
@@ -103,7 +101,7 @@ The `Collector` owns one **pinned sentinel** `RootLink` (a bare link node with n
 Collector::sentinel -> root_a.link -> root_b.link -> root_c.link -> None
 ```
 
-Roots insert themselves immediately after the sentinel via `RootLink::link_after`. During collection, `RootLink::iter_from_sentinel(sentinel)` starts from `sentinel.next`, so the sentinel itself is never yielded. For each link, `gc_ptr` is recovered via `offset_of!(Root<i32>, link)` and used to mark the allocation.
+Roots insert themselves immediately after the sentinel via `RootLink::link_after`. During collection, `RootLink::iter_from_sentinel(sentinel)` starts from `sentinel.next`, so the sentinel itself is never yielded. For each link, `gc_ptr` is recovered via `offset_of!(Root<i32>, gc_ptr)` and used to mark the allocation.
 
 ### Entry Point
 

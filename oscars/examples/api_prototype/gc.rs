@@ -38,23 +38,21 @@ impl<'gc, T: Trace + 'gc> Gc<'gc, T> {
 
 /// Pinned root handle that keeps a GC allocation live across `mutate()` boundaries.
 ///
-/// Uses an intrusive linked list. Each root embeds a `RootLink` (prev/next only).
-/// The collector walks links at GC time and reads `gc_ptr` via `offset_of!`.
-/// `#[repr(C)]` ensures `gc_ptr` is always at offset 0.
+/// Uses an intrusive linked list. `#[repr(C)]` with `link` first allows
+/// casting `*mut RootLink` directly to `*mut Root<T>` without pointer math.
 ///
-/// Returned as `Pin<Box<Root<T>>>` so the link address stays stable.
-/// `T` must be `Sized` so `gc_ptr` remains a thin pointer, keeping `link` at a
-/// fixed offset for type-erased `offset_of!` collection logic.
-/// `collector_id` is only for cross-collector misuse detection, not unlinking.
+/// `Pin<Box<Root<T>>>` keeps the list link stable in memory.
+/// `T: Sized` ensures `gc_ptr` is a single word thin pointer, making
+/// type-erased `*mut u8` collector reads sound
 #[must_use = "roots must be kept alive to prevent collection"]
 #[repr(C)]
 pub struct Root<T: Trace> {
-    /// Pointer to the allocated `GcBox<T>`. At offset 0 due to `repr(C)`.
+    /// Intrusive list node. Placed at offset 0 for direct base pointer casting.
+    pub(crate) link: RootLink,
+    /// GC allocation pointer. `T: Sized` ensures this is a thin pointer
     pub(crate) gc_ptr: NonNull<GcBox<T>>,
     /// ID of the `Collector` that owns this root (for misuse detection).
     pub(crate) collector_id: u64,
-    /// Intrusive link (prev/next only, no payload).
-    pub(crate) link: RootLink,
     pub(crate) _marker: PhantomData<*const ()>,
 }
 
@@ -87,20 +85,20 @@ impl<T: Trace> Drop for Root<T> {
     }
 }
 
-// container_of: use offset_of! to get Root<T> from a RootLink pointer.
-// Root<T> is repr(C), so gc_ptr is always at offset 0.
-// This allows type-erased marking without a Trace bound.
+// `link` is at offset 0, so its pointer represents the entire `Root<T>`.
+// To find `gc_ptr`, we just add its expected offset. `T: Sized` ensures
+// `gc_ptr` is a thin pointer, making the raw `*mut u8` read safe.
 
-/// Gets gc_ptr from a RootLink pointer.
+/// Gets gc_ptr from a RootLink pointer without knowing the generic type `T`
 ///
 /// # Safety
-/// * `link` must point to `Root<T>.link`.
-/// * `link_offset` must be `offset_of!(Root<T>, link)`
+/// * `link` must point to a real Root<T> for some `T: Trace + Sized`
+/// * `gc_ptr_offset` must be the exact distance to `gc_ptr` for that `T`
 #[inline(always)]
-unsafe fn gc_ptr_from_link(link: NonNull<RootLink>, link_offset: usize) -> *mut u8 {
-    let root_ptr = unsafe { (link.as_ptr() as *mut u8).sub(link_offset) };
-    // Read the first pointer (gc_ptr at offset 0).
-    unsafe { *(root_ptr as *const *mut u8) }
+unsafe fn gc_ptr_from_link(link: NonNull<RootLink>, gc_ptr_offset: usize) -> *mut u8 {
+    // Both point to the exact same memory address
+    let gc_ptr_field = unsafe { (link.as_ptr() as *mut u8).add(gc_ptr_offset) };
+    unsafe { *(gc_ptr_field as *const *mut u8) }
 }
 
 struct PoolEntry {
@@ -185,11 +183,11 @@ impl Collector {
             )
         };
 
-        // `T: Sized` ensures `gc_ptr` is always a thin (one-word) pointer, so
-        // `link` sits at the same byte offset in `Root<T>` for every sized `T`.
-        // We instantiate with `i32` as a representative monomorphisation; the
-        // resulting offset is correct for any `T: Sized` due to `repr(C)`.
-        let link_offset = offset_of!(Root<i32>, link);
+        // `link` is at offset 0, so a pointer to `link` is a pointer to the start of the struct.
+        // `gc_ptr` comes right after it. Because `T` is `Sized`, the distance to `gc_ptr`
+        // is exactly the same no matter what generic type `T` is. We use `Root<i32>` as a
+        // dummy type just to calculate this fixed offset.
+        let gc_ptr_offset = offset_of!(Root<i32>, gc_ptr);
 
         let root_count = RootLink::iter_from_sentinel(sentinel_ptr).count();
         println!(
@@ -201,10 +199,11 @@ impl Collector {
         for link_ptr in RootLink::iter_from_sentinel(sentinel_ptr) {
             // SAFETY:
             // * link_ptr points to root.link inside a live Root<T>.
-            // * gc_ptr is at offset 0 (repr(C)); read is type-erased.
-            // * GcBox.marked is at offset 0 too, so the cast to GcBox<()> is safe.
+            // * link is at offset 0 (repr(C)), so link_ptr == root_ptr.
+            // * gc_ptr is thin (T: Sized); the *mut u8 read is sound.
+            // * GcBox.marked is at offset 0, so the cast to GcBox<()> is safe.
             unsafe {
-                let raw_gc_ptr = gc_ptr_from_link(link_ptr, link_offset);
+                let raw_gc_ptr = gc_ptr_from_link(link_ptr, gc_ptr_offset);
                 let gcbox = raw_gc_ptr as *mut GcBox<()>;
                 (*gcbox).marked.set(true);
             }
@@ -277,9 +276,9 @@ impl<'gc> MutationContext<'gc> {
         let gc_ptr = gc.ptr;
 
         let root = Box::pin(Root {
+            link: RootLink::new(),
             gc_ptr,
             collector_id: self.collector.id,
-            link: RootLink::new(),
             _marker: PhantomData,
         });
 
