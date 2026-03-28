@@ -52,11 +52,11 @@ pub struct WeakGc<T: Trace + ?Sized> {
 }
 
 pub struct GcContext {
-    /* collector state + root table + weak queues */
+    /* collector state + root table + weak queues (interior mutability) */
 }
 
 pub struct Scope<'gc> {
-    cx: &'gc mut GcContext,
+    cx: &'gc GcContext,
 }
 ```
 
@@ -64,12 +64,12 @@ pub struct Scope<'gc> {
 
 ```rust
 impl GcContext {
-    pub fn scope<R>(&mut self, f: impl for<'gc> FnOnce(Scope<'gc>) -> R) -> R;
-    pub fn collect(&mut self);
+    pub fn scope<R>(&self, f: impl for<'gc> FnOnce(Scope<'gc>) -> R) -> R;
+    pub fn collect(&self);
 }
 
 impl<'gc> Scope<'gc> {
-    pub fn alloc<T: Trace + 'static>(&mut self, value: T) -> Gc<T>;
+    pub fn alloc<T: Trace + 'static>(&self, value: T) -> Gc<T>;
     pub fn root<'scope, T: Trace + 'static>(
         &'scope self,
         value: &Gc<T>,
@@ -89,6 +89,10 @@ dropped.
 Implementation note: `Scope::root(&self, ...)` assumes root-slot registration is
 handled via internal mutability in collector internals, so multiple roots can
 coexist without requiring an exclusive borrow of `Scope`.
+
+Collection note: `collect(&self)` here represents a high-level API shape for a
+single-threaded runtime. Implementations should guard collection phase entry so
+collection cannot race with active mutable interior borrows.
 
 ### Pointer identity and casts (parity-preserving)
 
@@ -169,7 +173,7 @@ This proposal is intentionally structured in two layers:
 
 1. `Gc::new(value)`:
    - compatibility shim calls
-     `with_gc_context(|cx| cx.scope(|mut s| s.alloc(value)))`.
+     `with_gc_context(|cx| cx.scope(|s| s.alloc(value)))`.
 2. `WeakGc::new/upgrade`, raw-pointer helpers, and cast helpers:
    - keep the same signatures.
 3. `force_collect()`:
@@ -204,11 +208,13 @@ This keeps migration incremental and avoids an all-at-once engine rewrite.
    global-context fallback for Boa compatibility?
 2. Should `Root<'scope, 'gc, T>` be cloneable (multiple slots) or explicitly
    unique?
-3. Is `cast_ref_unchecked` still desirable, or should compatibility rely on
+3. Should scope entry be closure-only (`GcContext::scope`) or should we also
+   support an explicit long-lived scope handle for ergonomics/integration?
+4. Is `cast_ref_unchecked` still desirable, or should compatibility rely on
    value-consuming casts only?
-4. Which minimal Boa integration slice gives the best signal first:
+5. Which minimal Boa integration slice gives the best signal first:
    pointer API parity, weak semantics parity, or runtime helpers?
-5. Should reading `T` from `Gc<T>` require an explicit scope/root token, so
+6. Should reading `T` from `Gc<T>` require an explicit scope/root token, so
    stale handles cannot be dereferenced after collection in safe code?
 
 ## Relationship to tracker work
