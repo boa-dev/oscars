@@ -46,11 +46,13 @@ The `'gc` lifetime ties the pointer to its collector. Copying is free, no root c
 ### Root for Persistence
 
 ```rust
-pub struct Root<T: Trace + ?Sized> {
+pub struct Root<T: Trace> {  // T: Sized — unsized T makes gc_ptr a fat pointer,
+                             // which shifts the offset of `link` and breaks the
+                             // type erased offset_of!(Root<i32>, link) used during collection.
     gc_ptr: NonNull<GcBox<T>>,
+    /// Cross collector misuse detection only, plays no role in unlinking.
     collector_id: u64,
-    collector_roots: Rc<RefCell<RootList>>,
-    node: RootListNode,  // Intrusive list node
+    link: RootLink,  // Intrusive list node (prev/next only), no Rc back pointer needed
     _marker: PhantomData<*const ()>,
 }
 
@@ -61,18 +63,21 @@ impl<T: Trace> Root<T> {
     }
 }
 
-impl<T: Trace + ?Sized> Drop for Root<T> {
+impl<T: Trace> Drop for Root<T> {
     fn drop(&mut self) {
-        // O(1) removal from intrusive linked list
-        unsafe {
-            let node_ptr = NonNull::new_unchecked(&self.node as *const _ as *mut _);
-            self.collector_roots.borrow().remove(node_ptr);
+        // O(1) self unlink: splice prev/next together, no list reference needed
+        if self.link.is_linked() {
+            unsafe {
+                RootLink::unlink(NonNull::from(&self.link));
+            }
         }
     }
 }
 ```
 
-`Root<T>` escapes the `'gc` lifetime. Returns `Pin<Box<Root<T>>>` for stable addresses (required for intrusive list). Stores collector ID to catch cross-collector misuse.
+`Root<T>` escapes the `'gc` lifetime. Returned as `Pin<Box<Root<T>>>` for stable addresses (required by the intrusive list). Stores `collector_id` to catch cross-collector misuse at runtime — it is **not** used during unlink; `Drop` only touches the embedded `prev`/`next` pointers.
+
+**No `Rc` required.** A root only needs its own embedded `prev`/`next` pointers to remove itself from the list. The `Collector` owns a **sentinel** node; insertion and removal are pure pointer surgery with no allocation and no reference counting.
 
 ### MutationContext
 
@@ -89,6 +94,16 @@ impl<'gc> MutationContext<'gc> {
 ```
 
 Uses `&self` with `RefCell` inside for multiple concurrent allocations.
+
+### Sentinel Node & Root Traversal
+
+The `Collector` owns one **pinned sentinel** `RootLink` (a bare link node with no payload):
+
+```text
+Collector::sentinel -> root_a.link -> root_b.link -> root_c.link -> None
+```
+
+Roots insert themselves immediately after the sentinel via `RootLink::link_after`. During collection, `RootLink::iter_from_sentinel(sentinel)` starts from `sentinel.next`, so the sentinel itself is never yielded. For each link, `gc_ptr` is recovered via `offset_of!(Root<i32>, link)` and used to mark the allocation.
 
 ### Entry Point
 
@@ -136,11 +151,13 @@ Note: `trace` takes `&mut self` instead of `&self`, ensuring that potential movi
 
 **Allocation**: Uses `mempool3::PoolAllocator` with size-class pooling instead of individual `Box` allocations, avoiding fragmentation.
 
-**Safety**: 
+**Safety**:
 - Cross-context caught at compile time for `Gc`
 - Cross-collector caught at runtime for `Root`
 - Explicit `!Send`/`!Sync` prevents threading bugs
-- Intrusive linked list for O(1) root removal (avoiding O(n²) retain scans)
+- Intrusive sentinel based linked list for O(1) insertion and self-unlink
+- `Root` holds **no `Rc`**, unlink is pure pointer surgery on embedded `prev`/`next`
+- `Pin<Box<Root<T>>>` guarantees stable node addresses while linked
 
 ## Open Questions
 

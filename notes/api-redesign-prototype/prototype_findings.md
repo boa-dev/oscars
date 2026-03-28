@@ -91,35 +91,29 @@ ctx.mutate(|cx| {
 
 See compile-fail tests in `examples/api_prototype/tests/ui/` for examples of what the compiler prevents (escaping mutate(), cross context usage).
 
-### Root Cleanup
+### Root Cleanup - `intrusive_collections` Design
 
 Problem: Root registered but never removed -> memory leak. Collector dropped before root -> UAF if roots were a raw pointer.
 
-Solution: Roots use an **intrusive doubly linked list** with O(1) insertion/removal. Each `Root<T>` contains prev/next pointers, and `Pin<Box<Root<T>>>` ensures stable memory addresses. `Drop` unregisters in O(1):
+Taking the `intrusive_collections` crate as inspiration, here is what we adopted and why:
 
-```rust
-pub struct Root<T: Trace + ?Sized> {
-    gc_ptr: NonNull<GcBox<T>>,
-    collector_id: u64,
-    collector_roots: Rc<RefCell<RootList>>,
-    node: RootListNode,  // Intrusive list node with prev/next pointers
-    _marker: PhantomData<*const ()>,
-}
+#### What we adopted
 
-impl<T: Trace + ?Sized> Drop for Root<T> {
-    fn drop(&mut self) {
-        // O(1) removal from intrusive linked list
-        unsafe {
-            let node_ptr = NonNull::new_unchecked(&self.node as *const _ as *mut RootListNode);
-            self.collector_roots.borrow().remove(node_ptr);
-        }
-    }
-}
-```
+1. **Pure Link Type (`RootLink`)**: Contains only `prev` and `next` pointers. No payload.
+2. **O(1) Self Removal**: `unlink` drops nodes safely without a reference to the `Collector`.
+3. **Double Unlink Protection**: `is_linked()` enforces safe dropping.
+4. **Sentinel Node**: `Collector` owns a pinned `RootLink` as the list head.
+5. **Type Erased Marking**: `Root<T>` is `#[repr(C)]` with `gc_ptr` at offset 0. The GC walks the links and recovers pointers using `offset_of!`. No `Trace` bound is needed.
 
-The `Pin` wrapper guarantees roots have stable addresses, which is conceptually correct (roots shouldn't move) and enables the intrusive list optimization.
+#### Evolution of approaches
 
-**Previous approach** (Vec + retain): O(n²) worst case when dropping n roots (each scans entire list). Intrusive list is O(n) total.
+| Approach | Problem |
+|---|---|
+| `Vec` + `retain` | O(n^2) worst case to drop n roots |
+| `Rc<RefCell<RootList>>` | Extra allocation and `Rc` clone per root |
+| Impure link with `gc_ptr` inside | Mixes list logic with payload data |
+| **Current: Pure `RootLink`** | O(1) operations, zero `Rc`, clean separation |
+
 
 ### Allocation Strategy
 
@@ -166,6 +160,45 @@ Single threaded GC. Explicit bounds prevent cross thread bugs.
 **FFI**: Native functions receive values but lifetimes don't cross FFI. Need handle scopes or root at boundary.
 
 **Migration**: Boa has thousands of `Gc<T>` uses. Need to add `'gc` everywhere. Phasing gradually starting with isolated systems can be done
+
+### `Pin<&mut Root<T>>` for Escaping Roots
+
+Raised during review: could we use `Pin<&mut Root<T>>` instead of `Pin<Box<Root<T>>>` to avoid a heap allocation per root?
+
+**No, not for escaping roots.** Stack allocation fails because:
+
+1. `Root` is created inside `mutate()`.
+2. Escaping roots must outlive `mutate()`.
+3. `Pin<&mut>` requires a stable address.
+
+We cannot move a `&mut` out of its closure frame without changing its address and violating `Pin`
+
+`Pin<Box<Root>>` fixes this: the pointer moves out, but the heap allocation stays fixed. Cost belongs to one `Box` per root.
+
+#### Workaround: `root_in_place`
+
+Zero allocation is possible if the caller pre-allocates the `Root<T>` slot on the outer stack:
+
+```rust
+let mut slot = std::mem::MaybeUninit::<Root<JsObject>>::uninit();
+
+ctx.mutate(|cx| {
+    let obj = cx.alloc(JsObject { name: "global".into(), value: 0 });
+    let root = cx.root_in_place(&mut slot, obj);
+});
+
+let root = unsafe { slot.assume_init_ref() };
+```
+
+`root_in_place` writes into the slot, pins it, links it and returns `Pin<&mut Root<T>>`. This matches V8's `HandleScope`: no allocation, O(1) creation.
+
+**Reasons to skip this for now:**
+1. Caller must know `T` upfront to size the `MaybeUninit` slot.
+2. Requires `unsafe` to read the slot later.
+3. `Pin<Box<Root>>` is simpler and safer for validating the core API right now.
+
+*We can prototype this later if needed.*
+
 
 ## Conclusion
 

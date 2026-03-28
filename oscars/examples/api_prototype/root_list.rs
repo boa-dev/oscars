@@ -1,93 +1,101 @@
 use core::cell::Cell;
 use core::ptr::NonNull;
 
-/// Intrusive linked list node for O(1) root removal
-pub(crate) struct RootListNode {
-    pub(crate) ptr: *mut u8,
-    pub(crate) prev: Cell<Option<NonNull<RootListNode>>>,
-    pub(crate) next: Cell<Option<NonNull<RootListNode>>>,
+/// Intrusive link node, analogous to `intrusive_collections::LinkedListLink
+///
+/// Contains only `prev`/`next` pointers. Embed inside a struct (e.g. `Root<T>`)
+/// and recover the container via `offset_of!`
+///
+/// Must not move while linked. Callers enforce this with `Pin`
+pub(crate) struct RootLink {
+    prev: Cell<Option<NonNull<RootLink>>>,
+    next: Cell<Option<NonNull<RootLink>>>,
 }
 
-/// Intrusive doubly linked list of roots
-pub(crate) struct RootList {
-    head: Cell<Option<NonNull<RootListNode>>>,
-    tail: Cell<Option<NonNull<RootListNode>>>,
-    len: Cell<usize>,
-}
-
-impl RootList {
-    pub(crate) fn new() -> Self {
+impl RootLink {
+    /// Creates a new unlinked node. `const fn` so it can be used in pinned sentinels.
+    pub(crate) const fn new() -> Self {
         Self {
-            head: Cell::new(None),
-            tail: Cell::new(None),
-            len: Cell::new(0),
+            prev: Cell::new(None),
+            next: Cell::new(None),
         }
     }
 
+    /// Returns `true` if this node is currently in a list.
+    /// Uses `prev.is_some()` as the indicator; `unlink` clears it
+    #[inline]
+    pub(crate) fn is_linked(&self) -> bool {
+        self.prev.get().is_some()
+    }
+
+    /// Inserts `node` immediately after `anchor`
+    ///
     /// # Safety
-    /// Node must remain pinned until removed
-    pub(crate) unsafe fn push(&self, node: NonNull<RootListNode>) {
+    /// Both `anchor` and `node` must be pinned until unlinked.
+    pub(crate) unsafe fn link_after(anchor: NonNull<Self>, node: NonNull<Self>) {
         unsafe {
+            let anchor_ref = anchor.as_ref();
             let node_ref = node.as_ref();
-            node_ref.prev.set(self.tail.get());
-            node_ref.next.set(None);
+            let old_next = anchor_ref.next.get();
 
-            if let Some(tail) = self.tail.get() {
-                tail.as_ref().next.set(Some(node));
-            } else {
-                self.head.set(Some(node));
+            node_ref.prev.set(Some(anchor));
+            node_ref.next.set(old_next);
+            anchor_ref.next.set(Some(node));
+
+            if let Some(next) = old_next {
+                next.as_ref().prev.set(Some(node));
             }
-            self.tail.set(Some(node));
-            self.len.set(self.len.get() + 1);
         }
     }
 
+    /// Removes the node from the list in O(1). Sets `is_linked()` to false.
+    ///
     /// # Safety
-    /// Node must be in this list
-    pub(crate) unsafe fn remove(&self, node: NonNull<RootListNode>) {
+    /// `node` must currently be linked.
+    pub(crate) unsafe fn unlink(node: NonNull<Self>) {
         unsafe {
             let node_ref = node.as_ref();
             let prev = node_ref.prev.get();
             let next = node_ref.next.get();
 
-            match prev {
-                Some(p) => p.as_ref().next.set(next),
-                None => self.head.set(next),
+            // Re-wire neighbours around this node.
+            if let Some(p) = prev {
+                p.as_ref().next.set(next);
+            }
+            if let Some(n) = next {
+                n.as_ref().prev.set(prev);
             }
 
-            match next {
-                Some(n) => n.as_ref().prev.set(prev),
-                None => self.tail.set(prev),
-            }
-
-            self.len.set(self.len.get() - 1);
+            // Clear to make is_linked() == false and catch double-unlink bugs.
+            node_ref.prev.set(None);
+            node_ref.next.set(None);
         }
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.len.get()
-    }
-
-    pub(crate) fn iter_ptrs(&self) -> impl Iterator<Item = *mut u8> + '_ {
+    /// Iterates all nodes after the sentinel. Skips the sentinel itself.
+    /// Caller uses `offset_of!` to get the `Root<T>` from each yielded link.
+    pub(crate) fn iter_from_sentinel(
+        sentinel: NonNull<Self>,
+    ) -> impl Iterator<Item = NonNull<Self>> {
         struct Iter {
-            current: Option<NonNull<RootListNode>>,
+            current: Option<NonNull<RootLink>>,
         }
 
         impl Iterator for Iter {
-            type Item = *mut u8;
+            type Item = NonNull<RootLink>;
 
             fn next(&mut self) -> Option<Self::Item> {
                 let node = self.current?;
+                // SAFETY: nodes are pinned and valid during iteration.
                 unsafe {
-                    let node_ref = node.as_ref();
-                    self.current = node_ref.next.get();
-                    Some(node_ref.ptr)
+                    self.current = node.as_ref().next.get();
                 }
+                Some(node)
             }
         }
 
-        Iter {
-            current: self.head.get(),
-        }
+        // SAFETY: sentinel is pinned and owned by Collector.
+        let first = unsafe { sentinel.as_ref().next.get() };
+        Iter { current: first }
     }
 }
