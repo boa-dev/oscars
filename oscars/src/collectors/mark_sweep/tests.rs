@@ -150,6 +150,28 @@ fn ptr_eq_distinguishes_equal_values() {
 }
 
 #[test]
+fn cast_ref_unchecked_preserves_identity_and_value() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_page_size(256)
+        .with_heap_threshold(512);
+
+    let typed = Gc::new_in(13u32, collector);
+    let erased_as_u64: Gc<u64> = unsafe { Gc::cast_unchecked(typed.clone()) };
+
+    // SAFETY: `erased_as_u64` points to an allocation that actually stores `u32`.
+    let recovered_ref: &Gc<u32> = unsafe { Gc::cast_ref_unchecked(&erased_as_u64) };
+
+    assert_eq!(
+        **recovered_ref, 13u32,
+        "cast_ref_unchecked recovered wrong value"
+    );
+    assert!(
+        Gc::ptr_eq(&typed, recovered_ref),
+        "cast_ref_unchecked should preserve pointer identity"
+    );
+}
+
+#[test]
 fn multi_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()
         .with_page_size(128)
