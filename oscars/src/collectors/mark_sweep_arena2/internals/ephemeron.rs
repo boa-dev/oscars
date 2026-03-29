@@ -62,6 +62,21 @@ impl<K: Trace, V: Trace> Ephemeron<K, V> {
     }
 }
 
+impl<K: Trace> Ephemeron<K, ()> {
+    pub(crate) fn new_empty(color: TraceColor) -> Self {
+        Self {
+            value: GcBox::new_in((), color),
+            vtable: vtable_of::<K, ()>(),
+            key: WeakGcBox::new_empty(),
+            active: core::cell::Cell::new(true),
+        }
+    }
+
+    pub(crate) fn set_key(&self, key: &Gc<K>) {
+        self.key.inner_ptr.set(Some(key.inner_ptr));
+    }
+}
+
 impl<K: Trace, V: Trace> Ephemeron<K, V> {
     pub(crate) fn trace_fn(&self) -> EphemeronTraceFn {
         self.vtable.trace_fn
