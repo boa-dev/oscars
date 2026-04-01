@@ -161,6 +161,75 @@ fn ptr_eq_distinguishes_equal_values() {
 }
 
 #[test]
+fn gc_raw_roundtrip_preserves_identity() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
+
+    let original = Gc::new_in(7u32, collector);
+    let raw = Gc::into_raw(original.clone());
+    // SAFETY: `raw` came directly from `Gc::into_raw` above and is still live.
+    let revived = unsafe { Gc::from_raw(raw) };
+
+    assert!(
+        Gc::ptr_eq(&original, &revived),
+        "into_raw/from_raw should preserve pointer identity"
+    );
+    assert_eq!(*revived, 7u32, "round-tripped pointer value changed");
+}
+
+#[test]
+fn gc_downcast_and_cast_unchecked_parity() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
+
+    let typed = Gc::new_in(13u32, collector);
+    let erased_as_u64: Gc<u64> = unsafe { Gc::cast_unchecked(typed.clone()) };
+    assert!(
+        Gc::downcast::<u64>(erased_as_u64).is_none(),
+        "downcast should fail when runtime type does not match target"
+    );
+
+    let erased_as_u64: Gc<u64> = unsafe { Gc::cast_unchecked(typed.clone()) };
+    let recovered =
+        Gc::downcast::<u32>(erased_as_u64).expect("downcast should succeed for real runtime type");
+
+    assert_eq!(*recovered, 13u32, "downcast recovered wrong value");
+    assert!(
+        Gc::ptr_eq(&typed, &recovered),
+        "downcast should recover the same allocation"
+    );
+}
+
+#[test]
+fn weak_upgrade_tracks_liveness() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
+
+    let strong = Gc::new_in(99u32, collector);
+    let weak = WeakGc::new_in(&strong, collector);
+
+    let upgraded = weak
+        .upgrade()
+        .expect("weak should upgrade while strong is alive");
+    assert!(
+        Gc::ptr_eq(&strong, &upgraded),
+        "upgrade should return a pointer to the same allocation"
+    );
+
+    drop(upgraded);
+    drop(strong);
+    collector.collect();
+
+    assert!(
+        weak.upgrade().is_none(),
+        "upgrade should fail after referent is collected"
+    );
+}
+
+#[test]
 fn cast_ref_unchecked_preserves_identity_and_value() {
     let collector = &mut MarkSweepGarbageCollector::default()
         .with_arena_size(256)
