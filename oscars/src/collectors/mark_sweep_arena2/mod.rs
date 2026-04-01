@@ -154,41 +154,41 @@ impl MarkSweepGarbageCollector {
     //
     // NOTE: This intentionally differs from arena2's sweep_all_queues.
     // arena3 uses`free_slot` calls to reclaim memory.
-    // arena2 uses counter based tracking and reclaims automatically
+    // arena2 uses a bitmap (`mark_dropped`) and reclaims automatically
     fn sweep_all_queues(&self) {
         let ephemerons = core::mem::take(&mut *self.ephemeron_queue.borrow_mut());
         for ephemeron in ephemerons {
             unsafe {
-                let ptr = ephemeron.as_ptr() as *const u8;
+                let e_ptr = ephemeron.as_ptr();
                 core::ptr::drop_in_place(ArenaHeapItem::as_value_ptr(ephemeron));
-                self.allocator.borrow_mut().mark_dropped(ptr);
+                (*e_ptr).mark_dropped();
             }
         }
 
         let roots = core::mem::take(&mut *self.root_queue.borrow_mut());
         for node in roots {
             unsafe {
-                let ptr = node.as_ptr() as *const u8;
+                let n_ptr = node.as_ptr();
                 core::ptr::drop_in_place(ArenaHeapItem::as_value_ptr(node));
-                self.allocator.borrow_mut().mark_dropped(ptr);
+                (*n_ptr).mark_dropped();
             }
         }
 
         let pending_e = core::mem::take(&mut *self.pending_ephemeron_queue.borrow_mut());
         for ephemeron in pending_e {
             unsafe {
-                let ptr = ephemeron.as_ptr() as *const u8;
+                let e_ptr = ephemeron.as_ptr();
                 core::ptr::drop_in_place(ArenaHeapItem::as_value_ptr(ephemeron));
-                self.allocator.borrow_mut().mark_dropped(ptr);
+                (*e_ptr).mark_dropped();
             }
         }
 
         let pending_r = core::mem::take(&mut *self.pending_root_queue.borrow_mut());
         for node in pending_r {
             unsafe {
-                let ptr = node.as_ptr() as *const u8;
+                let n_ptr = node.as_ptr();
                 core::ptr::drop_in_place(ArenaHeapItem::as_value_ptr(node));
-                self.allocator.borrow_mut().mark_dropped(ptr);
+                (*n_ptr).mark_dropped();
             }
         }
     }
@@ -330,9 +330,8 @@ impl MarkSweepGarbageCollector {
 
             unsafe {
                 drop_fn(ephemeron);
-                self.allocator
-                    .borrow_mut()
-                    .mark_dropped(ephemeron.as_ptr() as *const u8);
+                let e_mut = ephemeron.as_ptr();
+                (*e_mut).mark_dropped();
             }
         }
         self.ephemeron_queue.borrow_mut().extend(still_alive);
@@ -349,18 +348,17 @@ impl MarkSweepGarbageCollector {
                 still_alive_roots.push(node);
                 continue;
             }
-            // INVARIANT: mark_dropped must be called after drop_fn returns and
+            // INVARIANT: free_slot must be called after drop_fn returns and
             // while is_collecting is still true. Violating this would leave the
-            // counter stale for an allocation that may fire from inside drop_fn.
+            // bitmap stale for an allocation that may fire from inside drop_fn.
             debug_assert!(
                 self.is_collecting.get(),
-                "mark_dropped called outside a collection — ordering invariant violated"
+                "free_slot called outside a collection — ordering invariant violated"
             );
             unsafe {
                 drop_fn(node);
-                self.allocator
-                    .borrow_mut()
-                    .mark_dropped(node.as_ptr() as *const u8);
+                let n_mut = node.as_ptr();
+                (*n_mut).mark_dropped();
             }
         }
         self.root_queue.borrow_mut().extend(still_alive_roots);

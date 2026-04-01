@@ -193,34 +193,12 @@ impl<'alloc> ArenaAllocator<'alloc> {
         }
     }
 
-    /// Mark `ptr` dropped in its arena.
-    ///
-    /// # Safety
-    /// `ptr` must belong to this allocator and be marked once.
-    pub unsafe fn mark_dropped(&mut self, ptr: *const u8) {
-        let ptr_addr = ptr as usize;
-        for arena in &self.arenas {
-            let start = arena.buffer.as_ptr() as usize;
-            let end = start + arena.layout.size();
-            if ptr_addr >= start && ptr_addr < end {
-                arena.mark_dropped();
-                return;
-            }
-        }
-        // Recycled arenas should not match, but check anyway
-        for arena in self.recycled_arenas.iter().flatten() {
-            let start = arena.buffer.as_ptr() as usize;
-            let end = start + arena.layout.size();
-            if ptr_addr >= start && ptr_addr < end {
-                arena.mark_dropped();
-                return;
-            }
-        }
-        // Pointer not from this allocator, likely double free or foreign allocator.
-        debug_assert!(
-            false,
-            "mark_dropped: pointer {ptr_addr:#x} not owned by any arena; \
-             possible double-free or pointer from a foreign allocator"
-        );
+    // checks dropped items across all arenas
+    #[cfg(test)]
+    pub fn arena_drop_states(&self) -> rust_alloc::vec::Vec<rust_alloc::vec::Vec<bool>> {
+        self.arenas
+            .iter()
+            .map(|arena| arena.item_drop_states())
+            .collect()
     }
 }
