@@ -1,8 +1,22 @@
 use core::{cell::Cell, marker::PhantomData, ptr::NonNull};
 
-use rust_alloc::alloc::{Layout, alloc, dealloc, handle_alloc_error};
+use rust_alloc::alloc::{Layout, alloc, dealloc};
 
 use crate::alloc::mempool3::PoolAllocError;
+
+/// Abort the process on OS malloc failure.
+#[inline(never)]
+#[cold]
+fn abort_on_alloc_failure() -> ! {
+    #[cfg(feature = "std")]
+    {
+        std::process::abort();
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        panic!("OS memory allocation failed");
+    }
+}
 
 /// free slot pointing to the next free slot
 /// `repr(C)` puts `next` exactly at the start of the slot
@@ -143,7 +157,8 @@ impl SlotPool {
         let buffer = unsafe {
             let ptr = alloc(layout);
             let Some(nn) = NonNull::new(ptr) else {
-                handle_alloc_error(layout)
+                // Abort on OS malloc failure per spec
+                abort_on_alloc_failure()
             };
             nn
         };
@@ -331,7 +346,8 @@ impl BumpPage {
         let buffer = unsafe {
             let ptr = alloc(layout);
             let Some(nn) = NonNull::new(ptr) else {
-                handle_alloc_error(layout)
+                // Abort on OS malloc failure per spec
+                abort_on_alloc_failure()
             };
             nn
         };

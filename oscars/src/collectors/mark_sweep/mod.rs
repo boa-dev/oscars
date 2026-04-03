@@ -83,6 +83,13 @@ impl MarkSweepGarbageCollector {
         self
     }
 
+    pub fn with_max_heap_size(mut self, max_heap_size: u64) -> Self {
+        // Use allocator's method to ensure consistent saturation behavior
+        *self.allocator.get_mut() =
+            core::mem::take(self.allocator.get_mut()).with_max_heap_size(max_heap_size);
+        self
+    }
+
     pub fn with_page_size(mut self, page_size: usize) -> Self {
         self.allocator.get_mut().page_size = page_size;
         self

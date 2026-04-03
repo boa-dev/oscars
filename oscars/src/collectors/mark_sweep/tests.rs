@@ -1,3 +1,4 @@
+use crate::collectors::mark_sweep::Collector;
 use crate::collectors::mark_sweep::MarkSweepGarbageCollector;
 use crate::mark_sweep::{Finalize, Trace};
 
@@ -12,7 +13,7 @@ fn basic_gc() {
         .with_page_size(64)
         .with_heap_threshold(128);
 
-    let gc = Gc::new_in(GcRefCell::new(10), collector);
+    let gc = Gc::new_in(GcRefCell::new(10), collector).expect("test allocation");
 
     assert_eq!(collector.allocator.borrow().pools_len(), 1);
 
@@ -32,9 +33,9 @@ fn nested_gc() {
     // We are allocating 32 bytes, per GC, which with the linked list pointer should be
     // 36 or 40 bytes depending on the system.
 
-    let gc = Gc::new_in(GcRefCell::new(10), collector);
+    let gc = Gc::new_in(GcRefCell::new(10), collector).expect("test allocation");
 
-    let nested_gc = Gc::new_in(gc.clone(), collector);
+    let nested_gc = Gc::new_in(gc.clone(), collector).expect("test allocation");
 
     drop(gc);
 
@@ -43,7 +44,7 @@ fn nested_gc() {
     assert_eq!(collector.allocator.borrow().pools_len(), 2);
     assert_eq!(*nested_gc.borrow(), 10);
 
-    let new_gc = Gc::new_in(GcRefCell::new(8), collector);
+    let new_gc = Gc::new_in(GcRefCell::new(8), collector).expect("test allocation");
 
     assert_eq!(collector.allocator.borrow().pools_len(), 2);
 
@@ -72,7 +73,7 @@ fn gc_recursion() {
     #[cfg(not(miri))]
     const COUNT: usize = 2_000;
 
-    let mut root = Gc::new_in(S { i: 0, next: None }, collector);
+    let mut root = Gc::new_in(S { i: 0, next: None }, collector).expect("test allocation failed");
     for i in 1..COUNT {
         root = Gc::new_in(
             S {
@@ -80,7 +81,8 @@ fn gc_recursion() {
                 next: Some(root.clone()),
             },
             collector,
-        );
+        )
+        .expect("test allocation failed");
     }
 
     drop(root);
@@ -93,7 +95,7 @@ fn drop_gc() {
         .with_page_size(256)
         .with_heap_threshold(512);
 
-    let gc = Gc::new_in(GcRefCell::new(7u64), collector);
+    let gc = Gc::new_in(GcRefCell::new(7u64), collector).expect("test allocation");
     assert_eq!(collector.allocator.borrow().pools_len(), 1);
 
     collector.collect();
@@ -116,7 +118,7 @@ fn clone_gc() {
         .with_page_size(256)
         .with_heap_threshold(512);
 
-    let gc = Gc::new_in(GcRefCell::new(42u32), collector);
+    let gc = Gc::new_in(GcRefCell::new(42u32), collector).expect("test allocation");
     let gc_clone = gc.clone();
 
     drop(gc);
@@ -135,9 +137,9 @@ fn ptr_eq_distinguishes_equal_values() {
         .with_page_size(256)
         .with_heap_threshold(512);
 
-    let first = Gc::new_in(GcRefCell::new(42u32), collector);
+    let first = Gc::new_in(GcRefCell::new(42u32), collector).expect("test allocation");
     let first_clone = first.clone();
-    let second = Gc::new_in(GcRefCell::new(42u32), collector);
+    let second = Gc::new_in(GcRefCell::new(42u32), collector).expect("test allocation");
 
     assert!(
         Gc::ptr_eq(&first, &first_clone),
@@ -155,7 +157,7 @@ fn gc_raw_roundtrip_preserves_identity() {
         .with_page_size(256)
         .with_heap_threshold(512);
 
-    let original = Gc::new_in(7u32, collector);
+    let original = Gc::new_in(7u32, collector).expect("test allocation failed");
     let raw = Gc::into_raw(original.clone());
     // SAFETY: `raw` came directly from `Gc::into_raw` above and is still live.
     let revived = unsafe { Gc::from_raw(raw) };
@@ -173,7 +175,7 @@ fn gc_downcast_and_cast_unchecked_parity() {
         .with_page_size(256)
         .with_heap_threshold(512);
 
-    let typed = Gc::new_in(13u32, collector);
+    let typed = Gc::new_in(13u32, collector).expect("test allocation failed");
 
     let erased_as_u64: Gc<u64> = unsafe { Gc::cast_unchecked(typed.clone()) };
     assert!(
@@ -198,7 +200,7 @@ fn weak_upgrade_tracks_liveness() {
         .with_page_size(256)
         .with_heap_threshold(512);
 
-    let strong = Gc::new_in(99u32, collector);
+    let strong = Gc::new_in(99u32, collector).expect("test allocation failed");
     let weak = WeakGc::new_in(&strong, collector);
 
     let upgraded = weak
@@ -227,7 +229,7 @@ fn multi_gc() {
 
     for _ in 0..3 {
         let objects: rust_alloc::vec::Vec<_> = (0..4)
-            .map(|i| Gc::new_in(GcRefCell::new(i as u64), collector))
+            .map(|i| Gc::new_in(GcRefCell::new(i as u64), collector).expect("test allocation"))
             .collect();
 
         assert!(collector.allocator.borrow().pools_len() >= 1);
@@ -249,12 +251,12 @@ fn pressure_gc() {
         .with_page_size(128)
         .with_heap_threshold(256);
 
-    let root = Gc::new_in(GcRefCell::new(99u64), collector);
+    let root = Gc::new_in(GcRefCell::new(99u64), collector).expect("test allocation");
 
     // Keeping all temporaries alive at once so the allocator hits the threshold
     // and fires a collection while root is still live
     let _temporaries: rust_alloc::vec::Vec<_> = (0..20u64)
-        .map(|i| Gc::new_in(GcRefCell::new(i), collector))
+        .map(|i| Gc::new_in(GcRefCell::new(i), collector).expect("test allocation"))
         .collect();
 
     assert_eq!(*root.borrow(), 99u64, "root collected under pressure");
@@ -266,7 +268,7 @@ fn borrow_mut_gc() {
         .with_page_size(256)
         .with_heap_threshold(512);
 
-    let gc = Gc::new_in(GcRefCell::new(0u64), collector);
+    let gc = Gc::new_in(GcRefCell::new(0u64), collector).expect("test allocation");
     *gc.borrow_mut() = 42;
 
     collector.collect();
@@ -280,7 +282,7 @@ fn long_lived_gc() {
         .with_page_size(256)
         .with_heap_threshold(512);
 
-    let gc = Gc::new_in(GcRefCell::new(77u64), collector);
+    let gc = Gc::new_in(GcRefCell::new(77u64), collector).expect("test allocation");
 
     for _ in 0..10 {
         collector.collect();
@@ -336,7 +338,7 @@ fn simple_weak_gc_validate() {
         .with_heap_threshold(512);
 
     // New item!
-    let gc = Gc::new_in(DropSpy::new(10), collector);
+    let gc = Gc::new_in(DropSpy::new(10), collector).expect("test allocation");
 
     let weak = {
         let gc_two = gc.clone();
@@ -363,7 +365,7 @@ fn basic_wm() {
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
-    let key = Gc::new_in(42u64, collector);
+    let key = Gc::new_in(42u64, collector).expect("test allocation failed");
 
     map.insert(&key.clone(), 100u64, collector);
 
@@ -378,7 +380,7 @@ fn dead_wm() {
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
-    let key = Gc::new_in(42u64, collector);
+    let key = Gc::new_in(42u64, collector).expect("test allocation failed");
 
     map.insert(&key.clone(), 100u64, collector);
     assert_eq!(map.get(&key.clone()), Some(&100u64));
@@ -400,7 +402,7 @@ fn update_wm() {
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
-    let key = Gc::new_in(1u64, collector);
+    let key = Gc::new_in(1u64, collector).expect("test allocation failed");
 
     // insert then update so that old value doesn't leak
     map.insert(&key.clone(), 10u64, collector);
@@ -464,7 +466,7 @@ fn remove_wm() {
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
-    let key = Gc::new_in(1u64, collector);
+    let key = Gc::new_in(1u64, collector).expect("test allocation failed");
 
     map.insert(&key.clone(), 99u64, collector);
     assert_eq!(map.get(&key.clone()), Some(&99u64));
@@ -492,7 +494,7 @@ fn prune_wm() {
 
     let mut map = WeakMap::new(collector);
 
-    let key1 = Gc::new_in(1u64, collector);
+    let key1 = Gc::new_in(1u64, collector).expect("test allocation failed");
     assert_eq!(
         collector.allocator.borrow().pools_len(),
         1,
@@ -512,7 +514,7 @@ fn prune_wm() {
         "after first collect"
     );
 
-    let key2 = Gc::new_in(2u64, collector);
+    let key2 = Gc::new_in(2u64, collector).expect("test allocation failed");
     assert_eq!(
         collector.allocator.borrow().pools_len(),
         1,
@@ -540,7 +542,7 @@ fn remove_then_collect() {
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
-    let key = Gc::new_in(1u64, collector);
+    let key = Gc::new_in(1u64, collector).expect("test allocation failed");
 
     map.insert(&key.clone(), 99u64, collector);
     let removed = map.remove(&key.clone());
@@ -564,7 +566,7 @@ fn alive_wm() {
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
-    let key = Gc::new_in(42u64, collector);
+    let key = Gc::new_in(42u64, collector).expect("test allocation failed");
 
     map.insert(&key.clone(), 100u64, collector);
     assert_eq!(map.get(&key.clone()), Some(&100u64));
@@ -588,8 +590,8 @@ fn two_distinct_keys_wm() {
         .with_heap_threshold(512);
 
     let mut map = WeakMap::new(collector);
-    let key1 = Gc::new_in(1u64, collector);
-    let key2 = Gc::new_in(2u64, collector);
+    let key1 = Gc::new_in(1u64, collector).expect("test allocation failed");
+    let key2 = Gc::new_in(2u64, collector).expect("test allocation failed");
 
     map.insert(&key1, 10u64, collector);
     map.insert(&key2, 20u64, collector);
@@ -641,7 +643,7 @@ fn two_maps_same_key_wm() {
         .with_page_size(256)
         .with_heap_threshold(512);
 
-    let key = Gc::new_in(1u64, collector);
+    let key = Gc::new_in(1u64, collector).expect("test allocation failed");
     let mut map1 = WeakMap::new(collector);
     let mut map2 = WeakMap::new(collector);
 
@@ -669,7 +671,7 @@ fn drop_map_with_live_key_wm() {
         .with_page_size(256)
         .with_heap_threshold(512);
 
-    let key = Gc::new_in(42u64, collector);
+    let key = Gc::new_in(42u64, collector).expect("test allocation failed");
 
     {
         let mut map = WeakMap::new(collector);
@@ -727,7 +729,8 @@ mod gc_edge_cases {
         #[cfg(not(miri))]
         const DEPTH: usize = 1_000;
 
-        let mut head = Gc::new_in(Node { _id: 0, next: None }, collector);
+        let mut head =
+            Gc::new_in(Node { _id: 0, next: None }, collector).expect("test allocation failed");
         for i in 1..=DEPTH {
             head = Gc::new_in(
                 Node {
@@ -735,7 +738,8 @@ mod gc_edge_cases {
                     next: Some(head),
                 },
                 collector,
-            );
+            )
+            .expect("test allocation failed");
         }
 
         // Mark the entire deep chain – must not overflow the stack.
@@ -767,14 +771,16 @@ mod gc_edge_cases {
                 next: GcRefCell::new(None),
             },
             collector,
-        );
+        )
+        .expect("test allocation failed");
         let node_b = Gc::new_in(
             CycleNode {
                 _label: 2,
                 next: GcRefCell::new(Some(node_a.clone())),
             },
             collector,
-        );
+        )
+        .expect("test allocation failed");
 
         // Close the cycle: A → B → A
         *node_a.next.borrow_mut() = Some(node_b.clone());
@@ -798,7 +804,7 @@ mod gc_edge_cases {
             .with_heap_threshold(2048);
 
         let mut map = WeakMap::new(collector);
-        let key = Gc::new_in(42u64, collector);
+        let key = Gc::new_in(42u64, collector).expect("test allocation failed");
 
         map.insert(&key, 100u64, collector);
 
@@ -844,9 +850,9 @@ mod gc_edge_cases {
             }
         }
 
-        let flag = Gc::new_in(GcRefCell::new(false), collector);
+        let flag = Gc::new_in(GcRefCell::new(false), collector).expect("test allocation");
 
-        let obj = Gc::new_in(Flagged { flag: flag.clone() }, collector);
+        let obj = Gc::new_in(Flagged { flag: flag.clone() }, collector).expect("test allocation");
 
         drop(obj);
         collector.collect();
@@ -865,7 +871,7 @@ mod gc_edge_cases {
             .with_page_size(256)
             .with_heap_threshold(512);
 
-        let root = Gc::new_in(GcRefCell::new(99u64), collector);
+        let root = Gc::new_in(GcRefCell::new(99u64), collector).expect("test allocation");
 
         for _ in 0..20 {
             collector.collect();
@@ -899,9 +905,9 @@ mod gc_edge_cases {
         #[cfg(not(miri))]
         const LEN: usize = 500;
 
-        let mut head = Gc::new_in(Chain { next: None }, collector);
+        let mut head = Gc::new_in(Chain { next: None }, collector).expect("test allocation failed");
         for _ in 1..LEN {
-            head = Gc::new_in(Chain { next: Some(head) }, collector);
+            head = Gc::new_in(Chain { next: Some(head) }, collector).expect("test allocation");
         }
 
         // Entire chain is now unreachable.
@@ -928,16 +934,16 @@ mod thin_vec_trace {
             .with_page_size(4096)
             .with_heap_threshold(8_192);
 
-        let a = Gc::new_in(GcRefCell::new(1u64), collector);
-        let b = Gc::new_in(GcRefCell::new(2u64), collector);
-        let c = Gc::new_in(GcRefCell::new(3u64), collector);
+        let a = Gc::new_in(GcRefCell::new(1u64), collector).expect("test allocation");
+        let b = Gc::new_in(GcRefCell::new(2u64), collector).expect("test allocation");
+        let c = Gc::new_in(GcRefCell::new(3u64), collector).expect("test allocation");
 
         let mut vec: ThinVec<Gc<GcRefCell<u64>>> = ThinVec::new();
         vec.push(a.clone());
         vec.push(b.clone());
         vec.push(c.clone());
 
-        let container = Gc::new_in(vec, collector);
+        let container = Gc::new_in(vec, collector).expect("test allocation failed");
 
         collector.collect();
 
@@ -960,7 +966,7 @@ mod thin_vec_trace {
             .with_heap_threshold(512);
 
         let empty: ThinVec<Gc<u64>> = ThinVec::new();
-        let gc = Gc::new_in(empty, collector);
+        let gc = Gc::new_in(empty, collector).expect("test allocation failed");
 
         collector.collect();
 
@@ -987,7 +993,8 @@ mod thin_vec_trace {
                 children: ThinVec::new(),
             },
             collector,
-        );
+        )
+        .expect("test allocation");
 
         let mut root_children = ThinVec::new();
         root_children.push(leaf.clone());
@@ -998,7 +1005,8 @@ mod thin_vec_trace {
                 children: root_children,
             },
             collector,
-        );
+        )
+        .expect("test allocation");
 
         collector.collect();
 
@@ -1081,7 +1089,7 @@ fn collector_drop_runs_ephemeron_value_destructors_for_live_values() {
             .with_heap_threshold(256);
 
         let mut map = WeakMap::new(collector);
-        let key = Gc::new_in(1u64, collector);
+        let key = Gc::new_in(1u64, collector).expect("test allocation failed");
 
         map.insert(
             &key,
@@ -1171,7 +1179,7 @@ fn collector_drop_runs_ephemeron_value_finalizers_for_live_values() {
             .with_heap_threshold(256);
 
         let mut map = WeakMap::new(collector);
-        let key = Gc::new_in(1u64, collector);
+        let key = Gc::new_in(1u64, collector).expect("test allocation failed");
 
         map.insert(
             &key,
@@ -1189,4 +1197,54 @@ fn collector_drop_runs_ephemeron_value_finalizers_for_live_values() {
         1,
         "collector drop should run ephemeron value finalizer"
     );
+}
+
+#[test]
+fn max_heap_limit() {
+    use crate::alloc::mempool3::PoolAllocError;
+
+    let collector = MarkSweepGarbageCollector::default()
+        .with_page_size(256)
+        .with_max_heap_size(1024);
+
+    let mut allocation_count = 0;
+
+    loop {
+        match collector.alloc_gc_node(vec![0u8; 32]) {
+            Ok(_ptr) => {
+                allocation_count += 1;
+            }
+            Err(PoolAllocError::OutOfMemory) => break, // Hit the limit!
+            Err(e) => panic!("Unexpected error: {:?}", e),
+        }
+
+        // Safety: prevent infinite loop
+        if allocation_count > 1000 {
+            panic!("Should have hit heap limit by now");
+        }
+    }
+
+    // Should have allocated at least some objects
+    assert!(allocation_count > 0, "should allocate before hitting limit");
+    assert!(
+        allocation_count < 100,
+        "should hit limit quickly with 1KB max"
+    );
+
+    assert!(matches!(
+        collector.alloc_gc_node(vec![0u8; 32]),
+        Err(PoolAllocError::OutOfMemory)
+    ));
+}
+
+#[test]
+fn max_heap_default() {
+    let collector = MarkSweepGarbageCollector::default();
+
+    // Should be able to allocate many objects with default config
+    for _ in 0..1000 {
+        let _gc = Gc::new_in(vec![0u8; 64], &collector);
+    }
+
+    // No failures expected with unlimited heap
 }
