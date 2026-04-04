@@ -234,3 +234,107 @@ fn max_recycled_cap_respected() {
     assert_eq!(allocator.recycled_pools.len(), 1);
     assert!(allocator.current_heap_size < heap_before);
 }
+
+#[test]
+fn max_heap_enforced() {
+    let mut allocator = PoolAllocator::default()
+        .with_page_size(512)
+        .with_max_heap_size(1024);
+
+    // Allocate until we hit the limit
+    let mut allocations = Vec::new();
+    loop {
+        match allocator.try_alloc(0u64) {
+            Ok(ptr) => allocations.push(ptr),
+            Err(crate::alloc::mempool3::PoolAllocError::OutOfMemory) => break,
+            Err(e) => panic!("unexpected error: {:?}", e),
+        }
+    }
+
+    assert!(
+        !allocations.is_empty(),
+        "should allocate at least some items before hitting limit"
+    );
+
+    assert!(allocator.current_heap_size <= 1024);
+
+    // Further allocations should fail
+    assert!(matches!(
+        allocator.try_alloc(0u64),
+        Err(crate::alloc::mempool3::PoolAllocError::OutOfMemory)
+    ));
+}
+
+#[test]
+fn max_heap_default() {
+    let mut allocator = PoolAllocator::default();
+
+    assert_eq!(allocator.max_heap_size, usize::MAX);
+
+    for _ in 0..1000 {
+        allocator
+            .try_alloc(0u64)
+            .expect("allocation should succeed with unlimited heap");
+    }
+}
+
+#[test]
+fn max_heap_u64_max_saturates() {
+    // Setting u64::MAX should saturate to usize::MAX
+    let allocator = PoolAllocator::default().with_max_heap_size(u64::MAX);
+
+    assert_eq!(allocator.max_heap_size, usize::MAX);
+}
+
+#[test]
+fn max_heap_accepts_large_values() {
+    let allocator = PoolAllocator::default().with_max_heap_size(1024 * 1024 * 1024); // 1GB
+
+    assert_eq!(allocator.max_heap_size, 1024 * 1024 * 1024);
+}
+
+#[test]
+fn max_heap_gc_reclaim() {
+    let mut allocator = PoolAllocator::default()
+        .with_page_size(512)
+        .with_max_heap_size(2048);
+
+    // Allocate to near the limit
+    let mut first_batch = Vec::new();
+    for _ in 0..50 {
+        match allocator.try_alloc(0u64) {
+            Ok(ptr) => first_batch.push(ptr),
+            Err(_) => break,
+        }
+    }
+
+    let pools_before = allocator.pools_len();
+    assert!(pools_before > 0);
+
+    for ptr in &first_batch {
+        unsafe {
+            allocator.free_slot_typed(ptr.as_ptr());
+        }
+    }
+
+    // Disable recycling to force actual deallocation
+    allocator.max_recycled = 0;
+    allocator.drop_empty_pools();
+
+    // Pool count should decrease after cleanup
+    let pools_after = allocator.pools_len();
+    assert!(pools_after < pools_before || pools_after == 0);
+
+    // Should be able to allocate again after GC
+    let mut second_batch = Vec::new();
+    for _ in 0..20 {
+        match allocator.try_alloc(0u64) {
+            Ok(ptr) => second_batch.push(ptr),
+            Err(_) => break,
+        }
+    }
+    assert!(
+        !second_batch.is_empty(),
+        "should be able to allocate after GC reclaims memory"
+    );
+}

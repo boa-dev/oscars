@@ -244,6 +244,7 @@ fn bench_deep(c: &mut Criterion) {
                     }
                 };
                 OscarsGc::new_in(OscarsGcRefCell::new(node), collector)
+                    .expect("benchmark allocation")
             }
 
             let root = build_tree(5, &collector);

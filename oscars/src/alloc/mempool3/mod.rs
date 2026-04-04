@@ -50,6 +50,9 @@ pub struct PoolAllocator<'alloc> {
     pub(crate) heap_threshold: usize,
     pub(crate) page_size: usize,
     pub(crate) current_heap_size: usize,
+    // hard memory limit before GC allocation fails with OutOfMemory.
+    // defaults to usize::MAX (effectively unlimited).
+    pub(crate) max_heap_size: usize,
     // per size-class slot pools
     pub(crate) slot_pools: Vec<SlotPool>,
     // bump pages for raw byte allocs
@@ -74,6 +77,7 @@ impl<'alloc> Default for PoolAllocator<'alloc> {
             heap_threshold: DEFAULT_HEAP_THRESHOLD,
             page_size: DEFAULT_PAGE_SIZE,
             current_heap_size: 0,
+            max_heap_size: usize::MAX,
             slot_pools: Vec::new(),
             bump_pages: Vec::new(),
             free_cache: Cell::new(usize::MAX),
@@ -108,6 +112,12 @@ impl<'alloc> PoolAllocator<'alloc> {
     }
     pub fn with_heap_threshold(mut self, heap_threshold: usize) -> Self {
         self.heap_threshold = heap_threshold;
+        self
+    }
+
+    pub fn with_max_heap_size(mut self, max_heap_size: u64) -> Self {
+        // Saturate to usize::MAX on 32-bit platforms
+        self.max_heap_size = max_heap_size.min(usize::MAX as u64) as usize;
         self
     }
 
@@ -229,6 +239,17 @@ impl<'alloc> PoolAllocator<'alloc> {
 
         // Recycle list had no match, allocate a fresh page from the OS.
         let total = self.page_size.max(slot_size * 4);
+
+        // Check if allocation would exceed max_heap_size
+        if let Some(new_size) = self.current_heap_size.checked_add(total) {
+            if new_size > self.max_heap_size {
+                return Err(PoolAllocError::OutOfMemory);
+            }
+        } else {
+            // Overflow in size calculation
+            return Err(PoolAllocError::OutOfMemory);
+        }
+
         let new_pool = SlotPool::try_init(slot_size, total, 16)?;
         self.current_heap_size += new_pool.layout.size();
         let slot_ptr = new_pool.alloc_slot().ok_or(PoolAllocError::OutOfMemory)?;
@@ -294,6 +315,17 @@ impl<'alloc> PoolAllocator<'alloc> {
         let margin = 64;
         let total = self.page_size.max(layout.size() + layout.align() + margin);
         let max_align = layout.align().max(16);
+
+        // Check if allocation would exceed max_heap_size
+        if let Some(new_size) = self.current_heap_size.checked_add(total) {
+            if new_size > self.max_heap_size {
+                return Err(PoolAllocError::OutOfMemory);
+            }
+        } else {
+            // Overflow in size calculation
+            return Err(PoolAllocError::OutOfMemory);
+        }
+
         let page = BumpPage::try_init(total, max_align)?;
         self.current_heap_size += page.layout.size();
         let ptr = page
