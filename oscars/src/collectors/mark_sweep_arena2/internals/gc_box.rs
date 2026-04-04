@@ -44,6 +44,13 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
         }
     }
 
+    pub fn new_empty() -> Self {
+        Self {
+            inner_ptr: Cell::new(None),
+            marker: PhantomData,
+        }
+    }
+
     pub(crate) fn erased_inner_ptr(&self) -> Option<NonNull<GcBox<NonTraceable>>> {
         // SAFETY: `&raw mut` prevents creating `&mut` reference into the
         // arena to avoid stacked borrows during Gc tracing
