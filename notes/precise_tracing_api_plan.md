@@ -56,7 +56,7 @@ pub struct GcContext {
 }
 
 pub struct Scope<'gc> {
-    cx: &'gc GcContext,
+    cx: &'gc mut GcContext,
 }
 ```
 
@@ -64,8 +64,8 @@ pub struct Scope<'gc> {
 
 ```rust
 impl GcContext {
-    pub fn scope<R>(&self, f: impl for<'gc> FnOnce(Scope<'gc>) -> R) -> R;
-    pub fn collect(&self);
+    pub fn scope<R>(&mut self, f: impl for<'gc> FnOnce(Scope<'gc>) -> R) -> R;
+    pub fn collect(&mut self);
 }
 
 impl<'gc> Scope<'gc> {
@@ -83,16 +83,19 @@ impl<'scope, 'gc, T: Trace + ?Sized> Root<'scope, 'gc, T> {
 ```
 
 Safety note: `Root<'scope, 'gc, T>` is lifetime-branded to the borrowed scope,
-so safe code cannot hold rooted references after the owning scope/context is
-dropped.
+so root handles cannot outlive their owning scope/context in safe code.
 
 Implementation note: `Scope::root(&self, ...)` assumes root-slot registration is
 handled via internal mutability in collector internals, so multiple roots can
 coexist without requiring an exclusive borrow of `Scope`.
 
-Collection note: `collect(&self)` here represents a high-level API shape for a
-single-threaded runtime. Implementations should guard collection phase entry so
-collection cannot race with active mutable interior borrows.
+Collection note: `collect(&mut self)` is intentionally exclusive at API level.
+`GcContext::scope` and `collect` are mutually exclusive entry points in safe
+code, so collection cannot run while scope-borrowed operations are active.
+
+Root-slot note (v0 decision): `Root<'scope, 'gc, T>` is intentionally non-clone
+for now. Each root handle owns exactly one slot registration, and dropping that
+handle unregisters that slot.
 
 ### Pointer identity and casts (parity-preserving)
 
@@ -162,6 +165,11 @@ finalizers before destructors for tracked live values.
 Collector drop does not free values in an order that can cause UAF via
 finalizer-triggered graph activity.
 
+### I7. Collection entry exclusivity
+
+Collection requires exclusive context entry (`&mut GcContext`). Scope-driven API
+operations and collection cannot interleave through safe code.
+
 ## Feasibility and adoption path
 
 This proposal is intentionally structured in two layers:
@@ -177,7 +185,7 @@ This proposal is intentionally structured in two layers:
 2. `WeakGc::new/upgrade`, raw-pointer helpers, and cast helpers:
    - keep the same signatures.
 3. `force_collect()`:
-   - routed to collector `collect()`.
+   - routed to collector `collect()` through the mutable context entry path.
 4. `finalizer_safe()`:
    - routed to collector phase state.
 
@@ -206,15 +214,11 @@ This keeps migration incremental and avoids an all-at-once engine rewrite.
 
 1. Should `Scope<'gc>` be mandatory for all allocations, or should we keep a
    global-context fallback for Boa compatibility?
-2. Should `Root<'scope, 'gc, T>` be cloneable (multiple slots) or explicitly
-   unique?
-3. Should scope entry be closure-only (`GcContext::scope`) or should we also
-   support an explicit long-lived scope handle for ergonomics/integration?
-4. Is `cast_ref_unchecked` still desirable, or should compatibility rely on
+2. Is `cast_ref_unchecked` still desirable, or should compatibility rely on
    value-consuming casts only?
-5. Which minimal Boa integration slice gives the best signal first:
+3. Which minimal Boa integration slice gives the best signal first:
    pointer API parity, weak semantics parity, or runtime helpers?
-6. Should reading `T` from `Gc<T>` require an explicit scope/root token, so
+4. Should reading `T` from `Gc<T>` require an explicit scope/root token, so
    stale handles cannot be dereferenced after collection in safe code?
 
 ## Relationship to tracker work
