@@ -97,6 +97,17 @@ impl<T: Trace> Gc<T> {
             marker: PhantomData,
         }
     }
+
+    /// Cast a `&Gc<T>` to `&Gc<U>` without consuming the handle.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure that `U` is the correct runtime type for `this`.
+    #[inline]
+    #[must_use]
+    pub unsafe fn cast_ref_unchecked<U: Trace + 'static>(this: &Self) -> &Gc<U> {
+        unsafe { &*(this as *const Self).cast::<Gc<U>>() }
+    }
 }
 
 impl<T: Trace> Gc<T> {
