@@ -11,6 +11,7 @@ thin-vec = { version = "0.2", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+trybuild = "1.0"
 
 boa_gc = { git = "https://github.com/boa-dev/boa", branch = "main" }
 

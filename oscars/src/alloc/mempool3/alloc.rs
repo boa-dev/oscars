@@ -81,8 +81,13 @@ impl<'pool, T> PoolPointer<'pool, T> {
         ErasedPoolPointer(self.0.cast::<u8>(), PhantomData)
     }
 
-    // SAFETY: safe because the gc collector owns the pool and keeps it alive
-    pub(crate) unsafe fn extend_lifetime(self) -> PoolPointer<'static, T> {
+    /// Extend the lifetime to 'static for collector owned pools
+    ///
+    /// # Safety
+    /// Caller must ensure the pool outlives any usage of the returned pointer.
+    /// Made public to support GC collectors outside the oscars crate that own
+    /// a PoolAllocator and need to store pointers with extended lifetimes
+    pub unsafe fn extend_lifetime(self) -> PoolPointer<'static, T> {
         PoolPointer(self.0, PhantomData)
     }
 }
