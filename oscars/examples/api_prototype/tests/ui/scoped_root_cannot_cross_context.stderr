@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> examples/api_prototype/tests/ui/scoped_root_cannot_cross_context.rs:47:30
+   |
+47 |             let _ = root.get(cx2);
+   |                          --- ^^^ expected `&MutationContext<'_, BrandA>`, found `&MutationContext<'_, BrandB>`
+   |                          |
+   |                          arguments to this method are incorrect
+   |
+   = note: expected reference `&MutationContext<'_, BrandA>`
+              found reference `&MutationContext<'_, BrandB>`
+note: method defined here
+  --> examples/api_prototype/tests/ui/scoped_root_cannot_cross_context.rs:24:8
+   |
+24 |     fn get(&self, _cx: &MutationContext<'gc, B>) -> Gc<'gc, T> {
+   |        ^^^        -----------------------------

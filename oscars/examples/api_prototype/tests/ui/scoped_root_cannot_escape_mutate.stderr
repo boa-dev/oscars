@@ -1,0 +1,10 @@
+error: lifetime may not live long enough
+  --> examples/api_prototype/tests/ui/scoped_root_cannot_escape_mutate.rs:31:9
+   |
+29 |     let escaped = ctx.mutate(|cx| {
+   |                               --- return type of closure is ScopedRoot<'2, i32>
+   |                               |
+   |                               has type `&MutationContext<'1>`
+30 |         let gc = cx.alloc(42i32);
+31 |         cx.root_scoped(gc)
+   |         ^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`

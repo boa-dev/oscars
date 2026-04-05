@@ -74,6 +74,25 @@ impl<T: Trace> Root<T> {
 
 Catches cross-collector misuse where lifetimes can't help.
 
+### Static Root/Context Binding Experiment
+
+To explore Jedel's feedback about statically preventing root sharing between
+contexts, the prototype now includes a scoped variant:
+
+```rust
+pub struct ScopedRoot<'gc, T> { ... }
+pub fn root_scoped(&self, gc: Gc<'gc, T>) -> ScopedRoot<'gc, T>
+```
+
+`ScopedRoot<'gc, T>` is bound to the active mutation lifetime and cannot escape
+`mutate()`. Compile-fail tests cover:
+
+- escaping a scoped root out of `mutate()`,
+- brand-mismatch usage (A-root with B-context) as a type-level feasibility proof.
+
+This does not replace long-lived `Root<T>` yet; it is an incremental path for
+evaluating stronger static guarantees.
+
 ### Gc Access Safety
 
 **Q**: How do we prevent `Gc::get()` from accessing dead allocations?
