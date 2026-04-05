@@ -1,0 +1,18 @@
+error: lifetime may not live long enough
+  --> examples/api_prototype/tests/ui/root_cross_context.rs:47:41
+   |
+45 |     with_gc(|ctx1| {
+   |              ---- lifetime `'2` appears in the type of `ctx1`
+46 |         with_gc(|ctx2| {
+   |                  ---- has type `GcContext<'1>`
+47 |             let root = ctx1.mutate(|cx| cx.root(cx.alloc(123i32)));
+   |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+
+error: lifetime may not live long enough
+  --> examples/api_prototype/tests/ui/root_cross_context.rs:47:41
+   |
+45 |     with_gc(|ctx1| {
+   |              ---- has type `GcContext<'1>`
+46 |         with_gc(|ctx2| {
+47 |             let root = ctx1.mutate(|cx| cx.root(cx.alloc(123i32)));
+   |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'static`

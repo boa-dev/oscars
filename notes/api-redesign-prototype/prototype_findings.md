@@ -1,6 +1,6 @@
 # Prototype Findings
 
-Prototyping lifetime-branded GC API for Boa. Testing if `Gc<'gc, T>` + `Root<T>` is viable.
+Prototyping lifetime-branded GC API for Boa. Testing if `Gc<'gc, T>` + `Root<'id, T>` is viable.
 
 Works, but migration will be challenging.
 
@@ -51,28 +51,25 @@ Fix: `RefCell` inside collector, take `&self`.
 
 ```rust
 struct JsContext {
-    global_object: Root<JsObject>,  // escapes 'gc
+    global_object: Root<'id, JsObject>,  // escapes 'gc, tied to its GcContext<'id>
 }
 ```
 
-Root re-enters via `root.get(&cx)`.
+Root re-enters via `root.get(cx)` where `cx: &MutationContext<'id, 'gc>` must share the same `'id`.
 
-### Collector ID Validation
+### Cross-Context Safety via `'id` Brand
 
-Problem: `Root<T>` from collector A used with context B → dangling pointer.
+Problem: `Root<T>` from context A used with context B -> dangling pointer.
 
-Solution: Each collector gets unique ID, `Root` validates:
+Solution: `with_gc` gives each context a fresh, unnamed `'id` lifetime via `for<'id>`. `Root<'id, T>` and `MutationContext<'id, 'gc>` share that brand, so the borrow checker rejects any mismatch at compile time:
 
 ```rust
-impl<T: Trace> Root<T> {
-    pub fn get<'gc>(&self, cx: &MutationContext<'gc>) -> Gc<'gc, T> {
-        assert_eq!(self.collector_id, cx.collector.id);
-        // ...
-    }
+impl<'id, T: Trace> Root<'id, T> {
+    pub fn get<'gc>(&self, _cx: &MutationContext<'id, 'gc>) -> Gc<'gc, T> { ... }
 }
 ```
 
-Catches cross-collector misuse where lifetimes can't help.
+No runtime check, no `collector_id` field, no atomic counter. The compiler does all the work.
 
 ### Gc Access Safety
 
@@ -103,7 +100,7 @@ Taking the `intrusive_collections` crate as inspiration, here is what we adopted
 2. **O(1) Self Removal**: `unlink` drops nodes safely without a reference to the `Collector`.
 3. **Double Unlink Protection**: `is_linked()` enforces safe dropping.
 4. **Sentinel Node**: `Collector` owns a pinned `RootLink` as the list head.
-5. **Type Erased Marking**: `Root<T>` is `#[repr(C)]` with `link` at offset 0. The GC walks the links and recovers pointers using `offset_of!`. No `Trace` bound is needed.
+5. **Type Erased Marking**: `RootNode<T>` is `#[repr(C)]` with `link` at offset 0. The GC walks the links and recovers `gc_ptr` using `offset_of!(RootNode<i32>, gc_ptr)`. A `debug_assert_eq!` with a second concrete type checks the offset is stable across all `T: Sized`. No `Trace` bound is needed.
 
 #### Evolution of approaches
 
@@ -132,17 +129,15 @@ Single threaded GC. Explicit bounds prevent cross thread bugs.
 
 ## Validated
 
-**Compile-time isolation**: Borrow checker prevents mixing `Gc` from different contexts.
+**Compile-time isolation**: Borrow checker prevents mixing `Gc`, `Root`, and `WeakGc` from different contexts. Cross-context use is a compile error, not a runtime panic.
 
-**Runtime cross-collector detection**: `Root::get()` panics on wrong collector.
-
-**Root cleanup**: Drop removes from root list.
+**Root cleanup**: Drop unlinking removes from root list. `Box::from_raw` reclaims the node allocation.
 
 **Interior Mutability Tracing**: Using `GcRefCell<T>` allows `RefCell` semantics to persist efficiently while fulfilling `Trace` safety requirements without borrowing errors.
 
-**Scopeless Weak Binding**: `WeakGc<T>` survives successfully unbranded and can trace/upgrade against an arbitrary temporal `MutationContext` when actively touched again.
+**Branded Weak Binding**: `WeakGc<'id, T>` carries the same context brand. `upgrade` requires a matching `MutationContext<'id, 'gc>`, so cross-context upgrade is also a compile error.
 
-**Functional Builtin Prototyping**: Explicit tests matching exactly against definitions like `Array.prototype.push` (taking a `&Gc<'gc, GcRefCell<JsArray<'gc>>>` + `arg` buffer bound to `_cx: &MutationContext<'gc>`) compiled gracefully and safely.
+**Functional Builtin Prototyping**: Explicit tests matching exactly against definitions like `Array.prototype.push` (taking a `&Gc<'gc, GcRefCell<JsArray<'gc>>>` + `arg` buffer bound to `_cx: &MutationContext<'id, 'gc>`) compiled gracefully and safely.
 
 ### Performance
 
@@ -161,51 +156,20 @@ Single threaded GC. Explicit bounds prevent cross thread bugs.
 
 **Migration**: Boa has thousands of `Gc<T>` uses. Need to add `'gc` everywhere. Phasing gradually starting with isolated systems can be done
 
-### `Pin<&mut Root<T>>` for Escaping Roots
+### Root Node Stability via `Box::into_raw`
 
-Raised during review: could we use `Pin<&mut Root<T>>` instead of `Pin<Box<Root<T>>>` to avoid a heap allocation per root?
+`Pin<Box<Root<T>>>` was the original approach: pinning kept the intrusive list node address stable.
 
-**No, not for escaping roots.** Stack allocation fails because:
+The current approach is simpler: `cx.root()` allocates the node with `Box::new`, calls `Box::into_raw` immediately, and stores the raw `NonNull` inside a thin `Root<'id, T>` handle. The heap address is stable by construction. `Drop` calls `Box::from_raw` to reclaim it after unlinking.
 
-1. `Root` is created inside `mutate()`.
-2. Escaping roots must outlive `mutate()`.
-3. `Pin<&mut>` requires a stable address.
-
-We cannot move a `&mut` out of its closure frame without changing its address and violating `Pin`
-
-`Pin<Box<Root>>` fixes this: the pointer moves out, but the heap allocation stays fixed. Cost belongs to one `Box` per root.
-
-#### Workaround: `root_in_place`
-
-Zero allocation is possible if the caller pre-allocates the `Root<T>` slot on the outer stack:
-
-```rust
-let mut slot = std::mem::MaybeUninit::<Root<JsObject>>::uninit();
-
-ctx.mutate(|cx| {
-    let obj = cx.alloc(JsObject { name: "global".into(), value: 0 });
-    let root = cx.root_in_place(&mut slot, obj);
-});
-
-let root = unsafe { slot.assume_init_ref() };
-```
-
-`root_in_place` writes into the slot, pins it, links it and returns `Pin<&mut Root<T>>`. This matches V8's `HandleScope`: no allocation, O(1) creation.
-
-**Reasons to skip this for now:**
-1. Caller must know `T` upfront to size the `MaybeUninit` slot.
-2. Requires `unsafe` to read the slot later.
-3. `Pin<Box<Root>>` is simpler and safer for validating the core API right now.
-
-*We can prototype this later if needed.*
+This removes `Pin` from the public API entirely. `root()` returns `Root<'id, T>` (one word on the stack), not `Pin<Box<Root<T>>>`. The cost is still one heap allocation per escaping root, same as before.
 
 
 ## Conclusion
 
-`Gc<'gc, T>` + `Root<T>` is:
-- **Sound**: Compile-time catches misuse
-- **Runtime-safe**: Collector ID validation catches Root misuse
-- **Fast**: Zero cost transient pointers
+`Gc<'gc, T>` + `Root<'id, T>` is:
+- **Sound**: Compile-time catches all cross-context misuse for `Gc`, `Root` and `WeakGc`
+- **Fast**: Zero cost transient pointers, no atomic counters, no branch in `Root::get`
 - **Feasible**: Can coexist with current API
 
 Main risk is migration effort, we can go with the phased approach

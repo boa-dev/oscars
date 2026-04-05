@@ -22,6 +22,11 @@ impl Trace for i32 {
 }
 impl Finalize for i32 {}
 
+impl Trace for u64 {
+    fn trace(&mut self, _: &mut Tracer) {}
+}
+impl Finalize for u64 {}
+
 impl Trace for String {
     fn trace(&mut self, _: &mut Tracer) {}
 }
