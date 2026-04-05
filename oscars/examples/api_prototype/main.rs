@@ -141,6 +141,17 @@ mod tests {
     }
 
     #[test]
+    fn scoped_root_is_context_bound() {
+        let ctx = GcContext::new();
+        ctx.mutate(|cx| {
+            let obj = cx.alloc(777i32);
+            let scoped = cx.root_scoped(obj);
+            let gc = scoped.get(cx);
+            assert_eq!(*gc.get(), 777);
+        });
+    }
+
+    #[test]
     fn root_rejects_different_collector() {
         let ctx1 = GcContext::new();
         let ctx2 = GcContext::new();

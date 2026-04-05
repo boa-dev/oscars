@@ -36,6 +36,21 @@ impl<'gc, T: Trace + 'gc> Gc<'gc, T> {
     }
 }
 
+/// Lifetime-branded root handle tied to a single mutation context.
+///
+/// Unlike `Root<T>`, this cannot escape the `'gc` mutation lifetime and
+/// therefore cannot be used with another collector/context in safe code.
+#[must_use = "scoped roots must be used within the active mutation context"]
+pub struct ScopedRoot<'gc, T: Trace + ?Sized + 'gc> {
+    gc: Gc<'gc, T>,
+}
+
+impl<'gc, T: Trace + ?Sized + 'gc> ScopedRoot<'gc, T> {
+    pub fn get(&self, _cx: &MutationContext<'gc>) -> Gc<'gc, T> {
+        self.gc
+    }
+}
+
 /// Pinned root handle that keeps a GC allocation live across `mutate()` boundaries.
 ///
 /// Uses an intrusive linked list. `#[repr(C)]` with `link` first allows
@@ -295,6 +310,14 @@ impl<'gc> MutationContext<'gc> {
         }
 
         root
+    }
+
+    /// Creates a root that is statically bound to this mutation lifetime.
+    ///
+    /// This is a prototype path to evaluate whether root/context pairing can be
+    /// fully enforced at compile time. The handle cannot escape `'gc`.
+    pub fn root_scoped<T: Trace + Finalize + 'gc>(&self, gc: Gc<'gc, T>) -> ScopedRoot<'gc, T> {
+        ScopedRoot { gc }
     }
 
     pub fn collector_id(&self) -> u64 {
