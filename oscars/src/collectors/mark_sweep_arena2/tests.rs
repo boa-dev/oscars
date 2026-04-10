@@ -7,6 +7,35 @@ use super::WeakMap;
 use super::cell::GcRefCell;
 
 #[test]
+fn unsafe_empty_trace_runs_finalize() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static FINALIZED: AtomicUsize = AtomicUsize::new(0);
+
+    struct Probe;
+
+    impl Finalize for Probe {
+        fn finalize(&self) {
+            FINALIZED.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    // SAFETY: `Probe` has no GC references to trace.
+    unsafe impl Trace for Probe {
+        crate::unsafe_empty_trace!();
+    }
+
+    FINALIZED.store(0, Ordering::SeqCst);
+    let probe = Probe;
+    <Probe as Trace>::run_finalizer(&probe);
+    assert_eq!(
+        FINALIZED.load(Ordering::SeqCst),
+        1,
+        "unsafe_empty_trace! must delegate to Finalize::finalize"
+    );
+}
+
+#[test]
 fn basic_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()
         .with_arena_size(64)

@@ -25,5 +25,12 @@ pub mod mark_sweep2 {
 #[cfg(feature = "mark_sweep")]
 pub use crate::collectors::mark_sweep::Collector;
 
+/// Collector-agnostic trace API re-export used by derive/macros.
+///
+/// Both mark-sweep collectors currently share the same trace traits.
+pub mod gc_trace {
+    pub use crate::collectors::mark_sweep::trace::{Finalize, Trace, TraceColor};
+}
+
 pub mod alloc;
 pub mod collectors;

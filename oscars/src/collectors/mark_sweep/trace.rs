@@ -67,10 +67,27 @@ pub unsafe trait Trace: Finalize {
 macro_rules! empty_trace {
     () => {
         #[inline]
-        unsafe fn trace(&self, _color: $crate::collectors::mark_sweep::TraceColor) {}
+        unsafe fn trace(&self, _color: $crate::gc_trace::TraceColor) {}
         #[inline]
         fn run_finalizer(&self) {
-            $crate::collectors::mark_sweep::Finalize::finalize(self);
+            $crate::gc_trace::Finalize::finalize(self);
+        }
+    };
+}
+
+/// Utility macro to define an empty implementation of [`Trace`] inside an
+/// `unsafe impl Trace` block.
+///
+/// This mirrors `empty_trace!` semantics while making the unsafety explicit at
+/// the call site.
+#[macro_export]
+macro_rules! unsafe_empty_trace {
+    () => {
+        #[inline]
+        unsafe fn trace(&self, _color: $crate::gc_trace::TraceColor) {}
+        #[inline]
+        fn run_finalizer(&self) {
+            $crate::gc_trace::Finalize::finalize(self);
         }
     };
 }
@@ -88,11 +105,11 @@ macro_rules! empty_trace {
 macro_rules! custom_trace {
     ($this:ident, $marker:ident, $body:expr) => {
         #[inline]
-        unsafe fn trace(&self, color: $crate::collectors::mark_sweep::TraceColor) {
-            let $marker = |it: &dyn $crate::collectors::mark_sweep::Trace| {
+        unsafe fn trace(&self, color: $crate::gc_trace::TraceColor) {
+            let $marker = |it: &dyn $crate::gc_trace::Trace| {
                 // SAFETY: The implementor must ensure that `trace` is correctly implemented.
                 unsafe {
-                    $crate::collectors::mark_sweep::Trace::trace(it, color);
+                    $crate::gc_trace::Trace::trace(it, color);
                 }
             };
             let $this = self;
@@ -100,10 +117,10 @@ macro_rules! custom_trace {
         }
         #[inline]
         fn run_finalizer(&self) {
-            fn $marker<T: $crate::collectors::mark_sweep::Trace + ?Sized>(it: &T) {
-                $crate::collectors::mark_sweep::Trace::run_finalizer(it);
+            fn $marker<T: $crate::gc_trace::Trace + ?Sized>(it: &T) {
+                $crate::gc_trace::Trace::run_finalizer(it);
             }
-            $crate::collectors::mark_sweep::Finalize::finalize(self);
+            $crate::gc_trace::Finalize::finalize(self);
             let $this = self;
             $body
         }
