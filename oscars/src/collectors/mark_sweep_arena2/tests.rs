@@ -901,6 +901,60 @@ mod gc_edge_cases {
         let _value = *flag.borrow();
     }
 
+    #[test]
+    fn finalizer_safe_reflects_collecting_state() {
+        use core::sync::atomic::{AtomicU8, Ordering};
+
+        // 0 = not observed, 1 = true, 2 = false
+        static OBSERVED: AtomicU8 = AtomicU8::new(0);
+
+        struct Probe {
+            collector: core::ptr::NonNull<MarkSweepGarbageCollector>,
+        }
+
+        impl Finalize for Probe {}
+
+        unsafe impl Trace for Probe {
+            unsafe fn trace(&self, _color: TraceColor) {
+                let safe = unsafe { self.collector.as_ref().finalizer_safe() };
+                OBSERVED.store(if safe { 1 } else { 2 }, Ordering::SeqCst);
+            }
+
+            fn run_finalizer(&self) {
+                Finalize::finalize(self);
+            }
+        }
+
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_arena_size(256)
+            .with_heap_threshold(512);
+
+        assert!(
+            collector.finalizer_safe(),
+            "collector should report finalizer-safe while idle"
+        );
+
+        OBSERVED.store(0, Ordering::SeqCst);
+        let _root = Gc::new_in(
+            Probe {
+                collector: core::ptr::NonNull::from(&*collector),
+            },
+            collector,
+        );
+
+        collector.collect();
+
+        assert_eq!(
+            OBSERVED.load(Ordering::SeqCst),
+            2,
+            "trace-time observation should see finalizer_safe() == false during collection"
+        );
+        assert!(
+            collector.finalizer_safe(),
+            "collector should return to finalizer-safe state after collection"
+        );
+    }
+
     // ---- Multiple collections on the same graph ---------------------------
 
     /// Run GC repeatedly while objects are still alive to verify that
