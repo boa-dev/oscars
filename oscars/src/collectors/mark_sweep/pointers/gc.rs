@@ -16,12 +16,14 @@ pub struct Gc<T: Trace + ?Sized + 'static> {
 }
 
 impl<T: Trace> Gc<T> {
-    #[must_use]
-    pub fn new_in<C: Collector>(value: T, collector: &C) -> Self {
-        let inner_ptr = collector
-            .alloc_gc_node(value)
-            .expect("Failed to allocate Gc node")
-            .to_erased();
+    /// Allocates a new `Gc` in the given collector.
+    /// Returns Err if allocation fails due to heap limit exceeded.
+    /// Note: OS malloc() failure will abort the process.
+    pub fn new_in<C: Collector>(
+        value: T,
+        collector: &C,
+    ) -> Result<Self, crate::alloc::mempool3::PoolAllocError> {
+        let inner_ptr = collector.alloc_gc_node(value)?.to_erased();
 
         // SAFETY: safe because the gc tracks this
         let inner_ptr = unsafe { inner_ptr.extend_lifetime() };
@@ -32,7 +34,7 @@ impl<T: Trace> Gc<T> {
         };
         // GcBox is allocated with 0 roots, increment to 1 for the new handle
         gc.inner_ptr().as_inner_ref().inc_roots();
-        gc
+        Ok(gc)
     }
 
     /// Converts a `Gc` into a raw [`PoolPointer`].
