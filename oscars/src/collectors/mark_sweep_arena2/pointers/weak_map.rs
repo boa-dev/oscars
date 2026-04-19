@@ -117,9 +117,7 @@ pub struct WeakMap<K: Trace + 'static, V: Trace + 'static> {
 
 impl<K: Trace, V: Trace> WeakMap<K, V> {
     // create a new map and give the collector ownership of its memory
-    pub fn new(
-        collector: &crate::collectors::mark_sweep_arena2::MarkSweepGarbageCollector,
-    ) -> Self {
+    pub fn new<C: crate::collectors::mark_sweep_arena2::Collector>(collector: &C) -> Self {
         let boxed: rust_alloc::boxed::Box<WeakMapInner<K, V>> =
             rust_alloc::boxed::Box::new(WeakMapInner::<K, V>::new());
 
@@ -133,11 +131,11 @@ impl<K: Trace, V: Trace> WeakMap<K, V> {
     }
 
     // insert a value for `key`, replacing and invalidating any old ephemeron
-    pub fn insert(
+    pub fn insert<C: crate::collectors::mark_sweep_arena2::Collector>(
         &mut self,
         key: &Gc<K>,
         value: V,
-        collector: &crate::collectors::mark_sweep_arena2::MarkSweepGarbageCollector,
+        collector: &C,
     ) {
         let key_addr = key.inner_ptr.as_non_null().as_ptr() as usize;
 

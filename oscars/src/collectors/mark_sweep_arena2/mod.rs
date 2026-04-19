@@ -27,6 +27,41 @@ pub use pointers::ErasedWeakMap;
 pub use pointers::{Gc, WeakGc, WeakMap};
 pub use trace::{Finalize, Trace, TraceColor};
 
+pub trait Collector {
+    // trigger a full collection cycle
+    fn collect(&self);
+
+    // returns the current trace color for newly allocated objects
+    fn gc_color(&self) -> TraceColor;
+
+    // Allocates a standard GC node for `value`, wrapping it in a `GcBox`.
+    //
+    // The returned pointer is tied to the collector's lifetime.
+    fn alloc_gc_node<'gc, T: Trace + 'static>(
+        &'gc self,
+        value: T,
+    ) -> Result<
+        crate::alloc::arena2::ArenaPointer<'gc, internals::GcBox<T>>,
+        crate::alloc::arena2::ArenaAllocError,
+    >;
+
+    // Allocates an ephemeron node pointing to an existing GC key and a new value.
+    //
+    // The returned pointer is tied to the collector's lifetime.
+    fn alloc_ephemeron_node<'gc, K: Trace + 'static, V: Trace + 'static>(
+        &'gc self,
+        key: &Gc<K>,
+        value: V,
+    ) -> Result<
+        crate::alloc::arena2::ArenaPointer<'gc, internals::Ephemeron<K, V>>,
+        crate::alloc::arena2::ArenaAllocError,
+    >;
+
+    // Register a weak map with the GC so it can prune dead entries.
+    #[doc(hidden)]
+    fn track_weak_map(&self, map: core::ptr::NonNull<dyn ErasedWeakMap>);
+}
+
 type GcErasedPointer = NonNull<ArenaHeapItem<GcBox<NonTraceable>>>;
 pub(crate) type ErasedEphemeron = NonNull<ArenaHeapItem<Ephemeron<NonTraceable, NonTraceable>>>;
 
@@ -365,12 +400,20 @@ impl MarkSweepGarbageCollector {
     }
 }
 
-impl MarkSweepGarbageCollector {
+impl Collector for MarkSweepGarbageCollector {
+    fn collect(&self) {
+        MarkSweepGarbageCollector::collect(self);
+    }
+
+    fn gc_color(&self) -> TraceColor {
+        self.trace_color.get()
+    }
+
     // Allocates a standard GC node for `value`, wrapping it in a `GcBox`
     //
     // the returned pointer is only valid while the collector (`&self`) is alive
     // the lifetime ties the pointer to the collector
-    fn alloc_gc_node<'gc, T: crate::collectors::mark_sweep_arena2::trace::Trace + 'static>(
+    fn alloc_gc_node<'gc, T: Trace + 'static>(
         &'gc self,
         value: T,
     ) -> Result<ArenaPointer<'gc, GcBox<T>>, crate::alloc::arena2::ArenaAllocError> {
@@ -381,13 +424,11 @@ impl MarkSweepGarbageCollector {
 
         let gc_box = GcBox::new_in(value, self.trace_color.get());
 
-        // try_alloc creates a new arena page on OOM — no pre-creation needed.
         let mut alloc = self.allocator.borrow_mut();
         let arena_ptr = alloc.try_alloc(gc_box)?;
         let needs_collect = !alloc.is_below_threshold();
         drop(alloc);
 
-        // flag for a deferred collection if the heap crossed its threshold
         if needs_collect {
             self.collect_needed.set(true);
         }
@@ -406,13 +447,9 @@ impl MarkSweepGarbageCollector {
     //
     // the returned pointer is only valid while the collector (`&self`) is alive
     // the lifetime ties the pointer to the collector
-    fn alloc_ephemeron_node<
-        'gc,
-        K: crate::collectors::mark_sweep_arena2::trace::Trace + 'static,
-        V: crate::collectors::mark_sweep_arena2::trace::Trace + 'static,
-    >(
+    fn alloc_ephemeron_node<'gc, K: Trace + 'static, V: Trace + 'static>(
         &'gc self,
-        key: &crate::collectors::mark_sweep_arena2::pointers::Gc<K>,
+        key: &Gc<K>,
         value: V,
     ) -> Result<ArenaPointer<'gc, Ephemeron<K, V>>, crate::alloc::arena2::ArenaAllocError> {
         if self.collect_needed.get() && !self.is_collecting.get() {
@@ -422,7 +459,6 @@ impl MarkSweepGarbageCollector {
 
         let ephemeron = Ephemeron::new(key, value, self.trace_color.get());
 
-        // try_alloc creates a new arena page on OOM
         let mut alloc = self.allocator.borrow_mut();
         let inner_ptr = alloc.try_alloc(ephemeron)?;
         let needs_collect = !alloc.is_below_threshold();
@@ -445,12 +481,7 @@ impl MarkSweepGarbageCollector {
         Ok(inner_ptr)
     }
 
-    fn track_weak_map(
-        &self,
-        map: core::ptr::NonNull<
-            dyn crate::collectors::mark_sweep_arena2::pointers::weak_map::ErasedWeakMap,
-        >,
-    ) {
+    fn track_weak_map(&self, map: core::ptr::NonNull<dyn ErasedWeakMap>) {
         self.weak_maps.borrow_mut().push(map);
     }
 }
