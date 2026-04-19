@@ -12,9 +12,9 @@ pub struct WeakGc<T: Trace + 'static> {
 }
 
 impl<T: Trace> WeakGc<T> {
-    pub fn new_in(
+    pub fn new_in<C: crate::collectors::mark_sweep_arena2::Collector>(
         value: &super::Gc<T>,
-        collector: &crate::collectors::mark_sweep_arena2::MarkSweepGarbageCollector,
+        collector: &C,
     ) -> Self
     where
         T: Sized,

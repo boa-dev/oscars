@@ -1,0 +1,19 @@
+error: lifetime may not live long enough
+  --> src/collectors/mark_sweep_branded/tests/ui/root_cross_context.rs:16:41
+   |
+13 |     with_gc(|ctx1| {
+   |              ---- lifetime `'2` appears in the type of `ctx1`
+14 |         with_gc(|ctx2| {
+   |                  ---- has type `GcContext<'1>`
+15 |             // root carries 'id of ctx1
+16 |             let root = ctx1.mutate(|cx| cx.root(cx.alloc(123i32)));
+   |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+
+error: lifetime may not live long enough
+  --> src/collectors/mark_sweep_branded/tests/ui/root_cross_context.rs:16:41
+   |
+13 |     with_gc(|ctx1| {
+   |              ---- has type `GcContext<'1>`
+...
+16 |             let root = ctx1.mutate(|cx| cx.root(cx.alloc(123i32)));
+   |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'static`
