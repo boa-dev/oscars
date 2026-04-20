@@ -126,7 +126,7 @@ simple_empty_trace![
     (),
     bool,
     isize,
-    usize,	
+    usize,
     i8,
     u8,
     i16,
@@ -164,7 +164,7 @@ simple_empty_trace![atomic::AtomicBool, atomic::AtomicI8, atomic::AtomicU8];
 #[cfg(target_has_atomic = "16")]
 simple_empty_trace![atomic::AtomicI16, atomic::AtomicU16];
 
-#[cfg(target_has_atomic = "32")]	
+#[cfg(target_has_atomic = "32")]
 simple_empty_trace![atomic::AtomicI32, atomic::AtomicU32];
 
 #[cfg(target_has_atomic = "64")]
