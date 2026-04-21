@@ -16,10 +16,9 @@ pub struct Gc<T: Trace + ?Sized + 'static> {
 }
 
 impl<T: Trace> Gc<T> {
-    #[must_use]
-    pub fn new_in(
+    pub fn new_in<C: crate::collectors::mark_sweep_arena2::Collector>(
         value: T,
-        collector: &crate::collectors::mark_sweep_arena2::MarkSweepGarbageCollector,
+        collector: &C,
     ) -> Self {
         let inner_ptr = collector
             .alloc_gc_node(value)

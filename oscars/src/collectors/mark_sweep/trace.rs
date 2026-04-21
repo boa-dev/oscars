@@ -18,11 +18,8 @@ use rust_alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::collections::{HashMap, HashSet};
 
-/// Substitute for the [`Drop`] trait for garbage collected types.
-pub trait Finalize {
-    /// Cleanup logic for a type.
-    fn finalize(&self) {}
-}
+// Re-export the shared `Finalize` trait and all its stdlib blanket impls.
+pub use crate::collectors::common::Finalize;
 
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(u8)]
@@ -110,17 +107,14 @@ macro_rules! custom_trace {
     };
 }
 
-impl<T: ?Sized> Finalize for &'static T {}
 // SAFETY: 'static references don't need to be traced, since they live indefinitely.
 unsafe impl<T: ?Sized> Trace for &'static T {
     empty_trace!();
 }
 
-macro_rules! simple_empty_finalize_trace {
-    ($($T:ty),*) => {
+macro_rules! simple_empty_trace {
+    ($($T:ty),* $(,)?) => {
         $(
-            impl Finalize for $T {}
-
             // SAFETY:
             // Primitive types and string types don't have inner nodes that need to be marked.
             unsafe impl Trace for $T { empty_trace!(); }
@@ -128,7 +122,7 @@ macro_rules! simple_empty_finalize_trace {
     }
 }
 
-simple_empty_finalize_trace![
+simple_empty_trace![
     (),
     bool,
     isize,
@@ -165,21 +159,20 @@ simple_empty_finalize_trace![
 ];
 
 #[cfg(target_has_atomic = "8")]
-simple_empty_finalize_trace![atomic::AtomicBool, atomic::AtomicI8, atomic::AtomicU8];
+simple_empty_trace![atomic::AtomicBool, atomic::AtomicI8, atomic::AtomicU8];
 
 #[cfg(target_has_atomic = "16")]
-simple_empty_finalize_trace![atomic::AtomicI16, atomic::AtomicU16];
+simple_empty_trace![atomic::AtomicI16, atomic::AtomicU16];
 
 #[cfg(target_has_atomic = "32")]
-simple_empty_finalize_trace![atomic::AtomicI32, atomic::AtomicU32];
+simple_empty_trace![atomic::AtomicI32, atomic::AtomicU32];
 
 #[cfg(target_has_atomic = "64")]
-simple_empty_finalize_trace![atomic::AtomicI64, atomic::AtomicU64];
+simple_empty_trace![atomic::AtomicI64, atomic::AtomicU64];
 
 #[cfg(target_has_atomic = "ptr")]
-simple_empty_finalize_trace![atomic::AtomicIsize, atomic::AtomicUsize];
+simple_empty_trace![atomic::AtomicIsize, atomic::AtomicUsize];
 
-impl<T: Trace, const N: usize> Finalize for [T; N] {}
 // SAFETY:
 // All elements inside the array are correctly marked.
 unsafe impl<T: Trace, const N: usize> Trace for [T; N] {
@@ -190,35 +183,33 @@ unsafe impl<T: Trace, const N: usize> Trace for [T; N] {
     });
 }
 
-macro_rules! fn_finalize_trace_one {
+macro_rules! fn_trace_one {
     ($ty:ty $(,$args:ident)*) => {
-        impl<Ret $(,$args)*> Finalize for $ty {}
         // SAFETY:
         // Function pointers don't have inner nodes that need to be marked.
         unsafe impl<Ret $(,$args)*> Trace for $ty { empty_trace!(); }
     }
 }
-macro_rules! fn_finalize_trace_group {
+macro_rules! fn_trace_group {
     () => {
-        fn_finalize_trace_one!(extern "Rust" fn () -> Ret);
-        fn_finalize_trace_one!(extern "C" fn () -> Ret);
-        fn_finalize_trace_one!(unsafe extern "Rust" fn () -> Ret);
-        fn_finalize_trace_one!(unsafe extern "C" fn () -> Ret);
+        fn_trace_one!(extern "Rust" fn () -> Ret);
+        fn_trace_one!(extern "C" fn () -> Ret);
+        fn_trace_one!(unsafe extern "Rust" fn () -> Ret);
+        fn_trace_one!(unsafe extern "C" fn () -> Ret);
     };
     ($($args:ident),*) => {
-        fn_finalize_trace_one!(extern "Rust" fn ($($args),*) -> Ret, $($args),*);
-        fn_finalize_trace_one!(extern "C" fn ($($args),*) -> Ret, $($args),*);
-        fn_finalize_trace_one!(extern "C" fn ($($args),*, ...) -> Ret, $($args),*);
-        fn_finalize_trace_one!(unsafe extern "Rust" fn ($($args),*) -> Ret, $($args),*);
-        fn_finalize_trace_one!(unsafe extern "C" fn ($($args),*) -> Ret, $($args),*);
-        fn_finalize_trace_one!(unsafe extern "C" fn ($($args),*, ...) -> Ret, $($args),*);
+        fn_trace_one!(extern "Rust" fn ($($args),*) -> Ret, $($args),*);
+        fn_trace_one!(extern "C" fn ($($args),*) -> Ret, $($args),*);
+        fn_trace_one!(extern "C" fn ($($args),*, ...) -> Ret, $($args),*);
+        fn_trace_one!(unsafe extern "Rust" fn ($($args),*) -> Ret, $($args),*);
+        fn_trace_one!(unsafe extern "C" fn ($($args),*) -> Ret, $($args),*);
+        fn_trace_one!(unsafe extern "C" fn ($($args),*, ...) -> Ret, $($args),*);
     }
 }
 
-macro_rules! tuple_finalize_trace {
-    () => {}; // This case is handled above, by simple_finalize_empty_trace!().
+macro_rules! tuple_trace {
+    () => {}; // () handled by simple_empty_trace!
     ($($args:ident),*) => {
-        impl<$($args),*> Finalize for ($($args,)*) {}
         // SAFETY:
         // All elements inside the tuple are correctly marked.
         unsafe impl<$($args: $crate::collectors::mark_sweep::Trace),*> Trace for ($($args,)*) {
@@ -234,16 +225,16 @@ macro_rules! tuple_finalize_trace {
     }
 }
 
-macro_rules! type_arg_tuple_based_finalize_trace_impls {
+macro_rules! type_arg_trace_impls {
     ($(($($args:ident),*);)*) => {
         $(
-            fn_finalize_trace_group!($($args),*);
-            tuple_finalize_trace!($($args),*);
+            fn_trace_group!($($args),*);
+            tuple_trace!($($args),*);
         )*
     }
 }
 
-type_arg_tuple_based_finalize_trace_impls![
+type_arg_trace_impls![
     ();
     (A);
     (A, B);
@@ -259,7 +250,6 @@ type_arg_tuple_based_finalize_trace_impls![
     (A, B, C, D, E, F, G, H, I, J, K, L);
 ];
 
-impl<T: Trace + ?Sized> Finalize for Box<T> {}
 // SAFETY: The inner value of the `Box` is correctly marked.
 unsafe impl<T: Trace + ?Sized> Trace for Box<T> {
     #[inline]
@@ -277,7 +267,6 @@ unsafe impl<T: Trace + ?Sized> Trace for Box<T> {
     }
 }
 
-impl<T: Trace> Finalize for Box<[T]> {}
 // SAFETY: All the inner elements of the `Box` array are correctly marked.
 unsafe impl<T: Trace> Trace for Box<[T]> {
     custom_trace!(this, mark, {
@@ -287,7 +276,6 @@ unsafe impl<T: Trace> Trace for Box<[T]> {
     });
 }
 
-impl<T: Trace> Finalize for Vec<T> {}
 // SAFETY: All the inner elements of the `Vec` are correctly marked.
 unsafe impl<T: Trace> Trace for Vec<T> {
     custom_trace!(this, mark, {
@@ -296,9 +284,6 @@ unsafe impl<T: Trace> Trace for Vec<T> {
         }
     });
 }
-
-#[cfg(feature = "thin-vec")]
-impl<T: Trace> Finalize for thin_vec::ThinVec<T> {}
 
 #[cfg(feature = "thin-vec")]
 // SAFETY: All the inner elements of the `ThinVec` are correctly marked.
@@ -310,7 +295,6 @@ unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
     });
 }
 
-impl<T: Trace> Finalize for Option<T> {}
 // SAFETY: The inner value of the `Option` is correctly marked.
 unsafe impl<T: Trace> Trace for Option<T> {
     custom_trace!(this, mark, {
@@ -320,7 +304,6 @@ unsafe impl<T: Trace> Trace for Option<T> {
     });
 }
 
-impl<T: Trace, E: Trace> Finalize for Result<T, E> {}
 // SAFETY: Both inner values of the `Result` are correctly marked.
 unsafe impl<T: Trace, E: Trace> Trace for Result<T, E> {
     custom_trace!(this, mark, {
@@ -331,7 +314,6 @@ unsafe impl<T: Trace, E: Trace> Trace for Result<T, E> {
     });
 }
 
-impl<T: Ord + Trace> Finalize for BinaryHeap<T> {}
 // SAFETY: All the elements of the `BinaryHeap` are correctly marked.
 unsafe impl<T: Ord + Trace> Trace for BinaryHeap<T> {
     custom_trace!(this, mark, {
@@ -341,7 +323,6 @@ unsafe impl<T: Ord + Trace> Trace for BinaryHeap<T> {
     });
 }
 
-impl<K: Trace, V: Trace> Finalize for BTreeMap<K, V> {}
 // SAFETY: All the elements of the `BTreeMap` are correctly marked.
 unsafe impl<K: Trace, V: Trace> Trace for BTreeMap<K, V> {
     custom_trace!(this, mark, {
@@ -352,7 +333,6 @@ unsafe impl<K: Trace, V: Trace> Trace for BTreeMap<K, V> {
     });
 }
 
-impl<T: Trace> Finalize for BTreeSet<T> {}
 // SAFETY: All the elements of the `BTreeSet` are correctly marked.
 unsafe impl<T: Trace> Trace for BTreeSet<T> {
     custom_trace!(this, mark, {
@@ -362,10 +342,6 @@ unsafe impl<T: Trace> Trace for BTreeSet<T> {
     });
 }
 
-impl<K: Eq + Hash + Trace, V: Trace, S: BuildHasher> Finalize
-    for hashbrown::hash_map::HashMap<K, V, S>
-{
-}
 // SAFETY: All the elements of the `HashMap` are correctly marked.
 unsafe impl<K: Eq + Hash + Trace, V: Trace, S: BuildHasher> Trace
     for hashbrown::hash_map::HashMap<K, V, S>
@@ -379,8 +355,6 @@ unsafe impl<K: Eq + Hash + Trace, V: Trace, S: BuildHasher> Trace
 }
 
 #[cfg(feature = "std")]
-impl<K: Eq + Hash + Trace, V: Trace, S: BuildHasher> Finalize for HashMap<K, V, S> {}
-#[cfg(feature = "std")]
 // SAFETY: All the elements of the `HashMap` are correctly marked.
 unsafe impl<K: Eq + Hash + Trace, V: Trace, S: BuildHasher> Trace for HashMap<K, V, S> {
     custom_trace!(this, mark, {
@@ -392,8 +366,6 @@ unsafe impl<K: Eq + Hash + Trace, V: Trace, S: BuildHasher> Trace for HashMap<K,
 }
 
 #[cfg(feature = "std")]
-impl<T: Eq + Hash + Trace, S: BuildHasher> Finalize for HashSet<T, S> {}
-#[cfg(feature = "std")]
 // SAFETY: All the elements of the `HashSet` are correctly marked.
 unsafe impl<T: Eq + Hash + Trace, S: BuildHasher> Trace for HashSet<T, S> {
     custom_trace!(this, mark, {
@@ -403,7 +375,6 @@ unsafe impl<T: Eq + Hash + Trace, S: BuildHasher> Trace for HashSet<T, S> {
     });
 }
 
-impl<T: Eq + Hash + Trace> Finalize for LinkedList<T> {}
 // SAFETY: All the elements of the `LinkedList` are correctly marked.
 unsafe impl<T: Eq + Hash + Trace> Trace for LinkedList<T> {
     custom_trace!(this, mark, {
@@ -414,13 +385,11 @@ unsafe impl<T: Eq + Hash + Trace> Trace for LinkedList<T> {
     });
 }
 
-impl<T> Finalize for PhantomData<T> {}
 // SAFETY: A `PhantomData` doesn't have inner data that needs to be marked.
 unsafe impl<T> Trace for PhantomData<T> {
     empty_trace!();
 }
 
-impl<T: Trace> Finalize for VecDeque<T> {}
 // SAFETY: All the elements of the `VecDeque` are correctly marked.
 unsafe impl<T: Trace> Trace for VecDeque<T> {
     custom_trace!(this, mark, {
@@ -430,7 +399,6 @@ unsafe impl<T: Trace> Trace for VecDeque<T> {
     });
 }
 
-impl<T: ToOwned + Trace + ?Sized> Finalize for Cow<'static, T> {}
 // SAFETY: 'static references don't need to be traced, since they live indefinitely, and the owned
 // variant is correctly marked.
 unsafe impl<T: ToOwned + Trace + ?Sized> Trace for Cow<'static, T>
@@ -444,7 +412,6 @@ where
     });
 }
 
-impl<T: Trace> Finalize for Cell<Option<T>> {}
 // SAFETY: Taking and setting is done in a single action, and recursive traces should find a `None`
 // value instead of the original `T`, making this safe.
 unsafe impl<T: Trace> Trace for Cell<Option<T>> {
@@ -456,7 +423,6 @@ unsafe impl<T: Trace> Trace for Cell<Option<T>> {
     });
 }
 
-impl<T: Trace> Finalize for OnceCell<T> {}
 // SAFETY: We only trace the inner cell if the cell has a value.
 unsafe impl<T: Trace> Trace for OnceCell<T> {
     custom_trace!(this, mark, {
