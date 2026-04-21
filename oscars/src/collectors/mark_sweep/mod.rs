@@ -95,6 +95,12 @@ impl MarkSweepGarbageCollector {
     pub fn pools_len(&self) -> usize {
         self.allocator.borrow().pools_len()
     }
+
+    /// Returns true when the collector is not inside an active collection
+    /// cycle, i.e. it is safe to run external finalizer-sensitive paths.
+    pub fn finalizer_safe(&self) -> bool {
+        !self.is_collecting.get()
+    }
 }
 
 impl Drop for MarkSweepGarbageCollector {
