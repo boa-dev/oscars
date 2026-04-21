@@ -1,5 +1,9 @@
 # Oscar's Emporium
 
+[![Discord](https://img.shields.io/discord/595323158140158003?logo=discord)](https://discord.gg/tUFFk9Y)
+
+[![Matrix](https://img.shields.io/matrix/boa:matrix.org?logo=matrix)](https://matrix.to/#/#boa:matrix.org)
+
 Welcome one and all to Oscar's Emporium! Are you a fan of garbage or garbage
 collection? Then look no further! You've come to the right place!
 
@@ -24,4 +28,6 @@ The current project structure is as follows.
 
   - `src`: contains all code releated to GCs. 
   - `notes`: experiment and research notes on GC and GC related things
+
+
 
