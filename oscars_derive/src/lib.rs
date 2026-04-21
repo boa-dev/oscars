@@ -60,13 +60,13 @@ fn derive_trace(mut s: Structure<'_>) -> proc_macro2::TokenStream {
             }
 
             return s.unsafe_bound_impl(
-                quote!(::oscars::gc_trace::Trace),
+                quote!(::oscars::mark_sweep::Trace),
                 quote! {
                     #[inline(always)]
-                    unsafe fn trace(&self, _color: ::oscars::gc_trace::TraceColor) {}
+                    unsafe fn trace(&self, _color: ::oscars::mark_sweep::TraceColor) {}
                     #[inline]
                     fn run_finalizer(&self) {
-                        ::oscars::gc_trace::Finalize::finalize(self)
+                        ::oscars::mark_sweep::Finalize::finalize(self)
                     }
                 },
             );
@@ -79,30 +79,30 @@ fn derive_trace(mut s: Structure<'_>) -> proc_macro2::TokenStream {
             .iter()
             .any(|attr| attr.path().is_ident("unsafe_ignore_trace"))
     });
-    let trace_body = s.each(|bi| quote!(::oscars::gc_trace::Trace::trace(#bi, color)));
+    let trace_body = s.each(|bi| quote!(::oscars::mark_sweep::Trace::trace(#bi, color)));
     let trace_other_body = s.each(|bi| quote!(mark(#bi)));
 
     s.add_bounds(AddBounds::Fields);
     let trace_impl = s.unsafe_bound_impl(
-        quote!(::oscars::gc_trace::Trace),
+        quote!(::oscars::mark_sweep::Trace),
         quote! {
             #[inline]
-            unsafe fn trace(&self, color: ::oscars::gc_trace::TraceColor) {
+            unsafe fn trace(&self, color: ::oscars::mark_sweep::TraceColor) {
                 #[allow(dead_code)]
-                fn mark<T: ::oscars::gc_trace::Trace + ?Sized>(it: &T, color: oscars::gc_trace::TraceColor) {
+                fn mark<T: ::oscars::mark_sweep::Trace + ?Sized>(it: &T, color: oscars::mark_sweep::TraceColor) {
                     unsafe {
-                        ::oscars::gc_trace::Trace::trace(it, color);
+                        ::oscars::mark_sweep::Trace::trace(it, color);
                     }
                 }
                 match *self { #trace_body }
             }
             #[inline]
             fn run_finalizer(&self) {
-                ::oscars::gc_trace::Finalize::finalize(self);
+                ::oscars::mark_sweep::Finalize::finalize(self);
                 #[allow(dead_code)]
-                fn mark<T: ::oscars::gc_trace::Trace + ?Sized>(it: &T) {
+                fn mark<T: ::oscars::mark_sweep::Trace + ?Sized>(it: &T) {
                     unsafe {
-                        ::oscars::gc_trace::Trace::run_finalizer(it);
+                        ::oscars::mark_sweep::Trace::run_finalizer(it);
                     }
                 }
                 match *self { #trace_other_body }
@@ -120,7 +120,7 @@ fn derive_trace(mut s: Structure<'_>) -> proc_macro2::TokenStream {
                 #[allow(clippy::inline_always)]
                 #[inline(always)]
                 fn drop(&mut self) {
-                    ::oscars::gc_trace::Finalize::finalize(self);
+                    ::oscars::mark_sweep::Finalize::finalize(self);
                 }
             },
         )
@@ -143,5 +143,5 @@ decl_derive! {
 /// Derives the `Finalize` trait.
 #[allow(clippy::needless_pass_by_value)]
 fn derive_finalize(s: Structure<'_>) -> proc_macro2::TokenStream {
-    s.unbound_impl(quote!(::oscars::gc_trace::Finalize), quote!())
+    s.unbound_impl(quote!(::oscars::mark_sweep::Finalize), quote!())
 }
