@@ -57,6 +57,13 @@ pub trait Collector {
         crate::alloc::arena2::ArenaAllocError,
     >;
 
+    fn alloc_empty_ephemeron_node<'gc, K: Trace + 'static>(
+        &'gc self,
+    ) -> Result<
+        crate::alloc::arena2::ArenaPointer<'gc, internals::Ephemeron<K, ()>>,
+        crate::alloc::arena2::ArenaAllocError,
+    >;
+
     // Register a weak map with the GC so it can prune dead entries.
     #[doc(hidden)]
     fn track_weak_map(&self, map: core::ptr::NonNull<dyn ErasedWeakMap>);
@@ -464,6 +471,38 @@ impl Collector for MarkSweepGarbageCollector {
         }
 
         let ephemeron = Ephemeron::new(key, value, self.trace_color.get());
+
+        let mut alloc = self.allocator.borrow_mut();
+        let inner_ptr = alloc.try_alloc(ephemeron)?;
+        let needs_collect = !alloc.is_below_threshold();
+        drop(alloc);
+
+        if needs_collect {
+            self.collect_needed.set(true);
+        }
+
+        let eph_ptr = inner_ptr
+            .as_ptr()
+            .cast::<ArenaHeapItem<Ephemeron<NonTraceable, NonTraceable>>>();
+
+        if self.is_collecting.get() {
+            self.pending_ephemeron_queue.borrow_mut().push(eph_ptr);
+        } else {
+            self.ephemeron_queue.borrow_mut().push(eph_ptr);
+        }
+
+        Ok(inner_ptr)
+    }
+
+    fn alloc_empty_ephemeron_node<'gc, K: Trace + 'static>(
+        &'gc self,
+    ) -> Result<ArenaPointer<'gc, Ephemeron<K, ()>>, crate::alloc::arena2::ArenaAllocError> {
+        if self.collect_needed.get() && !self.is_collecting.get() {
+            self.collect_needed.set(false);
+            self.collect();
+        }
+
+        let ephemeron = Ephemeron::<K, ()>::new_empty(self.trace_color.get());
 
         let mut alloc = self.allocator.borrow_mut();
         let inner_ptr = alloc.try_alloc(ephemeron)?;
