@@ -1,6 +1,6 @@
 //! Trace and Finalize traits for the lifetime branded GC
 
-use crate::collectors::mark_sweep_branded::gc::Gc;
+use crate::{alloc::mempool3::PoolItem, collectors::mark_sweep_branded::gc::Gc};
 use core::cell::{Cell, OnceCell};
 use core::marker::PhantomData;
 use rust_alloc::borrow::{Cow, ToOwned};
@@ -55,17 +55,18 @@ impl<'a> Tracer<'a> {
     /// Marks `gc` as reachable.
     #[inline]
     pub fn mark<T: Trace>(&mut self, gc: &Gc<'_, T>) {
-        // SAFETY: `gc.ptr` is a valid `GcBox`.
+        // SAFETY: `gc.ptr` is a valid `PoolItem<GcBox<T>>`.
         unsafe {
-            if !(*gc.ptr.as_ptr()).marked.replace(true) {
+            if !(*gc.ptr.as_ptr()).0.marked.replace(true) {
                 unsafe fn trace_value<T: Trace>(
                     ptr: core::ptr::NonNull<u8>,
                     tracer: &mut Tracer<'_>,
                 ) {
-                    let gcbox_ptr =
-                        ptr.cast::<crate::collectors::mark_sweep_branded::gc_box::GcBox<T>>();
+                    let pool_item_ptr = ptr
+                        .cast::<PoolItem<crate::collectors::mark_sweep_branded::gc_box::GcBox<T>>>(
+                        );
                     unsafe {
-                        (*gcbox_ptr.as_ptr()).value.trace(tracer);
+                        (*pool_item_ptr.as_ptr()).0.value.trace(tracer);
                     }
                 }
 
@@ -78,17 +79,16 @@ impl<'a> Tracer<'a> {
     ///
     /// # Safety
     ///
-    /// `ptr` must be a valid pointer to a `GcBox` managed by this collector.
+    /// `ptr` must be a valid pointer to a `PoolItem<GcBox<_>>` managed by this collector.
     #[inline]
     pub(crate) fn mark_raw(&mut self, ptr: core::ptr::NonNull<u8>) {
-        let boxed_ptr = ptr.cast::<crate::collectors::mark_sweep_branded::gc_box::GcBox<()>>();
+        let pool_item_ptr =
+            ptr.cast::<PoolItem<crate::collectors::mark_sweep_branded::gc_box::GcBox<()>>>();
 
         unsafe {
-            if !(*boxed_ptr.as_ptr()).marked.replace(true) {
-                // Call the trace function.
-                if let Some(trace_fn) = (*boxed_ptr.as_ptr()).trace_fn {
-                    self.worklist.push((ptr, trace_fn));
-                }
+            if !(*pool_item_ptr.as_ptr()).0.marked.replace(true) {
+                let trace_fn = (*pool_item_ptr.as_ptr()).0.trace_fn;
+                self.worklist.push((ptr, trace_fn));
             }
         }
     }

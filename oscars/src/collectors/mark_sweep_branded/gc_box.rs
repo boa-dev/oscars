@@ -11,7 +11,7 @@ pub(crate) struct GcBox<T: ?Sized> {
     /// Reachability flag set by the mark phase.
     pub(crate) marked: Cell<bool>,
     /// Type-erased trace function.
-    pub(crate) trace_fn: Option<TraceFn>,
+    pub(crate) trace_fn: TraceFn,
     /// Allocation ID used to validate weak pointers.
     pub(crate) alloc_id: usize,
     /// The user value.

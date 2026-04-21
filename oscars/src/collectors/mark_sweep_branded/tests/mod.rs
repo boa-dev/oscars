@@ -127,5 +127,6 @@ fn root_escapes_closure_safely() {
 }
 
 mod api_compliance;
+mod ephemeron;
 mod uaf;
 mod ui_tests;

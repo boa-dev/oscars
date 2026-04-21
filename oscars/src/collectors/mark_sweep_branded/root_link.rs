@@ -69,26 +69,44 @@ impl RootLink {
     }
 
     /// Returns an iterator over all nodes after `sentinel`.
-    pub(crate) fn iter_from_sentinel(
-        sentinel: NonNull<Self>,
-    ) -> impl Iterator<Item = NonNull<Self>> {
-        struct Iter {
-            current: Option<NonNull<RootLink>>,
-        }
-
-        impl Iterator for Iter {
-            type Item = NonNull<RootLink>;
-
-            fn next(&mut self) -> Option<Self::Item> {
-                let node = self.current?;
-                // SAFETY: nodes are pinned/heap-stable and valid during collection.
-                self.current = unsafe { node.as_ref().next.get() };
-                Some(node)
-            }
-        }
-
+    pub(crate) fn iter_from_sentinel(sentinel: NonNull<Self>) -> RootLinkIter {
         // SAFETY: sentinel is pinned in Collector and outlives the iteration.
         let first = unsafe { sentinel.as_ref().next.get() };
-        Iter { current: first }
+        RootLinkIter { current: first }
+    }
+}
+
+/// Iterator over root links in the intrusive list.
+pub(crate) struct RootLinkIter {
+    current: Option<NonNull<RootLink>>,
+}
+
+impl Iterator for RootLinkIter {
+    type Item = NonNull<RootLink>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let node = self.current?;
+        // SAFETY: nodes are pinned/heap-stable and valid during collection.
+        self.current = unsafe { node.as_ref().next.get() };
+        Some(node)
+    }
+}
+
+/// Sentinel node for the root list.
+#[repr(transparent)]
+pub(crate) struct RootSentinel(core::pin::Pin<rust_alloc::boxed::Box<RootLink>>);
+
+impl RootSentinel {
+    /// Creates a new sentinel node
+    pub(crate) fn new() -> Self {
+        Self(rust_alloc::boxed::Box::pin(RootLink::new()))
+    }
+
+    /// Returns a pointer to the underlying RootLink
+    pub(crate) fn as_ptr(&self) -> NonNull<RootLink> {
+        // SAFETY: The sentinel is pinned and the pointer is derived from a valid Box.
+        unsafe {
+            NonNull::new_unchecked(self.0.as_ref().get_ref() as *const RootLink as *mut RootLink)
+        }
     }
 }
