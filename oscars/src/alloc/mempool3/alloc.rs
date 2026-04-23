@@ -140,7 +140,7 @@ impl SlotPool {
 
         const BYTES_FOR_ROUNDING_BITS: usize = 64 / 8;
 
-        // We need to calculate our bitmap size and subtract it from the capacity to 
+        // We need to calculate our bitmap size and subtract it from the capacity to
         // create our slot pool.
         //
         // The general layout will look like the below diagram:
