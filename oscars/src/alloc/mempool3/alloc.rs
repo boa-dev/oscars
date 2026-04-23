@@ -132,12 +132,46 @@ impl SlotPool {
             "slot_size must fit a FreeSlot (needed for the intrusive free list)"
         );
 
-        // guess the slot count (ignoring bitmap size), size the bitmap based on that guess
-        // (rounded up to 64 bits), then subtract the bitmap size from the total capacity to get the real slot count
-        // example (512 capacity, 16 slot size): guess 32 slots -> 8 byte bitmap, real 504 bytes left -> 31 slots
-        // layout: [ 8-byte bitmap ][ 31 x 16-byte slots ] = 504 bytes used
-        let estimated = total_capacity / slot_size;
-        let bitmap_bytes = estimated.div_ceil(64) * 8;
+        // TODO: We should really test this more against different slot sizes
+        // and capacities to ensure that we are not violating any layouts
+
+        // TODO: prove this is fine on i686
+        const ROUNDING_BITS: usize = 64;
+
+        const BYTES_FOR_ROUNDING_BITS: usize = 64 / 8;
+
+        // We need to calculate our bitmap size and subtract it from the capacity to 
+        // create our slot pool.
+        //
+        // The general layout will look like the below diagram:
+        //
+        // +------------------------------------------------+
+        // | bitmap    |                slots               |
+        // +------------------------------------------------+
+        //
+        // Example: 512 capacity and 16 slot size
+        //
+        // Calculate a slot estimate of 32:
+        //
+        // 512 / 16 = 32.
+        //
+        // Calculate the bitmap bytes of 8.
+        //
+        // (32 / 64 rounded towards infinity) * 8 = 8
+        //
+        // Calculate the actual slot area and slot count of 504 and 31
+        //
+        // 512 - 8 = 504; 504 / 16 = 31
+        //
+        let estimated_slot_count = total_capacity / slot_size;
+        // NOTE: Round the bitmap to the necessary bytes based on 64 bits
+        //
+        // For 32 estimated slots => 32 / 64 = 1 * 8 = 8 bitmap bytes
+        // For 65 estamated slots => 65 / 64 = 2 * 8 = 16 bitemap bytes
+        // For 129 estimated slots => 129 / 64 = 3 * 8 = 24 bitmap bytes
+        //
+        // ... so on and so forth
+        let bitmap_bytes = estimated_slot_count.div_ceil(ROUNDING_BITS) * BYTES_FOR_ROUNDING_BITS;
         let slot_area = total_capacity.saturating_sub(bitmap_bytes);
         let slot_count = slot_area / slot_size;
 
