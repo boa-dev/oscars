@@ -94,7 +94,7 @@ impl ErasedHeapItem {
 
 impl<T> core::convert::AsRef<T> for ErasedHeapItem {
     fn as_ref(&self) -> &T {
-        // SAFETY: TODO
+        // SAFETY: caller must ensure this pointer was allocated as T
         unsafe { self.get().as_ref() }
     }
 }

@@ -174,7 +174,6 @@ fn gc_downcast_and_cast_unchecked_parity() {
         .with_heap_threshold(512);
 
     let typed = Gc::new_in(13u32, collector);
-
     let erased_as_u64: Gc<u64> = unsafe { Gc::cast_unchecked(typed.clone()) };
     assert!(
         Gc::downcast::<u64>(erased_as_u64).is_none(),
@@ -216,6 +215,28 @@ fn weak_upgrade_tracks_liveness() {
     assert!(
         weak.upgrade().is_none(),
         "upgrade should fail after referent is collected"
+    );
+}
+
+#[test]
+fn cast_ref_unchecked_preserves_identity_and_value() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_page_size(256)
+        .with_heap_threshold(512);
+
+    let typed = Gc::new_in(13u32, collector);
+    let erased_as_u64: Gc<u64> = unsafe { Gc::cast_unchecked(typed.clone()) };
+
+    // SAFETY: `erased_as_u64` points to an allocation that actually stores `u32`.
+    let recovered_ref: &Gc<u32> = unsafe { Gc::cast_ref_unchecked(&erased_as_u64) };
+
+    assert_eq!(
+        **recovered_ref, 13u32,
+        "cast_ref_unchecked recovered wrong value"
+    );
+    assert!(
+        Gc::ptr_eq(&typed, recovered_ref),
+        "cast_ref_unchecked should preserve pointer identity"
     );
 }
 
@@ -853,6 +874,60 @@ mod gc_edge_cases {
 
         // The flag is still a live root – reading it must never fault.
         let _value = *flag.borrow();
+    }
+
+    #[test]
+    fn finalizer_safe_reflects_collecting_state() {
+        use core::sync::atomic::{AtomicU8, Ordering};
+
+        // 0 = not observed, 1 = true, 2 = false
+        static OBSERVED: AtomicU8 = AtomicU8::new(0);
+
+        struct Probe {
+            collector: core::ptr::NonNull<MarkSweepGarbageCollector>,
+        }
+
+        impl Finalize for Probe {}
+
+        unsafe impl Trace for Probe {
+            unsafe fn trace(&self, _color: crate::mark_sweep::TraceColor) {
+                let safe = unsafe { self.collector.as_ref().finalizer_safe() };
+                OBSERVED.store(if safe { 1 } else { 2 }, Ordering::SeqCst);
+            }
+
+            fn run_finalizer(&self) {
+                Finalize::finalize(self);
+            }
+        }
+
+        let collector = &mut MarkSweepGarbageCollector::default()
+            .with_page_size(256)
+            .with_heap_threshold(512);
+
+        assert!(
+            collector.finalizer_safe(),
+            "collector should report finalizer-safe while idle"
+        );
+
+        OBSERVED.store(0, Ordering::SeqCst);
+        let _root = Gc::new_in(
+            Probe {
+                collector: core::ptr::NonNull::from(&*collector),
+            },
+            collector,
+        );
+
+        collector.collect();
+
+        assert_eq!(
+            OBSERVED.load(Ordering::SeqCst),
+            2,
+            "trace-time observation should see finalizer_safe() == false during collection"
+        );
+        assert!(
+            collector.finalizer_safe(),
+            "collector should return to finalizer-safe state after collection"
+        );
     }
 
     // ---- Multiple collections on the same graph ---------------------------
