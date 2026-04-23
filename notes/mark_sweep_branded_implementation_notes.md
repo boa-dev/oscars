@@ -1,7 +1,4 @@
-# mark_sweep_branded Implementation Notes
-
 **Date**: 2026-04-23  
-**Status**: Production Ready
 
 ## Changes from API Redesign Proposal
 
@@ -62,14 +59,7 @@ impl<T: Copy + Trace> Trace for Cell<Option<T>>
 `self.set(Some(v))` requires moving `v`, which needs `T: Copy`. Without this bound, code fails to compile.
 
 **Alternative:**
-Use `GcRefCell<T>` for non-Copy types.
-
-### 5. Documentation Improvements
-
-**Added:**
-- `Tracer<'a>` lifetime explanation
-- `PoolAllocator<'static>` safety justification
-- Comments on why certain impls are no-ops
+Use `GcRefCell<T>` for non Copy types.
 
 ## Design Decisions
 
@@ -86,22 +76,3 @@ Both `GcContext::collect` and `MutationContext::collect` use `&self` with interi
 
 **Why:**
 Allows calling `collect()` inside `mutate()` closures without borrow conflicts.
-
-## Testing
-
-All tests pass:
-- Unit tests (10 passed)
-- Compile-fail tests (3 passed)
-- Clippy (no warnings)
-- Miri (no undefined behavior)
-- Formatting (correct)
-
-## Summary
-
-Implementation is production ready and matches the approved API proposal. All additions are either:
-- Required for soundness (ABA protection)
-- Defensive checks (ID wrap)
-- Practical needs (stdlib impls)
-- Correctness fixes (Copy bounds)
-
-No workarounds used. All unsafe code is justified.

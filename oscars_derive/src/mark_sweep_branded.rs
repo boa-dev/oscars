@@ -7,7 +7,6 @@ decl_derive! {
     derive_trace
 }
 
-/// Derives the `Trace` trait for mark_sweep_branded.
 fn derive_trace(mut s: Structure<'_>) -> proc_macro2::TokenStream {
     s.filter(|bi| {
         !bi.ast()
@@ -34,11 +33,10 @@ fn derive_trace(mut s: Structure<'_>) -> proc_macro2::TokenStream {
 
 decl_derive! {
     [Finalize] =>
-    /// Derive the `Finalize` trait for mark_sweep_branded collector.
+    /// Derive the `Finalize` trait for mark_sweep_branded collector
     derive_finalize
 }
 
-/// Derives the `Finalize` trait for mark_sweep_branded.
 fn derive_finalize(s: Structure<'_>) -> proc_macro2::TokenStream {
     s.unbound_impl(
         quote!(::oscars::collectors::mark_sweep_branded::Finalize),

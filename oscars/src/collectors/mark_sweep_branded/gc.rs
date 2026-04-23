@@ -31,7 +31,7 @@ impl<'gc, T: Trace + 'gc> Gc<'gc, T> {
     pub fn get(&self) -> &T {
         // SAFETY: `ptr` is non-null and valid for `'gc` by construction.
         // The `'gc` lifetime is scoped to a `mutate()` closure, collection only occurs
-        // via `cx.collect()` within that same closure, and `Gc<'gc, T>` cannot
+        // via `cx.collect()` within that same closure and `Gc<'gc, T>` can't
         // escape the closure.
         unsafe { &(*self.ptr.as_ptr()).value }
     }

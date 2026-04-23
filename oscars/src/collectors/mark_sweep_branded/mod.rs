@@ -38,7 +38,7 @@ struct PoolEntry {
 pub(crate) struct Collector {
     // SAFETY: We use 'static here because the PoolAllocator owns its memory,
     // and we ensure that `Gc` objects and pool allocations do not outlive
-    // the `Collector` instance.
+    // the `Collector` instance
     pub(crate) pool: RefCell<PoolAllocator<'static>>,
     pool_entries: RefCell<Vec<PoolEntry>>,
     pub(crate) sentinel: Pin<Box<RootLink>>,
@@ -61,7 +61,7 @@ impl Collector {
     ///
     /// # Panics
     ///
-    /// Panics if the allocation ID counter wraps around to `FREED_ALLOC_ID`.
+    /// Panics if the allocation ID counter wraps around to `FREED_ALLOC_ID`
     /// This is a theoretical limit that would require `usize::MAX - 1` allocations.
     pub(crate) fn alloc<'gc, T: trace::Trace + trace::Finalize + 'gc>(
         &'gc self,
@@ -72,7 +72,6 @@ impl Collector {
         // Check for alloc_id wrap before incrementing.
         // If alloc_id reaches FREED_ALLOC_ID (usize::MAX), weak reference validation
         // would break because freed slots are marked with this sentinel value.
-        // This is a theoretical limit requiring usize::MAX - 1 allocations.
         assert_ne!(
             alloc_id,
             GcBox::<()>::FREED_ALLOC_ID,

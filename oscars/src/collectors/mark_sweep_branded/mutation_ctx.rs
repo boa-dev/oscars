@@ -27,7 +27,7 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
         self.collector.alloc(value)
     }
 
-    /// Downgrades a `Gc` into a weak reference.
+    /// Downgrades a `Gc` into a weak reference
     pub fn alloc_weak<T: Trace + Finalize + 'gc>(&self, gc: Gc<'gc, T>) -> WeakGc<'id, T> {
         let alloc_id = unsafe { (*gc.ptr.as_ptr()).alloc_id };
         WeakGc {

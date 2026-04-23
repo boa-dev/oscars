@@ -47,6 +47,6 @@ impl<'id, T: Trace + ?Sized> Copy for WeakGc<'id, T> {}
 
 impl<'id, T: Trace> Finalize for WeakGc<'id, T> {}
 impl<'id, T: Trace> Trace for WeakGc<'id, T> {
-    // Weak references do not mark their target; upgrade() returning None after collection is the intended behaviour.
+    // Weak references do not mark their target, upgrade() returning None after collection is the intended behaviour.
     fn trace(&mut self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
 }
