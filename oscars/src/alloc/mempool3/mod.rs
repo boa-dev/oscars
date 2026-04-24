@@ -121,6 +121,13 @@ impl<'alloc> PoolAllocator<'alloc> {
         self.current_heap_size
     }
 
+    /// Iterates over every live slot pointer across all slot pools.
+    ///
+    /// Yields one `NonNull<u8>` per allocated (not yet freed) slot.
+    pub fn iter_live_slots(&self) -> impl Iterator<Item = core::ptr::NonNull<u8>> + '_ {
+        self.slot_pools.iter().flat_map(|pool| pool.iter_live())
+    }
+
     pub fn is_below_threshold(&self) -> bool {
         // keep 25% headroom so collection fires before the last page fills
         let margin = self.heap_threshold / 4;
@@ -246,6 +253,67 @@ impl<'alloc> PoolAllocator<'alloc> {
             dst.write(PoolItem(value));
             Ok(PoolPointer::from_raw(NonNull::new_unchecked(dst)))
         }
+    }
+
+    /// Allocates a raw slot of the given size without type constraints.
+    /// Returns a pointer to uninitialized memory.
+    ///
+    /// # Safety
+    /// Caller must initialize the memory before use and ensure proper cleanup.
+    pub fn alloc_slot_raw(&mut self, size: usize) -> Result<NonNull<u8>, PoolAllocError> {
+        let sc_idx = size_class_index_for(size);
+        let slot_size = SIZE_CLASSES.get(sc_idx).copied().unwrap_or(size);
+
+        let cached_idx = self.alloc_cache[sc_idx].get();
+        if cached_idx < self.slot_pools.len() {
+            let pool = &self.slot_pools[cached_idx];
+            if pool.slot_size == slot_size
+                && let Some(slot_ptr) = pool.alloc_slot()
+            {
+                return Ok(slot_ptr);
+            }
+        }
+
+        // try existing pools with matching slot_size first
+        for (i, pool) in self.slot_pools.iter().enumerate().rev() {
+            if pool.slot_size == slot_size
+                && let Some(slot_ptr) = pool.alloc_slot()
+            {
+                self.alloc_cache[sc_idx].set(i);
+                return Ok(slot_ptr);
+            }
+        }
+
+        // need a new pool for this size class
+        // try the recycle list first
+        if let Some(pos) = self
+            .recycled_pools
+            .iter()
+            .rposition(|p| p.slot_size == slot_size)
+        {
+            let pool = self.recycled_pools.swap_remove(pos);
+            let slot_ptr = pool.alloc_slot().ok_or(PoolAllocError::OutOfMemory)?;
+            let insert_idx = self.slot_pools.len();
+            let (base, end) = pool.slot_range();
+            let spos = self.sorted_ranges.partition_point(|&(b, _, _)| b < base);
+            self.sorted_ranges.insert(spos, (base, end, insert_idx));
+            self.slot_pools.push(pool);
+            self.alloc_cache[sc_idx].set(insert_idx);
+            return Ok(slot_ptr);
+        }
+
+        // Allocate a fresh page from the OS
+        let total = self.page_size.max(slot_size * 4);
+        let new_pool = SlotPool::try_init(slot_size, total, 16)?;
+        self.current_heap_size += new_pool.layout.size();
+        let slot_ptr = new_pool.alloc_slot().ok_or(PoolAllocError::OutOfMemory)?;
+        let insert_idx = self.slot_pools.len();
+        let (base, end) = new_pool.slot_range();
+        let spos = self.sorted_ranges.partition_point(|&(b, _, _)| b < base);
+        self.sorted_ranges.insert(spos, (base, end, insert_idx));
+        self.slot_pools.push(new_pool);
+        self.alloc_cache[sc_idx].set(insert_idx);
+        Ok(slot_ptr)
     }
 
     /// drops the value at `ptr` and returns the slot to the allocator
