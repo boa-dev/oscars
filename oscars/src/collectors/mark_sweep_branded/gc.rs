@@ -1,7 +1,7 @@
 //! Core pointer types.
 
 use crate::{
-    alloc::mempool3::PoolItem,
+    alloc::mempool3::{PoolAllocator, PoolItem},
     collectors::mark_sweep_branded::{
         gc_box::GcBox,
         mutation_ctx::MutationContext,
@@ -13,7 +13,8 @@ use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::ptr::NonNull;
-use rust_alloc::boxed::Box;
+
+pub(crate) type RootDropFn = unsafe fn(&mut PoolAllocator<'static>, NonNull<u8>);
 
 /// A transient pointer to a GC-managed value.
 #[derive(Debug)]
@@ -61,6 +62,10 @@ pub(crate) struct RootNode<'id, T: Trace> {
     pub(crate) link: RootLink,
     /// Pointer to the allocation
     pub(crate) gc_ptr: NonNull<PoolItem<GcBox<T>>>,
+    /// Type-erased drop function for freeing this RootNode
+    pub(crate) drop_fn: RootDropFn,
+    /// Raw pointer to the Collector for freeing this node
+    pub(crate) collector_ptr: *const crate::collectors::mark_sweep_branded::Collector,
     pub(crate) _marker: PhantomData<*mut &'id ()>,
 }
 
@@ -83,14 +88,14 @@ impl<'id, T: Trace> Root<'id, T> {
 
 impl<'id, T: Trace> Drop for Root<'id, T> {
     fn drop(&mut self) {
-        // SAFETY:
-        // * `self.raw` was created by `Box::into_raw`
-        // * The address is stable.
         unsafe {
-            let node = Box::from_raw(self.raw.as_ptr());
-            if node.link.is_linked() {
-                RootLink::unlink(NonNull::from(&node.link));
+            let node_ref = self.raw.as_ref();
+            if node_ref.link.is_linked() {
+                RootLink::unlink(NonNull::from(&node_ref.link));
             }
+            // SAFETY: collector_ptr is valid for the lifetime of the GcContext
+            let collector = &*node_ref.collector_ptr;
+            collector.free_root_node(self.raw.cast::<u8>(), node_ref.drop_fn);
         }
     }
 }

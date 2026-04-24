@@ -41,6 +41,8 @@ pub(crate) struct Collector {
     // and we ensure that `Gc` objects and pool allocations do not outlive
     // the `Collector` instance
     pub(crate) pool: RefCell<PoolAllocator<'static>>,
+    /// Dedicated pool for RootNode allocations
+    pub(crate) root_pool: RefCell<PoolAllocator<'static>>,
     pub(crate) sentinel: RootSentinel,
     pub(crate) generic_alloc_id: Cell<usize>,
     pub(crate) ephemerons: RefCell<Vec<EphemeronEntry>>,
@@ -50,6 +52,7 @@ impl Collector {
     fn new() -> Self {
         Self {
             pool: RefCell::new(PoolAllocator::default()),
+            root_pool: RefCell::new(PoolAllocator::default()),
             sentinel: RootSentinel::new(),
             generic_alloc_id: Cell::new(0),
             ephemerons: RefCell::new(Vec::new()),
@@ -68,6 +71,54 @@ impl Collector {
             key_alloc_id,
             value_ptr,
         });
+    }
+
+    /// Allocates a RootNode from the dedicated root pool.
+    pub(crate) fn alloc_root_node<'id, T: trace::Trace>(
+        &self,
+        gc_ptr: NonNull<crate::alloc::mempool3::PoolItem<GcBox<T>>>,
+    ) -> NonNull<gc::RootNode<'id, T>> {
+        use crate::alloc::mempool3::PoolItem;
+
+        unsafe fn drop_and_free<T: trace::Trace>(
+            pool: &mut PoolAllocator<'static>,
+            ptr: NonNull<u8>,
+        ) {
+            unsafe {
+                let typed_ptr = ptr.cast::<PoolItem<gc::RootNode<'_, T>>>();
+                core::ptr::drop_in_place(typed_ptr.as_ptr());
+                pool.free_slot(ptr);
+            }
+        }
+
+        let size = mem::size_of::<PoolItem<gc::RootNode<'id, T>>>();
+        let mut pool = self.root_pool.borrow_mut();
+        let slot_ptr = pool
+            .alloc_slot_raw(size)
+            .expect("root pool allocation failed");
+
+        unsafe {
+            let typed_ptr = slot_ptr.cast::<PoolItem<gc::RootNode<'id, T>>>();
+            core::ptr::write(
+                typed_ptr.as_ptr(),
+                PoolItem(gc::RootNode {
+                    link: root_link::RootLink::new(),
+                    gc_ptr,
+                    drop_fn: drop_and_free::<T>,
+                    collector_ptr: self as *const Collector,
+                    _marker: PhantomData,
+                }),
+            );
+            NonNull::new_unchecked(&mut (*typed_ptr.as_ptr()).0)
+        }
+    }
+
+    /// Frees a RootNode back to the root pool.
+    pub(crate) fn free_root_node(&self, ptr: NonNull<u8>, drop_fn: gc::RootDropFn) {
+        let mut pool = self.root_pool.borrow_mut();
+        unsafe {
+            (drop_fn)(&mut pool, ptr);
+        }
     }
 
     /// Allocates a value from the pool.
@@ -161,8 +212,6 @@ impl Collector {
 
     /// Runs a collection cycle
     pub(crate) fn collect(&self) {
-        let sentinel_ptr = self.sentinel.as_ptr();
-
         let color = TraceColor::new();
 
         let gc_ptr_offset = core::mem::offset_of!(
@@ -178,7 +227,7 @@ impl Collector {
             "gc_ptr offset must be stable across all T: Sized"
         );
 
-        for link_ptr in RootLink::iter_from_sentinel(sentinel_ptr) {
+        for link_ptr in self.sentinel.iter() {
             unsafe {
                 // Read the `gc_ptr` field using the stable offset
                 let gc_ptr_ptr = link_ptr
@@ -260,6 +309,28 @@ impl Drop for Collector {
     /// Frees all remaining allocations
     fn drop(&mut self) {
         use crate::alloc::mempool3::PoolItem;
+
+        // Free all root nodes first
+        let all_roots: Vec<(NonNull<u8>, gc::RootDropFn)> = self
+            .root_pool
+            .borrow()
+            .iter_live_slots()
+            .map(|ptr| unsafe {
+                let drop_fn = (*ptr.cast::<PoolItem<gc::RootNode<'_, ()>>>().as_ptr())
+                    .0
+                    .drop_fn;
+                (ptr, drop_fn)
+            })
+            .collect();
+        let mut root_pool = self.root_pool.borrow_mut();
+        for (ptr, drop_fn) in all_roots {
+            unsafe {
+                (drop_fn)(&mut root_pool, ptr);
+            }
+        }
+        drop(root_pool);
+
+        // Then free all GC allocations
         let all: Vec<(NonNull<u8>, DropFn)> = self
             .pool
             .borrow()

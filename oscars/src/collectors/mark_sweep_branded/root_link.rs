@@ -67,13 +67,6 @@ impl RootLink {
             node_ref.next.set(None);
         }
     }
-
-    /// Returns an iterator over all nodes after `sentinel`.
-    pub(crate) fn iter_from_sentinel(sentinel: NonNull<Self>) -> RootLinkIter {
-        // SAFETY: sentinel is pinned in Collector and outlives the iteration.
-        let first = unsafe { sentinel.as_ref().next.get() };
-        RootLinkIter { current: first }
-    }
 }
 
 /// Iterator over root links in the intrusive list.
@@ -108,5 +101,11 @@ impl RootSentinel {
         unsafe {
             NonNull::new_unchecked(self.0.as_ref().get_ref() as *const RootLink as *mut RootLink)
         }
+    }
+
+    /// Returns an iterator over all root nodes after this sentinel.
+    pub(crate) fn iter(&self) -> RootLinkIter {
+        let first = self.0.as_ref().next.get();
+        RootLinkIter { current: first }
     }
 }
