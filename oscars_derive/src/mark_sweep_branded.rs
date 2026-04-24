@@ -16,7 +16,7 @@ fn derive_trace(mut s: Structure<'_>) -> proc_macro2::TokenStream {
     });
     
     let trace_body = s.each(|bi| {
-        quote!(::oscars::collectors::mark_sweep_branded::Trace::trace(#bi, tracer))
+        quote!(::oscars::collectors::mark_sweep_branded::Trace::trace(#bi, color))
     });
 
     s.add_bounds(AddBounds::Fields);
@@ -24,7 +24,7 @@ fn derive_trace(mut s: Structure<'_>) -> proc_macro2::TokenStream {
         quote!(::oscars::collectors::mark_sweep_branded::Trace),
         quote! {
             #[inline]
-            fn trace(&mut self, tracer: &mut ::oscars::collectors::mark_sweep_branded::Tracer) {
+            fn trace(&self, color: &::oscars::collectors::mark_sweep_branded::TraceColor) {
                 match *self { #trace_body }
             }
         },

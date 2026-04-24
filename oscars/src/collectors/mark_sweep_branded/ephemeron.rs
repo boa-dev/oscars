@@ -4,7 +4,7 @@ use crate::{
         gc::Gc,
         gc_box::GcBox,
         mutation_ctx::MutationContext,
-        trace::{Finalize, Trace, Tracer},
+        trace::{Finalize, Trace, TraceColor},
     },
 };
 use core::marker::PhantomData;
@@ -44,5 +44,5 @@ impl<'id, K: Trace, V: Trace> Copy for Ephemeron<'id, K, V> {}
 impl<'id, K: Trace, V: Trace> Finalize for Ephemeron<'id, K, V> {}
 
 impl<'id, K: Trace, V: Trace> Trace for Ephemeron<'id, K, V> {
-    fn trace(&mut self, _tracer: &mut Tracer) {}
+    fn trace(&self, _color: &TraceColor) {}
 }

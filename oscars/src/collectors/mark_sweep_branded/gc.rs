@@ -97,7 +97,7 @@ impl<'id, T: Trace> Drop for Root<'id, T> {
 
 impl<T: Trace> Finalize for Gc<'_, T> {}
 impl<T: Trace> Trace for Gc<'_, T> {
-    fn trace(&mut self, tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {
-        tracer.mark(self);
+    fn trace(&self, color: &crate::collectors::mark_sweep_branded::trace::TraceColor) {
+        color.mark(self);
     }
 }

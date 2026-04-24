@@ -17,7 +17,7 @@ pub use cell::GcRefCell;
 pub use ephemeron::Ephemeron;
 pub use gc::{Gc, Root};
 pub use mutation_ctx::MutationContext;
-pub use trace::{Finalize, Trace, Tracer};
+pub use trace::{Finalize, Trace, TraceColor};
 pub use weak::WeakGc;
 
 use crate::alloc::mempool3::PoolAllocator;
@@ -107,12 +107,12 @@ impl Collector {
 
         unsafe fn trace_value<T: trace::Trace>(
             ptr: core::ptr::NonNull<u8>,
-            tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer<'_>,
+            color: &crate::collectors::mark_sweep_branded::trace::TraceColor<'_>,
         ) {
             use crate::alloc::mempool3::PoolItem;
             let pool_item_ptr = ptr.cast::<PoolItem<GcBox<T>>>();
             unsafe {
-                (*pool_item_ptr.as_ptr()).0.value.trace(tracer);
+                (*pool_item_ptr.as_ptr()).0.value.trace(color);
             }
         }
 
@@ -179,7 +179,7 @@ impl Collector {
     pub(crate) fn collect(&self) {
         let sentinel_ptr = self.sentinel.as_ptr();
 
-        let mut tracer = Tracer::new();
+        let color = TraceColor::new();
 
         let gc_ptr_offset = core::mem::offset_of!(
             crate::collectors::mark_sweep_branded::gc::RootNode<'static, i32>,
@@ -204,11 +204,11 @@ impl Collector {
                     .cast::<NonNull<u8>>();
                 let gc_ptr = gc_ptr_ptr.read();
 
-                tracer.mark_raw(gc_ptr.cast::<u8>());
+                color.mark_raw(gc_ptr.cast::<u8>());
             }
         }
 
-        tracer.drain();
+        color.drain();
 
         // Phase 2: ephemeron fixpoint.
         // If marking a value causes new keys of other ephemerons to become
@@ -224,19 +224,14 @@ impl Collector {
                         continue;
                     }
                     if (*key_box.as_ptr()).0.marked.get() {
-                        let value_box = entry.value_ptr.cast::<PoolItem<GcBox<()>>>();
-                        if !(*value_box.as_ptr()).0.marked.replace(true) {
-                            let trace_fn = (*value_box.as_ptr()).0.trace_fn;
-                            tracer.worklist.push((entry.value_ptr, trace_fn));
-                            any_newly_marked = true;
-                        }
+                        any_newly_marked |= color.mark_raw(entry.value_ptr);
                     }
                 }
             }
             if !any_newly_marked {
                 break;
             }
-            tracer.drain();
+            color.drain();
         }
 
         use crate::alloc::mempool3::PoolItem;

@@ -1,6 +1,6 @@
 //! Interior mutability for GC-managed values.
 
-use crate::collectors::mark_sweep_branded::trace::{Finalize, Trace, Tracer};
+use crate::collectors::mark_sweep_branded::trace::{Finalize, Trace, TraceColor};
 use core::cell::{Ref, RefCell, RefMut};
 use core::ops::{Deref, DerefMut};
 
@@ -65,7 +65,7 @@ impl<T: Trace> DerefMut for GcRefMut<'_, T> {
 impl<T: Trace> Finalize for GcRefCell<T> {}
 
 impl<T: Trace> Trace for GcRefCell<T> {
-    fn trace(&mut self, tracer: &mut Tracer) {
-        self.inner.get_mut().trace(tracer);
+    fn trace(&self, color: &TraceColor) {
+        self.inner.borrow().trace(color);
     }
 }

@@ -1,7 +1,5 @@
 //! `WeakGc<'id, T>` for weak references.
-//!
-//! For weak key-value mappings (e.g., weak hash maps) see
-//! [`Ephemeron`][crate::collectors::mark_sweep_branded::Ephemeron].
+
 use crate::{
     alloc::mempool3::PoolItem,
     collectors::mark_sweep_branded::{
@@ -53,5 +51,5 @@ impl<'id, T: Trace + ?Sized> Copy for WeakGc<'id, T> {}
 impl<'id, T: Trace> Finalize for WeakGc<'id, T> {}
 impl<'id, T: Trace> Trace for WeakGc<'id, T> {
     // Weak references do not mark their target, upgrade() returning None after collection is the intended behaviour.
-    fn trace(&mut self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
+    fn trace(&self, _color: &crate::collectors::mark_sweep_branded::trace::TraceColor) {}
 }
