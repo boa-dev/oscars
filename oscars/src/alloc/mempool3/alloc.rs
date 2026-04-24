@@ -310,6 +310,18 @@ impl SlotPool {
         self.live.set(self.live.get().saturating_sub(1));
     }
 
+    /// Iterates over all live (allocated) slot pointers in this pool.
+    pub(crate) fn iter_live(&self) -> impl Iterator<Item = NonNull<u8>> + '_ {
+        (0..self.slot_count).filter_map(move |i| {
+            let chunk = self.bitmap_chunk(i);
+            if chunk.get() & (1u64 << (i % 64)) != 0 {
+                Some(self.slot_ptr(i))
+            } else {
+                None
+            }
+        })
+    }
+
     /// returns true when the pool is empty and safe to drop
     /// `live` tracks the count, so no bitmap scan is needed
     pub fn run_drop_check(&self) -> bool {

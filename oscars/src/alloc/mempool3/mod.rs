@@ -121,6 +121,13 @@ impl<'alloc> PoolAllocator<'alloc> {
         self.current_heap_size
     }
 
+    /// Iterates over every live slot pointer across all slot pools.
+    ///
+    /// Yields one `NonNull<u8>` per allocated (not yet freed) slot.
+    pub fn iter_live_slots(&self) -> impl Iterator<Item = core::ptr::NonNull<u8>> + '_ {
+        self.slot_pools.iter().flat_map(|pool| pool.iter_live())
+    }
+
     pub fn is_below_threshold(&self) -> bool {
         // keep 25% headroom so collection fires before the last page fills
         let margin = self.heap_threshold / 4;

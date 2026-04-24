@@ -25,15 +25,9 @@ use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use core::mem;
 use core::ptr::NonNull;
-use gc_box::GcBox;
+use gc_box::{DropFn, GcBox};
 use root_link::{RootLink, RootSentinel};
 use rust_alloc::vec::Vec;
-
-/// Erased drop-fn
-struct PoolEntry {
-    ptr: NonNull<u8>,
-    drop_fn: unsafe fn(&mut PoolAllocator<'static>, NonNull<u8>),
-}
 
 /// Type-erased ephemeron registration.
 pub(crate) struct EphemeronEntry {
@@ -47,9 +41,7 @@ pub(crate) struct Collector {
     // and we ensure that `Gc` objects and pool allocations do not outlive
     // the `Collector` instance
     pub(crate) pool: RefCell<PoolAllocator<'static>>,
-    pool_entries: RefCell<Vec<PoolEntry>>,
     pub(crate) sentinel: RootSentinel,
-    allocation_count: Cell<usize>,
     pub(crate) generic_alloc_id: Cell<usize>,
     pub(crate) ephemerons: RefCell<Vec<EphemeronEntry>>,
 }
@@ -58,9 +50,7 @@ impl Collector {
     fn new() -> Self {
         Self {
             pool: RefCell::new(PoolAllocator::default()),
-            pool_entries: RefCell::new(Vec::new()),
             sentinel: RootSentinel::new(),
-            allocation_count: Cell::new(0),
             generic_alloc_id: Cell::new(0),
             ephemerons: RefCell::new(Vec::new()),
         }
@@ -136,6 +126,7 @@ impl Collector {
                 PoolItem(GcBox {
                     marked: Cell::new(false),
                     trace_fn: trace_value::<T>,
+                    drop_fn: drop_and_free::<T>,
                     alloc_id,
                     value,
                 }),
@@ -161,13 +152,6 @@ impl Collector {
                 pool.free_slot(ptr);
             }
         }
-
-        self.pool_entries.borrow_mut().push(PoolEntry {
-            ptr: ptr.cast::<u8>(),
-            drop_fn: drop_and_free::<T>,
-        });
-
-        self.allocation_count.set(self.allocation_count.get() + 1);
 
         Gc {
             ptr,
@@ -234,33 +218,34 @@ impl Collector {
             color.drain();
         }
 
+        // Phase 3: sweep all slots. Collect unmarked ones, then invalidate and free them.
         use crate::alloc::mempool3::PoolItem;
-        let mut pool = self.pool.borrow_mut();
-        self.pool_entries.borrow_mut().retain_mut(|entry| {
-            // SAFETY: `ptr` was written with a valid `PoolItem<GcBox<T>>`.
-            let marked = unsafe {
-                let pool_item = entry.ptr.as_ptr() as *mut PoolItem<GcBox<()>>;
-                (*pool_item).0.marked.get()
-            };
-
-            if marked {
+        let dead: Vec<(NonNull<u8>, DropFn)> = {
+            let pool = self.pool.borrow();
+            pool.iter_live_slots()
+                .filter_map(|ptr| unsafe {
+                    let gc_box = &(*ptr.cast::<PoolItem<GcBox<()>>>().as_ptr()).0;
+                    if gc_box.marked.get() {
+                        gc_box.marked.set(false);
+                        None
+                    } else {
+                        Some((ptr, gc_box.drop_fn))
+                    }
+                })
+                .collect()
+        };
+        {
+            let mut pool = self.pool.borrow_mut();
+            for (ptr, drop_fn) in dead {
                 unsafe {
-                    let pool_item = entry.ptr.as_ptr() as *mut PoolItem<GcBox<()>>;
-                    (*pool_item).0.marked.set(false);
+                    (*ptr.cast::<PoolItem<GcBox<()>>>().as_ptr()).0.alloc_id =
+                        GcBox::<()>::FREED_ALLOC_ID;
+                    (drop_fn)(&mut pool, ptr);
                 }
-                true
-            } else {
-                unsafe {
-                    let pool_item = entry.ptr.as_ptr() as *mut PoolItem<GcBox<()>>;
-                    (*pool_item).0.alloc_id =
-                        crate::collectors::mark_sweep_branded::gc_box::GcBox::<()>::FREED_ALLOC_ID;
-                    (entry.drop_fn)(&mut pool, entry.ptr);
-                }
-                false
             }
-        });
+        }
 
-        // Phase 3: remove ephemeron entries whose key was swept this cycle.
+        // Phase 4: remove ephemeron entries whose key was swept this cycle.
         self.ephemerons.borrow_mut().retain(|entry| {
             use crate::alloc::mempool3::PoolItem;
             unsafe {
@@ -275,13 +260,21 @@ impl Drop for Collector {
     /// Frees all remaining allocations
     fn drop(&mut self) {
         use crate::alloc::mempool3::PoolItem;
+        let all: Vec<(NonNull<u8>, DropFn)> = self
+            .pool
+            .borrow()
+            .iter_live_slots()
+            .map(|ptr| unsafe {
+                let drop_fn = (*ptr.cast::<PoolItem<GcBox<()>>>().as_ptr()).0.drop_fn;
+                (ptr, drop_fn)
+            })
+            .collect();
         let mut pool = self.pool.borrow_mut();
-        for entry in self.pool_entries.borrow().iter() {
+        for (ptr, drop_fn) in all {
             unsafe {
-                let pool_item = entry.ptr.as_ptr() as *mut PoolItem<GcBox<()>>;
-                (*pool_item).0.alloc_id =
-                    crate::collectors::mark_sweep_branded::gc_box::GcBox::<()>::FREED_ALLOC_ID;
-                (entry.drop_fn)(&mut pool, entry.ptr);
+                (*ptr.cast::<PoolItem<GcBox<()>>>().as_ptr()).0.alloc_id =
+                    GcBox::<()>::FREED_ALLOC_ID;
+                (drop_fn)(&mut pool, ptr);
             }
         }
     }
