@@ -1,7 +1,10 @@
 //! Trace and Finalize traits for the lifetime branded GC
 
-use crate::{alloc::mempool3::PoolItem, collectors::mark_sweep_branded::gc::Gc};
-use core::cell::{Cell, OnceCell, RefCell};
+use crate::{
+    alloc::mempool3::PoolItem,
+    collectors::mark_sweep_branded::{gc::Gc, gc_box::GcColor},
+};
+use core::cell::{Cell, OnceCell};
 use core::marker::PhantomData;
 use rust_alloc::borrow::{Cow, ToOwned};
 use rust_alloc::boxed::Box;
@@ -16,66 +19,67 @@ pub use crate::collectors::common::Finalize;
 ///
 /// # Safety
 ///
-/// Use `TraceColor::mark` for every reachable `Gc` pointer.
+/// Use `Tracer::mark` for every reachable `Gc` pointer.
 pub trait Trace {
     /// Marks all `Gc` pointers reachable from `self`.
-    fn trace(&self, color: &TraceColor);
+    fn trace(&mut self, tracer: &mut Tracer);
 }
 
-pub(crate) type TraceFn = unsafe fn(core::ptr::NonNull<u8>, &TraceColor<'_>);
+pub(crate) type TraceFn = unsafe fn(core::ptr::NonNull<u8>, &mut Tracer<'_>);
 
-/// Opaque token threaded through a collection cycle.
+/// Worklist-driven mark context for a stop-the-world collection cycle.
 ///
-/// The `'a` lifetime ties the color to the collection cycle,
+/// Implements the classic tri-color marking invariant
+/// (see `GcColor` for the per-object states):
+///
+/// - `mark()` transitions `White → Gray` and enqueues the object.
+/// - `drain()` dequeues each Gray entry; `gc_box::trace_value` transitions
+///   it `Gray → Black` and recurses into its children.
+/// - The sweep phase reclaims all remaining White objects and resets
+///   Black → White, restoring the invariant for the next cycle.
+///
+/// The worklist provides iterative traversal, preventing stack overflow on
+/// deeply nested object graphs.
+///
+/// The `'a` lifetime ties the tracer to the collection cycle,
 /// preventing it from being stored or escaping the collector.
-pub struct TraceColor<'a> {
-    pub(crate) worklist: RefCell<Vec<(core::ptr::NonNull<u8>, TraceFn)>>,
+pub struct Tracer<'a> {
+    pub(crate) worklist: Vec<(core::ptr::NonNull<u8>, TraceFn)>,
     pub(crate) _marker: PhantomData<&'a ()>,
 }
 
-impl<'a> TraceColor<'a> {
+impl<'a> Tracer<'a> {
     pub(crate) fn new() -> Self {
         Self {
-            worklist: RefCell::new(Vec::new()),
+            worklist: Vec::new(),
             _marker: PhantomData,
         }
     }
 
-    pub(crate) fn drain(&self) {
+    pub(crate) fn drain(&mut self) {
         // Note: Using `pop()` processes the worklist in LIFO order (Depth-First Search).
         // While correct, heap-allocated object graphs often exhibit better cache locality
         // with Breadth-First Search. This could be evaluated with a `VecDeque` in the future.
-        loop {
-            // Drop the borrow before calling trace_fn to allow re-entrant marks.
-            let item = self.worklist.borrow_mut().pop();
-            match item {
-                Some((ptr, trace_fn)) => unsafe { (trace_fn)(ptr, self) },
-                None => break,
-            }
+        while let Some((ptr, trace_fn)) = self.worklist.pop() {
+            // SAFETY: ptr is a live PoolItem<GcBox<T>> whose TraceFn was stored at allocation.
+            // pop() releases the borrow on self.worklist before the call, allowing mark()
+            // to push new entries re-entrantly.
+            unsafe { (trace_fn)(ptr, self) }
         }
     }
 
-    /// Marks `gc` as reachable.
+    /// Marks `gc` as reachable (White → Gray).
     #[inline]
-    pub fn mark<T: Trace>(&self, gc: &Gc<'_, T>) {
+    pub fn mark<T: Trace>(&mut self, gc: &Gc<'_, T>) {
         // SAFETY: `gc.ptr` is a valid `PoolItem<GcBox<T>>`.
         unsafe {
-            if !(*gc.ptr.as_ptr()).0.marked.replace(true) {
-                unsafe fn trace_value<T: Trace>(
-                    ptr: core::ptr::NonNull<u8>,
-                    color: &TraceColor<'_>,
-                ) {
-                    let pool_item_ptr = ptr
-                        .cast::<PoolItem<crate::collectors::mark_sweep_branded::gc_box::GcBox<T>>>(
-                        );
-                    unsafe {
-                        (*pool_item_ptr.as_ptr()).0.value.trace(color);
-                    }
-                }
-
-                self.worklist
-                    .borrow_mut()
-                    .push((gc.ptr.cast::<u8>(), trace_value::<T>));
+            let gc_box = &(*gc.ptr.as_ptr()).0;
+            if gc_box.color.get() == GcColor::White {
+                gc_box.color.set(GcColor::Gray);
+                self.worklist.push((
+                    gc.ptr.cast::<u8>(),
+                    crate::collectors::mark_sweep_branded::gc_box::trace_value::<T>,
+                ));
             }
         }
     }
@@ -86,14 +90,16 @@ impl<'a> TraceColor<'a> {
     ///
     /// `ptr` must be a valid pointer to a `PoolItem<GcBox<_>>` managed by this collector.
     #[inline]
-    pub(crate) fn mark_raw(&self, ptr: core::ptr::NonNull<u8>) -> bool {
+    pub(crate) fn mark_raw(&mut self, ptr: core::ptr::NonNull<u8>) -> bool {
         let pool_item_ptr =
             ptr.cast::<PoolItem<crate::collectors::mark_sweep_branded::gc_box::GcBox<()>>>();
 
         unsafe {
-            if !(*pool_item_ptr.as_ptr()).0.marked.replace(true) {
-                let trace_fn = (*pool_item_ptr.as_ptr()).0.trace_fn;
-                self.worklist.borrow_mut().push((ptr, trace_fn));
+            let gc_box = &(*pool_item_ptr.as_ptr()).0;
+            if gc_box.color.get() == GcColor::White {
+                let trace_fn = gc_box.trace_fn;
+                gc_box.color.set(GcColor::Gray);
+                self.worklist.push((ptr, trace_fn));
                 true
             } else {
                 false
@@ -104,7 +110,7 @@ impl<'a> TraceColor<'a> {
 
 impl<T: ?Sized> Trace for &T {
     #[inline]
-    fn trace(&self, _color: &TraceColor) {}
+    fn trace(&mut self, _tracer: &mut Tracer) {}
 }
 
 // primitive + std-lib Trace impls
@@ -114,7 +120,7 @@ macro_rules! empty_trace {
         $(
             impl Trace for $T {
                 #[inline]
-                fn trace(&self, _color: &TraceColor) {}
+                fn trace(&mut self, _tracer: &mut Tracer) {}
             }
         )*
     };
@@ -154,79 +160,79 @@ empty_trace![
 ];
 
 impl<T: Trace, const N: usize> Trace for [T; N] {
-    fn trace(&self, color: &TraceColor) {
-        for v in self.iter() {
-            v.trace(color);
+    fn trace(&mut self, tracer: &mut Tracer) {
+        for v in self.iter_mut() {
+            v.trace(tracer);
         }
     }
 }
 
 impl<T: Trace> Trace for Box<T> {
-    fn trace(&self, color: &TraceColor) {
-        (**self).trace(color);
+    fn trace(&mut self, tracer: &mut Tracer) {
+        (**self).trace(tracer);
     }
 }
 
 impl<T: Trace> Trace for Option<T> {
-    fn trace(&self, color: &TraceColor) {
+    fn trace(&mut self, tracer: &mut Tracer) {
         if let Some(v) = self {
-            v.trace(color);
+            v.trace(tracer);
         }
     }
 }
 
 impl<T: Trace, E: Trace> Trace for Result<T, E> {
-    fn trace(&self, color: &TraceColor) {
+    fn trace(&mut self, tracer: &mut Tracer) {
         match self {
-            Ok(v) => v.trace(color),
-            Err(e) => e.trace(color),
+            Ok(v) => v.trace(tracer),
+            Err(e) => e.trace(tracer),
         }
     }
 }
 
 impl<T: Trace> Trace for Vec<T> {
-    fn trace(&self, color: &TraceColor) {
-        for v in self.iter() {
-            v.trace(color);
+    fn trace(&mut self, tracer: &mut Tracer) {
+        for v in self.iter_mut() {
+            v.trace(tracer);
         }
     }
 }
 
 impl<T: Trace> Trace for VecDeque<T> {
-    fn trace(&self, color: &TraceColor) {
-        for v in self.iter() {
-            v.trace(color);
+    fn trace(&mut self, tracer: &mut Tracer) {
+        for v in self.iter_mut() {
+            v.trace(tracer);
         }
     }
 }
 
 impl<T: Trace> Trace for LinkedList<T> {
-    fn trace(&self, color: &TraceColor) {
-        for v in self.iter() {
-            v.trace(color);
+    fn trace(&mut self, tracer: &mut Tracer) {
+        for v in self.iter_mut() {
+            v.trace(tracer);
         }
     }
 }
 
 impl<T> Trace for PhantomData<T> {
     #[inline]
-    fn trace(&self, _color: &TraceColor) {}
+    fn trace(&mut self, _tracer: &mut Tracer) {}
 }
 
 // Cell<Option<T>> requires T: Copy to safely read the value via Cell::get().
 // For non-Copy types, use GcRefCell instead.
 impl<T: Copy + Trace> Trace for Cell<Option<T>> {
-    fn trace(&self, color: &TraceColor) {
-        if let Some(v) = self.get() {
-            v.trace(color);
+    fn trace(&mut self, tracer: &mut Tracer) {
+        if let Some(mut v) = self.get() {
+            v.trace(tracer);
         }
     }
 }
 
 impl<T: Trace> Trace for OnceCell<T> {
-    fn trace(&self, color: &TraceColor) {
-        if let Some(v) = self.get() {
-            v.trace(color);
+    fn trace(&mut self, tracer: &mut Tracer) {
+        if let Some(v) = self.get_mut() {
+            v.trace(tracer);
         }
     }
 }
@@ -235,44 +241,44 @@ impl<T: ToOwned + Trace + ?Sized> Trace for Cow<'static, T>
 where
     T::Owned: Trace,
 {
-    fn trace(&self, color: &TraceColor) {
+    fn trace(&mut self, tracer: &mut Tracer) {
         if let Cow::Owned(v) = self {
-            v.trace(color);
+            v.trace(tracer);
         }
     }
 }
 
 impl<A: Trace> Trace for (A,) {
     #[inline]
-    fn trace(&self, color: &TraceColor) {
-        self.0.trace(color);
+    fn trace(&mut self, tracer: &mut Tracer) {
+        self.0.trace(tracer);
     }
 }
 
 impl<A: Trace, B: Trace> Trace for (A, B) {
     #[inline]
-    fn trace(&self, color: &TraceColor) {
-        self.0.trace(color);
-        self.1.trace(color);
+    fn trace(&mut self, tracer: &mut Tracer) {
+        self.0.trace(tracer);
+        self.1.trace(tracer);
     }
 }
 
 impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {
     #[inline]
-    fn trace(&self, color: &TraceColor) {
-        self.0.trace(color);
-        self.1.trace(color);
-        self.2.trace(color);
+    fn trace(&mut self, tracer: &mut Tracer) {
+        self.0.trace(tracer);
+        self.1.trace(tracer);
+        self.2.trace(tracer);
     }
 }
 
 impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {
     #[inline]
-    fn trace(&self, color: &TraceColor) {
-        self.0.trace(color);
-        self.1.trace(color);
-        self.2.trace(color);
-        self.3.trace(color);
+    fn trace(&mut self, tracer: &mut Tracer) {
+        self.0.trace(tracer);
+        self.1.trace(tracer);
+        self.2.trace(tracer);
+        self.3.trace(tracer);
     }
 }
 
@@ -281,26 +287,26 @@ impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {
 // struct instead.
 impl<T: ?Sized> Trace for rust_alloc::rc::Rc<T> {
     #[inline]
-    fn trace(&self, _color: &TraceColor) {}
+    fn trace(&mut self, _tracer: &mut Tracer) {}
 }
 
 impl<T: ?Sized> Trace for rust_alloc::sync::Arc<T> {
     #[inline]
-    fn trace(&self, _color: &TraceColor) {}
+    fn trace(&mut self, _tracer: &mut Tracer) {}
 }
 
 impl<K, V: Trace> Trace for BTreeMap<K, V> {
-    fn trace(&self, color: &TraceColor) {
-        for v in self.values() {
-            v.trace(color);
+    fn trace(&mut self, tracer: &mut Tracer) {
+        for v in self.values_mut() {
+            v.trace(tracer);
         }
     }
 }
 
 impl<T> Trace for BTreeSet<T> {
     #[inline]
-    fn trace(&self, _color: &TraceColor) {
+    fn trace(&mut self, _tracer: &mut Tracer) {
         // BTreeSet keys are immutable and cannot contain Gc pointers
-        // that need tracing (Gc requires &self to trace).
+        // that need tracing (Gc requires &mut self to trace).
     }
 }

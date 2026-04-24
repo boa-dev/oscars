@@ -61,14 +61,17 @@ impl<'pool> ErasedPoolPointer<'pool> {
 /// typed pointer into a pool slot
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct PoolPointer<'pool, T>(NonNull<PoolItem<T>>, PhantomData<&'pool T>);
+pub struct PoolPointer<'pool, T>(NonNull<PoolItem<T>>, PhantomData<(&'pool (), *mut T)>);
 
 impl<'pool, T> PoolPointer<'pool, T> {
     pub(crate) unsafe fn from_raw(raw: NonNull<PoolItem<T>>) -> Self {
         Self(raw, PhantomData)
     }
 
-    pub fn as_inner_ref(&self) -> &'pool T {
+    pub fn as_inner_ref(&self) -> &'pool T
+    where
+        T: 'pool,
+    {
         // SAFETY: pointer is valid and properly aligned
         unsafe { &(*self.0.as_ptr()).0 }
     }

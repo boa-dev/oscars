@@ -3,14 +3,12 @@
 use crate::collectors::mark_sweep_branded::{
     Collector,
     ephemeron::Ephemeron,
-    gc::{Gc, Root, RootNode},
+    gc::{Gc, Root},
     root_link::RootLink,
     trace::{Finalize, Trace},
     weak::WeakGc,
 };
 use core::marker::PhantomData;
-use core::ptr::NonNull;
-use rust_alloc::boxed::Box;
 
 /// Handle for GC allocations
 pub struct MutationContext<'id, 'gc> {
@@ -40,15 +38,7 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
 
     /// Promotes a `Gc` pointer to a `Root`
     pub fn root<T: Trace + Finalize + 'gc>(&self, gc: Gc<'gc, T>) -> Root<'id, T> {
-        let gc_ptr = gc.ptr;
-
-        let node = Box::new(RootNode {
-            link: RootLink::new(),
-            gc_ptr,
-            _marker: PhantomData,
-        });
-
-        let raw = unsafe { NonNull::new_unchecked(Box::into_raw(node)) };
+        let raw = self.collector.alloc_root_node(gc.ptr);
 
         // SAFETY: `raw` points to a stable `RootNode`.
         unsafe {

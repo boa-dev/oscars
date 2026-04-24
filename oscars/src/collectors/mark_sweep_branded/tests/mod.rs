@@ -7,7 +7,7 @@ struct JsObject {
 }
 
 impl crate::collectors::mark_sweep_branded::Trace for JsObject {
-    fn trace(&self, _color: &crate::collectors::mark_sweep_branded::trace::TraceColor) {}
+    fn trace(&mut self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
 }
 impl crate::collectors::mark_sweep_branded::Finalize for JsObject {}
 

@@ -17,15 +17,14 @@ pub use cell::GcRefCell;
 pub use ephemeron::Ephemeron;
 pub use gc::{Gc, Root};
 pub use mutation_ctx::MutationContext;
-pub use trace::{Finalize, Trace, TraceColor};
+pub use trace::{Finalize, Trace, Tracer};
 pub use weak::WeakGc;
 
 use crate::alloc::mempool3::PoolAllocator;
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
-use core::mem;
 use core::ptr::NonNull;
-use gc_box::{DropFn, GcBox};
+use gc_box::{DropFn, GcBox, GcColor};
 use root_link::{RootLink, RootSentinel};
 use rust_alloc::vec::Vec;
 
@@ -41,6 +40,8 @@ pub(crate) struct Collector {
     // and we ensure that `Gc` objects and pool allocations do not outlive
     // the `Collector` instance
     pub(crate) pool: RefCell<PoolAllocator<'static>>,
+    /// Dedicated pool for RootNode allocations
+    pub(crate) root_pool: RefCell<PoolAllocator<'static>>,
     pub(crate) sentinel: RootSentinel,
     pub(crate) generic_alloc_id: Cell<usize>,
     pub(crate) ephemerons: RefCell<Vec<EphemeronEntry>>,
@@ -50,6 +51,7 @@ impl Collector {
     fn new() -> Self {
         Self {
             pool: RefCell::new(PoolAllocator::default()),
+            root_pool: RefCell::new(PoolAllocator::default()),
             sentinel: RootSentinel::new(),
             generic_alloc_id: Cell::new(0),
             ephemerons: RefCell::new(Vec::new()),
@@ -68,6 +70,46 @@ impl Collector {
             key_alloc_id,
             value_ptr,
         });
+    }
+
+    /// Allocates a RootNode from the dedicated root pool.
+    pub(crate) fn alloc_root_node<'id, T: trace::Trace>(
+        &self,
+        gc_ptr: NonNull<crate::alloc::mempool3::PoolItem<GcBox<T>>>,
+    ) -> NonNull<gc::RootNode<'id, T>> {
+        unsafe fn drop_and_free<T: trace::Trace>(
+            pool: &mut PoolAllocator<'static>,
+            ptr: NonNull<u8>,
+        ) {
+            use crate::alloc::mempool3::PoolItem;
+            unsafe {
+                let typed_ptr = ptr.cast::<PoolItem<gc::RootNode<'_, T>>>();
+                core::ptr::drop_in_place(typed_ptr.as_ptr());
+                pool.free_slot(ptr);
+            }
+        }
+
+        let mut pool = self.root_pool.borrow_mut();
+        let ptr = pool
+            .try_alloc(gc::RootNode {
+                link: root_link::RootLink::new(),
+                gc_ptr,
+                drop_fn: drop_and_free::<T>,
+                collector_ptr: self as *const Collector,
+                _marker: PhantomData,
+            })
+            .expect("root pool allocation failed");
+
+        // SAFETY: PoolItem<T> is repr(transparent) over T; pointer address is identical.
+        ptr.as_ptr().cast::<gc::RootNode<'id, T>>()
+    }
+
+    /// Frees a RootNode back to the root pool.
+    pub(crate) fn free_root_node(&self, ptr: NonNull<u8>, drop_fn: gc::RootDropFn) {
+        let mut pool = self.root_pool.borrow_mut();
+        unsafe {
+            (drop_fn)(&mut pool, ptr);
+        }
     }
 
     /// Allocates a value from the pool.
@@ -95,48 +137,6 @@ impl Collector {
 
         self.generic_alloc_id.set(alloc_id.wrapping_add(1));
 
-        unsafe fn trace_value<T: trace::Trace>(
-            ptr: core::ptr::NonNull<u8>,
-            color: &crate::collectors::mark_sweep_branded::trace::TraceColor<'_>,
-        ) {
-            use crate::alloc::mempool3::PoolItem;
-            let pool_item_ptr = ptr.cast::<PoolItem<GcBox<T>>>();
-            unsafe {
-                (*pool_item_ptr.as_ptr()).0.value.trace(color);
-            }
-        }
-
-        // Allocate a raw slot for PoolItem<GcBox<T>>
-        let size = mem::size_of::<crate::alloc::mempool3::PoolItem<GcBox<T>>>();
-
-        let mut pool = self.pool.borrow_mut();
-        let slot_ptr = pool
-            .alloc_slot_raw(size)
-            .expect("branded GC: pool allocation failed");
-
-        // SAFETY: slot_ptr points to uninitialized memory of the correct size and alignment.
-        // We initialize it here before releasing the borrow.
-        let ptr = unsafe {
-            use crate::alloc::mempool3::PoolItem;
-            let pool_item_ptr = slot_ptr.cast::<PoolItem<GcBox<T>>>();
-
-            // Initialize the PoolItem<GcBox<T>> in place
-            core::ptr::write(
-                pool_item_ptr.as_ptr(),
-                PoolItem(GcBox {
-                    marked: Cell::new(false),
-                    trace_fn: trace_value::<T>,
-                    drop_fn: drop_and_free::<T>,
-                    alloc_id,
-                    value,
-                }),
-            );
-
-            pool_item_ptr
-        };
-
-        drop(pool);
-
         unsafe fn drop_and_free<T: trace::Trace + trace::Finalize>(
             pool: &mut PoolAllocator<'static>,
             ptr: NonNull<u8>,
@@ -144,26 +144,33 @@ impl Collector {
             use crate::alloc::mempool3::PoolItem;
             unsafe {
                 let typed_ptr = ptr.cast::<PoolItem<GcBox<T>>>();
-                // Finalize the value
                 (*typed_ptr.as_ptr()).0.value.finalize();
-                // Drop the PoolItem<GcBox<T>> in place
                 core::ptr::drop_in_place(typed_ptr.as_ptr());
-                // Return the slot to the pool
                 pool.free_slot(ptr);
             }
         }
 
+        let mut pool = self.pool.borrow_mut();
+        let ptr = pool
+            .try_alloc(GcBox::new(
+                value,
+                gc_box::trace_value::<T>,
+                drop_and_free::<T>,
+                alloc_id,
+            ))
+            .expect("branded GC: pool allocation failed");
+
+        drop(pool);
+
         Gc {
-            ptr,
+            ptr: ptr.as_ptr(),
             _marker: PhantomData,
         }
     }
 
     /// Runs a collection cycle
     pub(crate) fn collect(&self) {
-        let sentinel_ptr = self.sentinel.as_ptr();
-
-        let color = TraceColor::new();
+        let mut tracer = Tracer::new();
 
         let gc_ptr_offset = core::mem::offset_of!(
             crate::collectors::mark_sweep_branded::gc::RootNode<'static, i32>,
@@ -178,7 +185,7 @@ impl Collector {
             "gc_ptr offset must be stable across all T: Sized"
         );
 
-        for link_ptr in RootLink::iter_from_sentinel(sentinel_ptr) {
+        for link_ptr in self.sentinel.iter() {
             unsafe {
                 // Read the `gc_ptr` field using the stable offset
                 let gc_ptr_ptr = link_ptr
@@ -188,11 +195,11 @@ impl Collector {
                     .cast::<NonNull<u8>>();
                 let gc_ptr = gc_ptr_ptr.read();
 
-                color.mark_raw(gc_ptr.cast::<u8>());
+                tracer.mark_raw(gc_ptr.cast::<u8>());
             }
         }
 
-        color.drain();
+        tracer.drain();
 
         // Phase 2: ephemeron fixpoint.
         // If marking a value causes new keys of other ephemerons to become
@@ -207,15 +214,15 @@ impl Collector {
                     if (*key_box.as_ptr()).0.alloc_id != entry.key_alloc_id {
                         continue;
                     }
-                    if (*key_box.as_ptr()).0.marked.get() {
-                        any_newly_marked |= color.mark_raw(entry.value_ptr);
+                    if (*key_box.as_ptr()).0.color.get() != GcColor::White {
+                        any_newly_marked |= tracer.mark_raw(entry.value_ptr);
                     }
                 }
             }
             if !any_newly_marked {
                 break;
             }
-            color.drain();
+            tracer.drain();
         }
 
         // Phase 3: sweep all slots. Collect unmarked ones, then invalidate and free them.
@@ -225,8 +232,8 @@ impl Collector {
             pool.iter_live_slots()
                 .filter_map(|ptr| unsafe {
                     let gc_box = &(*ptr.cast::<PoolItem<GcBox<()>>>().as_ptr()).0;
-                    if gc_box.marked.get() {
-                        gc_box.marked.set(false);
+                    if gc_box.color.get() == GcColor::Black {
+                        gc_box.color.set(GcColor::White);
                         None
                     } else {
                         Some((ptr, gc_box.drop_fn))
@@ -260,6 +267,28 @@ impl Drop for Collector {
     /// Frees all remaining allocations
     fn drop(&mut self) {
         use crate::alloc::mempool3::PoolItem;
+
+        // Free all root nodes first
+        let all_roots: Vec<(NonNull<u8>, gc::RootDropFn)> = self
+            .root_pool
+            .borrow()
+            .iter_live_slots()
+            .map(|ptr| unsafe {
+                let drop_fn = (*ptr.cast::<PoolItem<gc::RootNode<'_, ()>>>().as_ptr())
+                    .0
+                    .drop_fn;
+                (ptr, drop_fn)
+            })
+            .collect();
+        let mut root_pool = self.root_pool.borrow_mut();
+        for (ptr, drop_fn) in all_roots {
+            unsafe {
+                (drop_fn)(&mut root_pool, ptr);
+            }
+        }
+        drop(root_pool);
+
+        // Then free all GC allocations
         let all: Vec<(NonNull<u8>, DropFn)> = self
             .pool
             .borrow()
