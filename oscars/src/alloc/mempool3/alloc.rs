@@ -59,15 +59,24 @@ impl<'pool> ErasedPoolPointer<'pool> {
 }
 
 /// typed pointer into a pool slot
-#[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct PoolPointer<'pool, T>(NonNull<PoolItem<T>>, PhantomData<(&'pool (), *mut T)>);
+pub struct PoolPointer<'pool, T: ?Sized>(NonNull<PoolItem<T>>, PhantomData<(&'pool (), *mut T)>);
 
-impl<'pool, T> PoolPointer<'pool, T> {
-    pub(crate) unsafe fn from_raw(raw: NonNull<PoolItem<T>>) -> Self {
-        Self(raw, PhantomData)
+impl<'pool, T: ?Sized> core::fmt::Debug for PoolPointer<'pool, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "PoolPointer({:p})", self.0.as_ptr())
     }
+}
 
+impl<'pool, T: ?Sized> Clone for PoolPointer<'pool, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'pool, T: ?Sized> Copy for PoolPointer<'pool, T> {}
+
+impl<'pool, T: ?Sized> PoolPointer<'pool, T> {
     pub fn as_inner_ref(&self) -> &'pool T
     where
         T: 'pool,
@@ -80,7 +89,10 @@ impl<'pool, T> PoolPointer<'pool, T> {
         self.0
     }
 
-    pub fn to_erased(self) -> ErasedPoolPointer<'pool> {
+    pub fn to_erased(self) -> ErasedPoolPointer<'pool>
+    where
+        T: Sized,
+    {
         ErasedPoolPointer(self.0.cast::<u8>(), PhantomData)
     }
 
@@ -92,6 +104,12 @@ impl<'pool, T> PoolPointer<'pool, T> {
     /// a PoolAllocator and need to store pointers with extended lifetimes
     pub unsafe fn extend_lifetime(self) -> PoolPointer<'static, T> {
         PoolPointer(self.0, PhantomData)
+    }
+}
+
+impl<'pool, T> PoolPointer<'pool, T> {
+    pub(crate) unsafe fn from_raw(raw: NonNull<PoolItem<T>>) -> Self {
+        Self(raw, PhantomData)
     }
 }
 

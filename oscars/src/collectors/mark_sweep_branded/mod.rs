@@ -20,19 +20,18 @@ pub use mutation_ctx::MutationContext;
 pub use trace::{Finalize, Trace, Tracer};
 pub use weak::WeakGc;
 
-use crate::alloc::mempool3::PoolAllocator;
+use crate::alloc::mempool3::{PoolAllocError, PoolAllocator, PoolPointer};
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use gc_box::{DropFn, GcBox, GcColor};
-use root_link::{RootLink, RootSentinel};
+use root_link::RootSentinel;
 use rust_alloc::vec::Vec;
 
 /// Type-erased ephemeron registration.
 pub(crate) struct EphemeronEntry {
-    pub(crate) key_ptr: NonNull<u8>,
-    pub(crate) key_alloc_id: usize,
-    pub(crate) value_ptr: NonNull<u8>,
+    pub(crate) key_ptr: Option<PoolPointer<'static, GcBox<()>>>,
+    pub(crate) value_ptr: PoolPointer<'static, GcBox<()>>,
 }
 
 pub(crate) struct Collector {
@@ -61,13 +60,11 @@ impl Collector {
     /// Registers an ephemeron key/value pair for processing during collection.
     pub(crate) fn register_ephemeron(
         &self,
-        key_ptr: NonNull<u8>,
-        key_alloc_id: usize,
-        value_ptr: NonNull<u8>,
+        key_ptr: PoolPointer<'static, GcBox<()>>,
+        value_ptr: PoolPointer<'static, GcBox<()>>,
     ) {
         self.ephemerons.borrow_mut().push(EphemeronEntry {
-            key_ptr,
-            key_alloc_id,
+            key_ptr: Some(key_ptr),
             value_ptr,
         });
     }
@@ -75,7 +72,7 @@ impl Collector {
     /// Allocates a RootNode from the dedicated root pool.
     pub(crate) fn alloc_root_node<'id, T: trace::Trace>(
         &self,
-        gc_ptr: NonNull<crate::alloc::mempool3::PoolItem<GcBox<T>>>,
+        gc_ptr: PoolPointer<'static, GcBox<T>>,
     ) -> NonNull<gc::RootNode<'id, T>> {
         unsafe fn drop_and_free<T: trace::Trace>(
             pool: &mut PoolAllocator<'static>,
@@ -121,7 +118,7 @@ impl Collector {
     pub(crate) fn alloc<'gc, T: trace::Trace + trace::Finalize + 'gc>(
         &'gc self,
         value: T,
-    ) -> Gc<'gc, T> {
+    ) -> Result<Gc<'gc, T>, PoolAllocError> {
         let alloc_id = self.generic_alloc_id.get();
 
         // Check for alloc_id wrap before incrementing.
@@ -151,51 +148,32 @@ impl Collector {
         }
 
         let mut pool = self.pool.borrow_mut();
-        let ptr = pool
-            .try_alloc(GcBox::new(
-                value,
-                gc_box::trace_value::<T>,
-                drop_and_free::<T>,
-                alloc_id,
-            ))
-            .expect("branded GC: pool allocation failed");
+        let ptr = pool.try_alloc(GcBox::new(
+            value,
+            gc_box::trace_value::<T>,
+            drop_and_free::<T>,
+            alloc_id,
+        ))?;
 
         drop(pool);
 
-        Gc {
-            ptr: ptr.as_ptr(),
+        Ok(Gc {
+            ptr: unsafe { ptr.extend_lifetime() },
             _marker: PhantomData,
-        }
+        })
     }
 
     /// Runs a collection cycle
     pub(crate) fn collect(&self) {
         let mut tracer = Tracer::new();
 
-        let gc_ptr_offset = core::mem::offset_of!(
-            crate::collectors::mark_sweep_branded::gc::RootNode<'static, i32>,
-            gc_ptr
-        );
-        debug_assert_eq!(
-            gc_ptr_offset,
-            core::mem::offset_of!(
-                crate::collectors::mark_sweep_branded::gc::RootNode<'static, u64>,
-                gc_ptr
-            ),
-            "gc_ptr offset must be stable across all T: Sized"
-        );
-
         for link_ptr in self.sentinel.iter() {
             unsafe {
-                // Read the `gc_ptr` field using the stable offset
-                let gc_ptr_ptr = link_ptr
-                    .as_ptr()
-                    .cast::<u8>()
-                    .add(gc_ptr_offset)
-                    .cast::<NonNull<u8>>();
-                let gc_ptr = gc_ptr_ptr.read();
-
-                tracer.mark_raw(gc_ptr.cast::<u8>());
+                // SAFETY: link_ptr points to the `link` field which is first in repr(C) RootNode.
+                // Casting to ErasedRootNode (also repr(C), same first two fields) lets us read
+                // gc_ptr without knowing T, avoiding manual offset arithmetic.
+                let erased = link_ptr.cast::<gc::ErasedRootNode>();
+                tracer.mark_raw((*erased.as_ptr()).gc_ptr.as_ptr().cast::<u8>());
             }
         }
 
@@ -207,15 +185,12 @@ impl Collector {
         loop {
             let mut any_newly_marked = false;
             for entry in self.ephemerons.borrow().iter() {
-                use crate::alloc::mempool3::PoolItem;
+                let Some(key_ptr) = entry.key_ptr else {
+                    continue;
+                };
                 unsafe {
-                    let key_box = entry.key_ptr.cast::<PoolItem<GcBox<()>>>();
-                    // Skip entries invalidated by a previous collection cycle.
-                    if (*key_box.as_ptr()).0.alloc_id != entry.key_alloc_id {
-                        continue;
-                    }
-                    if (*key_box.as_ptr()).0.color.get() != GcColor::White {
-                        any_newly_marked |= tracer.mark_raw(entry.value_ptr);
+                    if (*key_ptr.as_ptr().as_ptr()).0.color.get() != GcColor::White {
+                        any_newly_marked |= tracer.mark_raw(entry.value_ptr.as_ptr().cast::<u8>());
                     }
                 }
             }
@@ -253,12 +228,12 @@ impl Collector {
         }
 
         // Phase 4: remove ephemeron entries whose key was swept this cycle.
+        // A swept key has alloc_id set to FREED_ALLOC_ID by the sweep above.
+        // Using the Option lets us express the invalid state without a stored alloc_id.
         self.ephemerons.borrow_mut().retain(|entry| {
-            use crate::alloc::mempool3::PoolItem;
-            unsafe {
-                let key_box = entry.key_ptr.cast::<PoolItem<GcBox<()>>>();
-                (*key_box.as_ptr()).0.alloc_id == entry.key_alloc_id
-            }
+            entry.key_ptr.is_some_and(|key_ptr| unsafe {
+                (*key_ptr.as_ptr().as_ptr()).0.alloc_id != GcBox::<()>::FREED_ALLOC_ID
+            })
         });
     }
 }

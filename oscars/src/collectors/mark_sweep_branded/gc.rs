@@ -1,7 +1,7 @@
 //! Core pointer types.
 
 use crate::{
-    alloc::mempool3::{PoolAllocator, PoolItem},
+    alloc::mempool3::{PoolAllocator, PoolPointer},
     collectors::mark_sweep_branded::{
         gc_box::GcBox,
         mutation_ctx::MutationContext,
@@ -19,7 +19,7 @@ pub(crate) type RootDropFn = unsafe fn(&mut PoolAllocator<'static>, NonNull<u8>)
 /// A transient pointer to a GC-managed value.
 #[derive(Debug)]
 pub struct Gc<'gc, T: Trace + ?Sized + 'gc> {
-    pub(crate) ptr: NonNull<PoolItem<GcBox<T>>>,
+    pub(crate) ptr: PoolPointer<'static, GcBox<T>>,
     pub(crate) _marker: PhantomData<(&'gc T, *const ())>,
 }
 
@@ -38,7 +38,7 @@ impl<'gc, T: Trace + 'gc> Gc<'gc, T> {
         // The `'gc` lifetime is scoped to a `mutate()` closure, collection only occurs
         // via `cx.collect()` within that same closure and `Gc<'gc, T>` can't
         // escape the closure.
-        unsafe { &(*self.ptr.as_ptr()).0.value }
+        unsafe { &(*self.ptr.as_ptr().as_ptr()).0.value }
     }
 }
 
@@ -61,12 +61,23 @@ pub(crate) struct RootNode<'id, T: Trace> {
     /// Intrusive list link
     pub(crate) link: RootLink,
     /// Pointer to the allocation
-    pub(crate) gc_ptr: NonNull<PoolItem<GcBox<T>>>,
+    pub(crate) gc_ptr: PoolPointer<'static, GcBox<T>>,
     /// Type-erased drop function for freeing this RootNode
     pub(crate) drop_fn: RootDropFn,
     /// Raw pointer to the Collector for freeing this node
     pub(crate) collector_ptr: *const crate::collectors::mark_sweep_branded::Collector,
     pub(crate) _marker: PhantomData<*mut &'id ()>,
+}
+
+/// Type-erased version of [`RootNode`] for use during collection.
+///
+/// Since [`RootNode`] is `repr(C)` and `link` is always the first field,
+/// a `NonNull<RootLink>` from the sentinel iterator can be safely cast to
+/// `NonNull<ErasedRootNode>` to read `gc_ptr` without knowing `T`.
+#[repr(C)]
+pub(crate) struct ErasedRootNode {
+    pub(crate) link: RootLink,
+    pub(crate) gc_ptr: PoolPointer<'static, GcBox<()>>,
 }
 
 /// A handle that keeps a GC allocation live.

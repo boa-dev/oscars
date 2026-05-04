@@ -12,7 +12,7 @@ fn main() {
         // Returning Gc<'gc, i32> directly attempts to leak a shorter lifetime
         // into the outer scope. The compiler must reject this.
         let _escaped = ctx.mutate(|cx| {
-            cx.alloc(42i32) // ERROR: Gc<'gc, i32> cannot escape mutate()
+            cx.alloc(42i32).unwrap() // ERROR: Gc<'gc, i32> cannot escape mutate()
         });
     });
 }

@@ -1,12 +1,16 @@
 //! `MutationContext<'id, 'gc>` handle.
 
-use crate::collectors::mark_sweep_branded::{
-    Collector,
-    ephemeron::Ephemeron,
-    gc::{Gc, Root},
-    root_link::RootLink,
-    trace::{Finalize, Trace},
-    weak::WeakGc,
+use crate::{
+    alloc::mempool3::{PoolAllocError, PoolPointer},
+    collectors::mark_sweep_branded::{
+        Collector,
+        ephemeron::Ephemeron,
+        gc::{Gc, Root},
+        gc_box::GcBox,
+        root_link::RootLink,
+        trace::{Finalize, Trace},
+        weak::WeakGc,
+    },
 };
 use core::marker::PhantomData;
 
@@ -18,17 +22,13 @@ pub struct MutationContext<'id, 'gc> {
 
 impl<'id, 'gc> MutationContext<'id, 'gc> {
     /// Allocates a value on the GC heap.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the pool allocator fails to allocate.
-    pub fn alloc<T: Trace + Finalize + 'gc>(&self, value: T) -> Gc<'gc, T> {
+    pub fn alloc<T: Trace + Finalize + 'gc>(&self, value: T) -> Result<Gc<'gc, T>, PoolAllocError> {
         self.collector.alloc(value)
     }
 
     /// Downgrades a `Gc` into a weak reference
     pub fn alloc_weak<T: Trace + Finalize + 'gc>(&self, gc: Gc<'gc, T>) -> WeakGc<'id, T> {
-        let alloc_id = unsafe { (*gc.ptr.as_ptr()).0.alloc_id };
+        let alloc_id = unsafe { (*gc.ptr.as_ptr().as_ptr()).0.alloc_id };
         WeakGc {
             ptr: gc.ptr,
             alloc_id,
@@ -60,14 +60,16 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
         key: Gc<'gc, K>,
         value: Gc<'gc, V>,
     ) -> Ephemeron<'id, K, V> {
-        let key_alloc_id = unsafe { (*key.ptr.as_ptr()).0.alloc_id };
-        self.collector.register_ephemeron(
-            key.ptr.cast::<u8>(),
-            key_alloc_id,
-            value.ptr.cast::<u8>(),
-        );
+        let key_alloc_id = unsafe { (*key.ptr.as_ptr().as_ptr()).0.alloc_id };
+        // SAFETY: GcBox<K> and GcBox<V> are erased to GcBox<()>, the collector
+        // only reads the fixed size prefix fields via this pointer
+        let erased_key: PoolPointer<'static, GcBox<()>> =
+            unsafe { key.ptr.to_erased().to_typed_pool_pointer::<GcBox<()>>() };
+        let erased_value: PoolPointer<'static, GcBox<()>> =
+            unsafe { value.ptr.to_erased().to_typed_pool_pointer::<GcBox<()>>() };
+        self.collector.register_ephemeron(erased_key, erased_value);
         Ephemeron {
-            key_ptr: key.ptr,
+            key_ptr: Some(key.ptr),
             key_alloc_id,
             value_ptr: value.ptr,
             _marker: core::marker::PhantomData,

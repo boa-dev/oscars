@@ -13,7 +13,7 @@ fn main() {
     with_gc(|ctx1| {
         with_gc(|ctx2| {
             // root carries 'id of ctx1
-            let root = ctx1.mutate(|cx| cx.root(cx.alloc(123i32)));
+            let root = ctx1.mutate(|cx| cx.root(cx.alloc(123i32).unwrap()));
 
             ctx2.mutate(|cx| {
                 // ERROR: `'id` of `root` (ctx1) != `'id` of `cx` (ctx2)

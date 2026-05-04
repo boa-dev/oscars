@@ -73,11 +73,11 @@ impl<'a> Tracer<'a> {
     pub fn mark<T: Trace>(&mut self, gc: &Gc<'_, T>) {
         // SAFETY: `gc.ptr` is a valid `PoolItem<GcBox<T>>`.
         unsafe {
-            let gc_box = &(*gc.ptr.as_ptr()).0;
+            let gc_box = &(*gc.ptr.as_ptr().as_ptr()).0;
             if gc_box.color.get() == GcColor::White {
                 gc_box.color.set(GcColor::Gray);
                 self.worklist.push((
-                    gc.ptr.cast::<u8>(),
+                    gc.ptr.as_ptr().cast::<u8>(),
                     crate::collectors::mark_sweep_branded::gc_box::trace_value::<T>,
                 ));
             }

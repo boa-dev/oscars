@@ -25,7 +25,9 @@ mod tests {
         // Assert offset is correct via offset_of-like macro conceptually
         let make_dummy = || RootNode::<i32> {
             link: RootLink::new(),
-            gc_ptr: core::ptr::NonNull::dangling(),
+            gc_ptr: unsafe {
+                crate::alloc::mempool3::PoolPointer::from_raw(core::ptr::NonNull::dangling())
+            },
             drop_fn: |_, _| {},
             collector_ptr: core::ptr::null(),
             _marker: core::marker::PhantomData,

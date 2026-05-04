@@ -22,7 +22,7 @@ fn test_uaf() {
     with_gc(|cx| {
         let dropped = Cell::new(false);
         cx.mutate(|mcx| {
-            let _gc = mcx.alloc(DetectDrop(&dropped));
+            let _gc = mcx.alloc(DetectDrop(&dropped)).unwrap();
         });
         cx.collect(); // Garbage collects 'gc' because it isn't rooted!
         assert!(dropped.get(), "It wasn't collected!");

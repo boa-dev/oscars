@@ -15,10 +15,13 @@ impl crate::collectors::mark_sweep_branded::Finalize for JsObject {}
 fn unrooted_alloc_is_swept() {
     with_gc(|ctx| {
         let weak = ctx.mutate(|cx| {
-            cx.alloc_weak(cx.alloc(JsObject {
-                name: "ephemeral".into(),
-                value: 999,
-            }))
+            cx.alloc_weak(
+                cx.alloc(JsObject {
+                    name: "ephemeral".into(),
+                    value: 999,
+                })
+                .unwrap(),
+            )
         });
         ctx.collect();
         ctx.mutate(|cx| {
@@ -31,10 +34,13 @@ fn unrooted_alloc_is_swept() {
 fn rooted_alloc_survives_collection() {
     with_gc(|ctx| {
         let root = ctx.mutate(|cx| {
-            cx.root(cx.alloc(JsObject {
-                name: "pinned".into(),
-                value: 42,
-            }))
+            cx.root(
+                cx.alloc(JsObject {
+                    name: "pinned".into(),
+                    value: 42,
+                })
+                .unwrap(),
+            )
         });
         ctx.collect();
         ctx.mutate(|cx| {
@@ -49,10 +55,13 @@ fn rooted_alloc_survives_collection() {
 fn weak_upgrade_after_collection_without_root_is_none() {
     with_gc(|ctx| {
         let weak = ctx.mutate(|cx| {
-            cx.alloc_weak(cx.alloc(JsObject {
-                name: "weak".into(),
-                value: 10,
-            }))
+            cx.alloc_weak(
+                cx.alloc(JsObject {
+                    name: "weak".into(),
+                    value: 10,
+                })
+                .unwrap(),
+            )
         });
         ctx.collect();
         ctx.mutate(|cx| {
@@ -65,16 +74,21 @@ fn weak_upgrade_after_collection_without_root_is_none() {
 fn weak_upgrade_with_live_root_is_some() {
     with_gc(|ctx| {
         let (root, weak) = ctx.mutate(|cx| {
-            let obj = cx.alloc(JsObject {
-                name: "strong".into(),
-                value: 7,
-            });
+            let obj = cx
+                .alloc(JsObject {
+                    name: "strong".into(),
+                    value: 7,
+                })
+                .unwrap();
             let root = cx.root(obj);
 
-            let weak = cx.alloc_weak(cx.alloc(JsObject {
-                name: "weak_entry".into(),
-                value: 77,
-            }));
+            let weak = cx.alloc_weak(
+                cx.alloc(JsObject {
+                    name: "weak_entry".into(),
+                    value: 77,
+                })
+                .unwrap(),
+            );
             (root, weak)
         });
         ctx.collect();
@@ -89,8 +103,8 @@ fn weak_upgrade_with_live_root_is_some() {
 fn multiple_roots_are_independent() {
     with_gc(|ctx| {
         let (root1, root2) = ctx.mutate(|cx| {
-            let obj1 = cx.alloc(100i32);
-            let obj2 = cx.alloc(200i32);
+            let obj1 = cx.alloc(100i32).unwrap();
+            let obj2 = cx.alloc(200i32).unwrap();
             (cx.root(obj1), cx.root(obj2))
         });
 
@@ -114,7 +128,7 @@ fn multiple_roots_are_independent() {
 fn root_escapes_closure_safely() {
     with_gc(|ctx| {
         let root = ctx.mutate(|cx| {
-            let obj = cx.alloc(555i32);
+            let obj = cx.alloc(555i32).unwrap();
             cx.root(obj)
         });
 
