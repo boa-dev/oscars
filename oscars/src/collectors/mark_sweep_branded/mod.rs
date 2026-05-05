@@ -6,7 +6,7 @@ pub mod ephemeron;
 pub mod gc;
 pub mod gc_box;
 pub mod mutation_ctx;
-pub mod root_link;
+pub mod root;
 pub mod trace;
 pub mod weak;
 
@@ -15,8 +15,9 @@ mod tests;
 
 pub use cell::GcRefCell;
 pub use ephemeron::Ephemeron;
-pub use gc::{Gc, Root};
+pub use gc::Gc;
 pub use mutation_ctx::MutationContext;
+pub use root::Root;
 pub use trace::{Finalize, Trace, Tracer};
 pub use weak::WeakGc;
 
@@ -25,7 +26,7 @@ use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use gc_box::{DropFn, GcBox, GcColor};
-use root_link::RootSentinel;
+use root::RootSentinel;
 use rust_alloc::vec::Vec;
 
 /// Type-erased ephemeron registration.
@@ -69,40 +70,24 @@ impl Collector {
         });
     }
 
-    /// Allocates a RootNode from the dedicated root pool.
-    pub(crate) fn alloc_root_node<'id, T: trace::Trace>(
+    /// Allocates a RootNode from the dedicated root pool and links it into the root list.
+    pub(crate) fn try_alloc_root_node<'id, T: trace::Trace>(
         &self,
         gc_ptr: PoolPointer<'static, GcBox<T>>,
-    ) -> NonNull<gc::RootNode<'id, T>> {
-        unsafe fn drop_and_free<T: trace::Trace>(
-            pool: &mut PoolAllocator<'static>,
-            ptr: NonNull<u8>,
-        ) {
-            use crate::alloc::mempool3::PoolItem;
-            unsafe {
-                let typed_ptr = ptr.cast::<PoolItem<gc::RootNode<'_, T>>>();
-                core::ptr::drop_in_place(typed_ptr.as_ptr());
-                pool.free_slot(ptr);
-            }
-        }
-
+    ) -> Result<NonNull<root::RootNode<'id, T>>, PoolAllocError> {
         let mut pool = self.root_pool.borrow_mut();
-        let ptr = pool
-            .try_alloc(gc::RootNode {
-                link: root_link::RootLink::new(),
-                gc_ptr,
-                drop_fn: drop_and_free::<T>,
-                collector_ptr: self as *const Collector,
-                _marker: PhantomData,
-            })
-            .expect("root pool allocation failed");
-
+        let ptr = pool.try_alloc(root::RootNode::new_in(gc_ptr, self))?;
         // SAFETY: PoolItem<T> is repr(transparent) over T; pointer address is identical.
-        ptr.as_ptr().cast::<gc::RootNode<'id, T>>()
+        let raw = ptr.as_ptr().cast::<root::RootNode<'id, T>>();
+        // SAFETY: `raw` points to a stable `RootNode` allocated in the pool.
+        unsafe {
+            root::RootLink::link_after(self.sentinel.as_ptr(), raw.cast::<root::RootLink>());
+        }
+        Ok(raw)
     }
 
     /// Frees a RootNode back to the root pool.
-    pub(crate) fn free_root_node(&self, ptr: NonNull<u8>, drop_fn: gc::RootDropFn) {
+    pub(crate) fn free_root_node(&self, ptr: NonNull<u8>, drop_fn: root::RootDropFn) {
         let mut pool = self.root_pool.borrow_mut();
         unsafe {
             (drop_fn)(&mut pool, ptr);
@@ -111,11 +96,12 @@ impl Collector {
 
     /// Allocates a value from the pool.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the allocation ID counter wraps around to `FREED_ALLOC_ID`
-    /// This is a theoretical limit that would require `usize::MAX - 1` allocations.
-    pub(crate) fn alloc<'gc, T: trace::Trace + trace::Finalize + 'gc>(
+    /// Returns `Err(PoolAllocError::AllocIdExhausted)` if the allocation ID counter
+    /// has reached `FREED_ALLOC_ID` (`usize::MAX`). This is a theoretical limit
+    /// that would require `usize::MAX - 1` allocations.
+    pub(crate) fn try_alloc<'gc, T: trace::Trace + trace::Finalize + 'gc>(
         &'gc self,
         value: T,
     ) -> Result<Gc<'gc, T>, PoolAllocError> {
@@ -124,13 +110,9 @@ impl Collector {
         // Check for alloc_id wrap before incrementing.
         // If alloc_id reaches FREED_ALLOC_ID (usize::MAX), weak reference validation
         // would break because freed slots are marked with this sentinel value.
-        assert_ne!(
-            alloc_id,
-            GcBox::<()>::FREED_ALLOC_ID,
-            "Allocation ID counter wrapped to FREED_ALLOC_ID sentinel. \
-             This indicates usize::MAX - 1 allocations have been made, \
-             which would break weak reference ABA protection."
-        );
+        if alloc_id == GcBox::<()>::FREED_ALLOC_ID {
+            return Err(PoolAllocError::AllocIdExhausted);
+        }
 
         self.generic_alloc_id.set(alloc_id.wrapping_add(1));
 
@@ -172,7 +154,7 @@ impl Collector {
                 // SAFETY: link_ptr points to the `link` field which is first in repr(C) RootNode.
                 // Casting to ErasedRootNode (also repr(C), same first two fields) lets us read
                 // gc_ptr without knowing T, avoiding manual offset arithmetic.
-                let erased = link_ptr.cast::<gc::ErasedRootNode>();
+                let erased = link_ptr.cast::<root::ErasedRootNode>();
                 tracer.mark_raw((*erased.as_ptr()).gc_ptr.as_ptr().cast::<u8>());
             }
         }
@@ -244,12 +226,12 @@ impl Drop for Collector {
         use crate::alloc::mempool3::PoolItem;
 
         // Free all root nodes first
-        let all_roots: Vec<(NonNull<u8>, gc::RootDropFn)> = self
+        let all_roots: Vec<(NonNull<u8>, root::RootDropFn)> = self
             .root_pool
             .borrow()
             .iter_live_slots()
             .map(|ptr| unsafe {
-                let drop_fn = (*ptr.cast::<PoolItem<gc::RootNode<'_, ()>>>().as_ptr())
+                let drop_fn = (*ptr.cast::<PoolItem<root::RootNode<'_, ()>>>().as_ptr())
                     .0
                     .drop_fn;
                 (ptr, drop_fn)

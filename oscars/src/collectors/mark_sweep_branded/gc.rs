@@ -1,20 +1,15 @@
 //! Core pointer types.
 
 use crate::{
-    alloc::mempool3::{PoolAllocator, PoolPointer},
+    alloc::mempool3::PoolPointer,
     collectors::mark_sweep_branded::{
         gc_box::GcBox,
-        mutation_ctx::MutationContext,
-        root_link::RootLink,
         trace::{Finalize, Trace},
     },
 };
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
-use core::ptr::NonNull;
-
-pub(crate) type RootDropFn = unsafe fn(&mut PoolAllocator<'static>, NonNull<u8>);
 
 /// A transient pointer to a GC-managed value.
 #[derive(Debug)]
@@ -52,62 +47,6 @@ impl<'gc, T: Trace + 'gc> Deref for Gc<'gc, T> {
     type Target = T;
     fn deref(&self) -> &T {
         self.get()
-    }
-}
-
-/// Heap node backing a `Root`.
-#[repr(C)]
-pub(crate) struct RootNode<'id, T: Trace> {
-    /// Intrusive list link
-    pub(crate) link: RootLink,
-    /// Pointer to the allocation
-    pub(crate) gc_ptr: PoolPointer<'static, GcBox<T>>,
-    /// Type-erased drop function for freeing this RootNode
-    pub(crate) drop_fn: RootDropFn,
-    /// Raw pointer to the Collector for freeing this node
-    pub(crate) collector_ptr: *const crate::collectors::mark_sweep_branded::Collector,
-    pub(crate) _marker: PhantomData<*mut &'id ()>,
-}
-
-/// Type-erased version of [`RootNode`] for use during collection.
-///
-/// Since [`RootNode`] is `repr(C)` and `link` is always the first field,
-/// a `NonNull<RootLink>` from the sentinel iterator can be safely cast to
-/// `NonNull<ErasedRootNode>` to read `gc_ptr` without knowing `T`.
-#[repr(C)]
-pub(crate) struct ErasedRootNode {
-    pub(crate) link: RootLink,
-    pub(crate) gc_ptr: PoolPointer<'static, GcBox<()>>,
-}
-
-/// A handle that keeps a GC allocation live.
-#[must_use = "dropping a root unregisters it from the GC"]
-pub struct Root<'id, T: Trace> {
-    pub(crate) raw: NonNull<RootNode<'id, T>>,
-}
-
-impl<'id, T: Trace> Root<'id, T> {
-    /// Converts this root into a `Gc` pointer
-    pub fn get<'gc>(&self, _cx: &MutationContext<'id, 'gc>) -> Gc<'gc, T> {
-        Gc {
-            // SAFETY: `raw` is non-null and valid.
-            ptr: unsafe { self.raw.as_ref().gc_ptr },
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<'id, T: Trace> Drop for Root<'id, T> {
-    fn drop(&mut self) {
-        unsafe {
-            let node_ref = self.raw.as_ref();
-            if node_ref.link.is_linked() {
-                RootLink::unlink(NonNull::from(&node_ref.link));
-            }
-            // SAFETY: collector_ptr is valid for the lifetime of the GcContext
-            let collector = &*node_ref.collector_ptr;
-            collector.free_root_node(self.raw.cast::<u8>(), node_ref.drop_fn);
-        }
     }
 }
 

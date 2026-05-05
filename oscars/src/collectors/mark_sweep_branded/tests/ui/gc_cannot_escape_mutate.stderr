@@ -5,5 +5,5 @@ error: lifetime may not live long enough
    |                                    --- return type of closure is oscars::collectors::mark_sweep_branded::Gc<'2, i32>
    |                                    |
    |                                    has type `&MutationContext<'_, '1>`
-15 |             cx.alloc(42i32).unwrap() // ERROR: Gc<'gc, i32> cannot escape mutate()
-   |             ^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+15 |             cx.try_alloc(42i32).unwrap() // ERROR: Gc<'gc, i32> cannot escape mutate()
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`

@@ -16,7 +16,7 @@ fn unrooted_alloc_is_swept() {
     with_gc(|ctx| {
         let weak = ctx.mutate(|cx| {
             cx.alloc_weak(
-                cx.alloc(JsObject {
+                cx.try_alloc(JsObject {
                     name: "ephemeral".into(),
                     value: 999,
                 })
@@ -35,12 +35,13 @@ fn rooted_alloc_survives_collection() {
     with_gc(|ctx| {
         let root = ctx.mutate(|cx| {
             cx.root(
-                cx.alloc(JsObject {
+                cx.try_alloc(JsObject {
                     name: "pinned".into(),
                     value: 42,
                 })
                 .unwrap(),
             )
+            .unwrap()
         });
         ctx.collect();
         ctx.mutate(|cx| {
@@ -56,7 +57,7 @@ fn weak_upgrade_after_collection_without_root_is_none() {
     with_gc(|ctx| {
         let weak = ctx.mutate(|cx| {
             cx.alloc_weak(
-                cx.alloc(JsObject {
+                cx.try_alloc(JsObject {
                     name: "weak".into(),
                     value: 10,
                 })
@@ -75,15 +76,15 @@ fn weak_upgrade_with_live_root_is_some() {
     with_gc(|ctx| {
         let (root, weak) = ctx.mutate(|cx| {
             let obj = cx
-                .alloc(JsObject {
+                .try_alloc(JsObject {
                     name: "strong".into(),
                     value: 7,
                 })
                 .unwrap();
-            let root = cx.root(obj);
+            let root = cx.root(obj).unwrap();
 
             let weak = cx.alloc_weak(
-                cx.alloc(JsObject {
+                cx.try_alloc(JsObject {
                     name: "weak_entry".into(),
                     value: 77,
                 })
@@ -103,9 +104,9 @@ fn weak_upgrade_with_live_root_is_some() {
 fn multiple_roots_are_independent() {
     with_gc(|ctx| {
         let (root1, root2) = ctx.mutate(|cx| {
-            let obj1 = cx.alloc(100i32).unwrap();
-            let obj2 = cx.alloc(200i32).unwrap();
-            (cx.root(obj1), cx.root(obj2))
+            let obj1 = cx.try_alloc(100i32).unwrap();
+            let obj2 = cx.try_alloc(200i32).unwrap();
+            (cx.root(obj1).unwrap(), cx.root(obj2).unwrap())
         });
 
         ctx.collect();
@@ -128,8 +129,8 @@ fn multiple_roots_are_independent() {
 fn root_escapes_closure_safely() {
     with_gc(|ctx| {
         let root = ctx.mutate(|cx| {
-            let obj = cx.alloc(555i32).unwrap();
-            cx.root(obj)
+            let obj = cx.try_alloc(555i32).unwrap();
+            cx.root(obj).unwrap()
         });
 
         ctx.collect();

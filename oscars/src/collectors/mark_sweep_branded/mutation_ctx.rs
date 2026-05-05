@@ -5,9 +5,9 @@ use crate::{
     collectors::mark_sweep_branded::{
         Collector,
         ephemeron::Ephemeron,
-        gc::{Gc, Root},
+        gc::Gc,
         gc_box::GcBox,
-        root_link::RootLink,
+        root::Root,
         trace::{Finalize, Trace},
         weak::WeakGc,
     },
@@ -22,8 +22,11 @@ pub struct MutationContext<'id, 'gc> {
 
 impl<'id, 'gc> MutationContext<'id, 'gc> {
     /// Allocates a value on the GC heap.
-    pub fn alloc<T: Trace + Finalize + 'gc>(&self, value: T) -> Result<Gc<'gc, T>, PoolAllocError> {
-        self.collector.alloc(value)
+    pub fn try_alloc<T: Trace + Finalize + 'gc>(
+        &self,
+        value: T,
+    ) -> Result<Gc<'gc, T>, PoolAllocError> {
+        self.collector.try_alloc(value)
     }
 
     /// Downgrades a `Gc` into a weak reference
@@ -37,17 +40,12 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
     }
 
     /// Promotes a `Gc` pointer to a `Root`
-    pub fn root<T: Trace + Finalize + 'gc>(&self, gc: Gc<'gc, T>) -> Root<'id, T> {
-        let raw = self.collector.alloc_root_node(gc.ptr);
-
-        // SAFETY: `raw` points to a stable `RootNode`.
-        unsafe {
-            let sentinel_ptr = self.collector.sentinel.as_ptr();
-            let link_ptr = raw.cast::<RootLink>();
-            RootLink::link_after(sentinel_ptr, link_ptr);
-        }
-
-        Root { raw }
+    pub fn root<T: Trace + Finalize + 'gc>(
+        &self,
+        gc: Gc<'gc, T>,
+    ) -> Result<Root<'id, T>, PoolAllocError> {
+        let raw = self.collector.try_alloc_root_node(gc.ptr)?;
+        Ok(Root { raw })
     }
 
     /// Creates an ephemeron binding `key` to `value`.

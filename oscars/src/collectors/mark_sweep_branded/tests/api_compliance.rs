@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::collectors::mark_sweep_branded::gc::RootNode;
-    use crate::collectors::mark_sweep_branded::root_link::RootLink;
+    use crate::collectors::mark_sweep_branded::root::{RootLink, RootNode};
 
     #[test]
     fn root_link_is_thin() {

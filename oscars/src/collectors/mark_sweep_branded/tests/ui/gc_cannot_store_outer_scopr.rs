@@ -17,7 +17,7 @@ fn main() {
         let mut holder: Option<Holder<'_>> = None;
 
         ctx.mutate(|cx| {
-            let gc = cx.alloc(42i32).unwrap();
+            let gc = cx.try_alloc(42i32).unwrap();
             // ERROR: `cx` (and therefore `gc`'s `'gc` lifetime) does not live
             // long enough to be stored in `holder`.
             holder = Some(Holder { gc });

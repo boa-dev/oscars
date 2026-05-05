@@ -19,6 +19,7 @@ pub enum PoolAllocError {
     LayoutError(LayoutError),
     OutOfMemory,
     AlignmentNotPossible,
+    AllocIdExhausted,
 }
 
 impl From<LayoutError> for PoolAllocError {
