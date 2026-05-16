@@ -1,0 +1,11 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> src/collectors/mark_sweep_branded/tests/ui/gc_cannot_store_outer_scopr.rs:23:13
+   |
+17 |         let mut holder: Option<Holder<'_>> = None;
+   |             ---------- `holder` declared here, outside of the closure body
+18 |
+19 |         ctx.mutate(|cx| {
+   |                     -- `cx` is a reference that is only valid in the closure body
+...
+23 |             holder = Some(Holder { gc });
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `cx` escapes the closure body here

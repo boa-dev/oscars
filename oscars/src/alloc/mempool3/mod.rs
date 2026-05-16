@@ -19,6 +19,7 @@ pub enum PoolAllocError {
     LayoutError(LayoutError),
     OutOfMemory,
     AlignmentNotPossible,
+    AllocIdExhausted,
 }
 
 impl From<LayoutError> for PoolAllocError {
@@ -119,6 +120,13 @@ impl<'alloc> PoolAllocator<'alloc> {
     /// exact heap size in bytes
     fn heap_size(&self) -> usize {
         self.current_heap_size
+    }
+
+    /// Iterates over every live slot pointer across all slot pools.
+    ///
+    /// Yields one `NonNull<u8>` per allocated (not yet freed) slot.
+    pub fn iter_live_slots(&self) -> impl Iterator<Item = core::ptr::NonNull<u8>> + '_ {
+        self.slot_pools.iter().flat_map(|pool| pool.iter_live())
     }
 
     pub fn is_below_threshold(&self) -> bool {
