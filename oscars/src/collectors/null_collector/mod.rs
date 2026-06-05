@@ -1,6 +1,6 @@
 //! A null (no-op) GC
 //!
-//! [`NullCollector`] uses the same arena as [`MarkSweepGarbageCollector`]
+//! [`NullCollector`] uses the same arena as [`crate::collectors::mark_sweep::MarkSweepGarbageCollector`]
 //! but never collects. Allocations are only freed when the collector drops.
 //!
 //! # Use Cases
@@ -120,7 +120,7 @@ impl NullCollector {
             unsafe { vtable.finalize_fn()(eph) };
         }
 
-        // Phase 2: drop + free 
+        // Phase 2: drop + free
         for node in roots {
             // SAFETY: `drop_fn` is called exactly once before freeing the slot.
             let drop_fn = unsafe { node.as_ref().value().drop_fn() };
