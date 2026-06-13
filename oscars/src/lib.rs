@@ -25,6 +25,7 @@ pub mod mark_sweep2 {
 #[cfg(feature = "mark_sweep")]
 pub use crate::collectors::mark_sweep::Collector;
 
+#[cfg(feature = "null_collector")]
 pub mod null_collector {
     pub use crate::collectors::null_collector::*;
 }
