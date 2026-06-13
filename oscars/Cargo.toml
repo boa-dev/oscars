@@ -23,10 +23,12 @@ required-features = ["mark_sweep"]
 [[bench]]
 name = "arena2_vs_mempool3"
 harness = false
+required-features = ["mark_sweep2"]
 
 [[bench]]
 name = "arena2_vs_boa_gc"
 harness = false
+required-features = ["mark_sweep2"]
 
 [features]
 default = ["mark_sweep"]
