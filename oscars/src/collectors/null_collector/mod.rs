@@ -24,6 +24,9 @@ use crate::{
 };
 use rust_alloc::vec::Vec;
 
+#[cfg(test)]
+mod tests;
+
 /// Fixed trace color.
 /// We never sweep, so objects always stay the same color.
 const NULL_TRACE_COLOR: TraceColor = TraceColor::White;
@@ -237,6 +240,3 @@ impl Collector for NullCollector {
         self.weak_maps.borrow_mut().push(map);
     }
 }
-
-#[cfg(test)]
-mod tests;
