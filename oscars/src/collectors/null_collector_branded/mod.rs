@@ -18,7 +18,7 @@ pub use root::Root;
 pub use trace::{Finalize, Trace, Tracer};
 pub use weak::WeakGc;
 
-use crate::alloc::mempool3::{PoolAllocError, PoolAllocator, PoolPointer};
+use crate::alloc::mempool3::{PoolAllocError, PoolAllocator};
 use core::cell::RefCell;
 use core::marker::PhantomData;
 use core::ptr::NonNull;

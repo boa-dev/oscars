@@ -1,5 +1,5 @@
 use crate::{
-    alloc::mempool3::{PoolAllocError, PoolPointer},
+    alloc::mempool3::PoolAllocError,
     collectors::null_collector_branded::{
         Collector,
         ephemeron::Ephemeron,
