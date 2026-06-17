@@ -1,0 +1,24 @@
+[tools]
+"aqua:nushell/nushell" = "0.101.0"
+
+[tasks.install-tools]
+hide = true
+run = "mise install"
+
+[tasks.init]
+description = "Initialize env for oscars development"
+depends = ["install-tools", "miri:setup"]
+
+[tasks."cargo:nightly"]
+description = "Check and install nightly toolchain"
+run = "nu {{config_root}}/etc/rust/ensure-nightly.nu"
+
+[tasks."miri:setup"]
+depends = ["cargo:nightly"]
+description = "Check and install Miri if missing"
+run = "nu {{config_root}}/etc/rust/ensure-miri.nu"
+
+[tasks."test"]
+description = "Run tests with Miri"
+depends = ["miri:setup"]
+run = "cargo +nightly miri test"
