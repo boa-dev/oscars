@@ -2,7 +2,7 @@
 
 use crate::{
     alloc::mempool3::PoolPointer,
-    collectors::mark_sweep_branded::{
+    collectors::null_collector_branded::{
         gc_box::GcBox,
         trace::{Finalize, Trace},
     },
@@ -11,7 +11,7 @@ use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
 
-/// A transient pointer to a GC-managed value.
+/// Transient pointer to a GC managed value.
 #[derive(Debug)]
 pub struct Gc<'gc, T: Trace + ?Sized + 'gc> {
     pub(crate) ptr: PoolPointer<'static, GcBox<T>>,
@@ -40,9 +40,6 @@ impl<'gc, T: Trace + 'gc> Gc<'gc, T> {
     #[inline]
     pub fn get(&self) -> &T {
         // SAFETY: `ptr` is non-null and valid for `'gc` by construction.
-        // The `'gc` lifetime is scoped to a `mutate()` closure, collection only occurs
-        // via `cx.collect()` within that same closure and `Gc<'gc, T>` can't
-        // escape the closure.
         unsafe { &(*self.ptr.as_ptr().as_ptr()).0.value }
     }
 }
@@ -62,7 +59,7 @@ impl<'gc, T: Trace + 'gc> Deref for Gc<'gc, T> {
 
 impl<T: Trace> Finalize for Gc<'_, T> {}
 impl<T: Trace> Trace for Gc<'_, T> {
-    fn trace(&mut self, tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {
+    fn trace(&mut self, tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {
         tracer.mark(self);
     }
 }

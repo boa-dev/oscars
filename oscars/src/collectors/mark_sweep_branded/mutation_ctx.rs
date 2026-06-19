@@ -32,11 +32,7 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
     /// Downgrades a `Gc` into a weak reference
     pub fn alloc_weak<T: Trace + Finalize + 'gc>(&self, gc: Gc<'gc, T>) -> WeakGc<'id, T> {
         let alloc_id = unsafe { (*gc.ptr.as_ptr().as_ptr()).0.alloc_id };
-        WeakGc {
-            ptr: gc.ptr,
-            alloc_id,
-            _marker: PhantomData,
-        }
+        WeakGc::with_pointer_and_alloc_id(gc.ptr, alloc_id)
     }
 
     /// Promotes a `Gc` pointer to a `Root`
@@ -45,7 +41,7 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
         gc: Gc<'gc, T>,
     ) -> Result<Root<'id, T>, PoolAllocError> {
         let raw = self.collector.try_alloc_root_node(gc.ptr)?;
-        Ok(Root { raw })
+        Ok(Root::from_raw(raw))
     }
 
     /// Creates an ephemeron binding `key` to `value`.
@@ -66,12 +62,7 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
         let erased_value: PoolPointer<'static, GcBox<()>> =
             unsafe { value.ptr.to_erased().to_typed_pool_pointer::<GcBox<()>>() };
         self.collector.register_ephemeron(erased_key, erased_value);
-        Ephemeron {
-            key_ptr: Some(key.ptr),
-            key_alloc_id,
-            value_ptr: value.ptr,
-            _marker: core::marker::PhantomData,
-        }
+        Ephemeron::new(Some(key.ptr), key_alloc_id, value.ptr)
     }
 
     /// Triggers a gc cycle.
