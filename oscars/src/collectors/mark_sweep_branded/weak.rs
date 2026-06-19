@@ -18,7 +18,10 @@ pub struct WeakGc<'id, T: Trace + ?Sized> {
 }
 
 impl<'id, T: Trace> WeakGc<'id, T> {
-    pub(crate) fn with_pointer_and_alloc_id(ptr: PoolPointer<'static, GcBox<T>>, alloc_id: usize) -> Self {
+    pub(crate) fn with_pointer_and_alloc_id(
+        ptr: PoolPointer<'static, GcBox<T>>,
+        alloc_id: usize,
+    ) -> Self {
         Self {
             ptr,
             alloc_id,
