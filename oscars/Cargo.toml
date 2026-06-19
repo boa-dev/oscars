@@ -23,10 +23,12 @@ required-features = ["mark_sweep"]
 [[bench]]
 name = "arena2_vs_mempool3"
 harness = false
+required-features = ["mark_sweep2"]
 
 [[bench]]
 name = "arena2_vs_boa_gc"
 harness = false
+required-features = ["mark_sweep2"]
 
 [features]
 default = ["mark_sweep"]
@@ -34,4 +36,6 @@ std = []
 mark_sweep = []
 mark_sweep2 = ["mark_sweep"]
 mark_sweep_branded = ["mark_sweep"]
+null_collector = ["mark_sweep"]
+null_collector_branded = ["mark_sweep"]
 thin-vec = ["dep:thin-vec", "mark_sweep"]
