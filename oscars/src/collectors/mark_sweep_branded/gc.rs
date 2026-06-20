@@ -25,6 +25,16 @@ impl<'gc, T: Trace + ?Sized + 'gc> Clone for Gc<'gc, T> {
     }
 }
 
+impl<'gc, T: Trace + ?Sized + 'gc> Gc<'gc, T> {
+    #[inline]
+    pub(crate) fn with_pointer(ptr: PoolPointer<'static, GcBox<T>>) -> Self {
+        Self {
+            ptr,
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl<'gc, T: Trace + 'gc> Gc<'gc, T> {
     /// Returns a shared reference to the value.
     #[inline]

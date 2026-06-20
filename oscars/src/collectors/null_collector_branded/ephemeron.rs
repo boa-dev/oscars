@@ -16,14 +16,22 @@ pub struct Ephemeron<'id, K: Trace, V: Trace> {
 }
 
 impl<'id, K: Trace, V: Trace> Ephemeron<'id, K, V> {
+    pub(crate) fn new(
+        key_ptr: Option<PoolPointer<'static, GcBox<K>>>,
+        value_ptr: PoolPointer<'static, GcBox<V>>,
+    ) -> Self {
+        Self {
+            key_ptr,
+            value_ptr,
+            _marker: PhantomData,
+        }
+    }
+
     /// Returns the value if the key is alive.
     pub fn get_value<'gc>(&self, _cx: &MutationContext<'id, 'gc>) -> Option<Gc<'gc, V>> {
         // In the null collector, everything stays alive until context drops.
         if self.key_ptr.is_some() {
-            Some(Gc {
-                ptr: self.value_ptr,
-                _marker: PhantomData,
-            })
+            Some(Gc::with_pointer(self.value_ptr))
         } else {
             None
         }

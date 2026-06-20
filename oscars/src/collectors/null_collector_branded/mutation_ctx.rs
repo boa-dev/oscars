@@ -28,10 +28,7 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
 
     /// Downgrades a `Gc` into weak reference
     pub fn alloc_weak<T: Trace + Finalize + 'gc>(&self, gc: Gc<'gc, T>) -> WeakGc<'id, T> {
-        WeakGc {
-            ptr: gc.ptr,
-            _marker: PhantomData,
-        }
+        WeakGc::with_pointer(gc.ptr)
     }
 
     pub fn root<T: Trace + Finalize + 'gc>(
@@ -53,11 +50,7 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
     ) -> Ephemeron<'id, K, V> {
         // In the null collector, ephemerons don't need to be registered
         // since the collector never collects.
-        Ephemeron {
-            key_ptr: Some(key.ptr),
-            value_ptr: value.ptr,
-            _marker: core::marker::PhantomData,
-        }
+        Ephemeron::new(Some(key.ptr), value.ptr)
     }
 
     pub fn collect(&self) {

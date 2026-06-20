@@ -17,6 +17,19 @@ pub struct Ephemeron<'id, K: Trace, V: Trace> {
 }
 
 impl<'id, K: Trace, V: Trace> Ephemeron<'id, K, V> {
+    pub(crate) fn new(
+        key_ptr: Option<PoolPointer<'static, GcBox<K>>>,
+        key_alloc_id: usize,
+        value_ptr: PoolPointer<'static, GcBox<V>>,
+    ) -> Self {
+        Self {
+            key_ptr,
+            key_alloc_id,
+            value_ptr,
+            _marker: PhantomData,
+        }
+    }
+
     /// Returns the value if the key is alive.
     pub fn get_value<'gc>(&self, _cx: &MutationContext<'id, 'gc>) -> Option<Gc<'gc, V>> {
         // SAFETY: `_cx` proves the collector is alive, alloc_id guards ABA
@@ -24,10 +37,7 @@ impl<'id, K: Trace, V: Trace> Ephemeron<'id, K, V> {
             .key_ptr
             .is_some_and(|p| unsafe { (*p.as_ptr().as_ptr()).0.alloc_id == self.key_alloc_id });
         if key_alive {
-            Some(Gc {
-                ptr: self.value_ptr,
-                _marker: PhantomData,
-            })
+            Some(Gc::with_pointer(self.value_ptr))
         } else {
             None
         }

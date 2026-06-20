@@ -15,16 +15,20 @@ pub struct WeakGc<'id, T: Trace + ?Sized> {
 }
 
 impl<'id, T: Trace> WeakGc<'id, T> {
+    pub(crate) fn with_pointer(ptr: PoolPointer<'static, GcBox<T>>) -> Self {
+        Self {
+            ptr,
+            _marker: PhantomData,
+        }
+    }
+
     /// Attempts to upgrade to a strong `Gc<'gc, T>`
     pub fn upgrade<'gc>(
         &self,
         _cx: &crate::collectors::null_collector_branded::MutationContext<'id, 'gc>,
     ) -> Option<Gc<'gc, T>> {
         // In the null collector, everything stays alive until context drops.
-        Some(Gc {
-            ptr: self.ptr,
-            _marker: PhantomData,
-        })
+        Some(Gc::with_pointer(self.ptr))
     }
 }
 

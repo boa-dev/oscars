@@ -18,6 +18,17 @@ pub struct WeakGc<'id, T: Trace + ?Sized> {
 }
 
 impl<'id, T: Trace> WeakGc<'id, T> {
+    pub(crate) fn with_pointer_and_alloc_id(
+        ptr: PoolPointer<'static, GcBox<T>>,
+        alloc_id: usize,
+    ) -> Self {
+        Self {
+            ptr,
+            alloc_id,
+            _marker: PhantomData,
+        }
+    }
+
     /// Attempts to upgrade to a strong `Gc<'gc, T>`.
     pub fn upgrade<'gc>(
         &self,
@@ -29,10 +40,7 @@ impl<'id, T: Trace> WeakGc<'id, T> {
         let is_valid = unsafe { (*self.ptr.as_ptr().as_ptr()).0.alloc_id == self.alloc_id };
 
         if is_valid {
-            Some(Gc {
-                ptr: self.ptr,
-                _marker: PhantomData,
-            })
+            Some(Gc::with_pointer(self.ptr))
         } else {
             None
         }

@@ -62,10 +62,7 @@ impl Collector {
 
         drop(pool);
 
-        Ok(Gc {
-            ptr: unsafe { ptr.extend_lifetime() },
-            _marker: PhantomData,
-        })
+        Ok(Gc::with_pointer(unsafe { ptr.extend_lifetime() }))
     }
 
     /// Runs a collection cycle (no-op for null collector)

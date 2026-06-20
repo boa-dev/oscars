@@ -26,9 +26,6 @@ impl<'id, T: Trace> Root<'id, T> {
 
     /// Converts this root into a `Gc` pointer
     pub fn get<'gc>(&self, _cx: &MutationContext<'id, 'gc>) -> Gc<'gc, T> {
-        Gc {
-            ptr: self.gc_ptr,
-            _marker: PhantomData,
-        }
+        Gc::with_pointer(self.gc_ptr)
     }
 }
