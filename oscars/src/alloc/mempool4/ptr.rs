@@ -1,5 +1,5 @@
 //! Custom 32 bit pointer types
-//! 
+//!
 //! [`CustomPtr`] stores `(pool_id, slot_idx)` instead of an address so it survives serialization.
 //! [`Gc<'gc, T>`] wraps it with a lifetime brand, use `resolve` instead of `Deref`
 
@@ -13,7 +13,7 @@ pub const MAX_SLOT_IDX: u32 = SLOT_MASK;
 
 /// A stable, address independent index into a [`PoolAllocator4`](super::PoolAllocator4)
 ///
-/// `Option<CustomPtr>` is the same size as `CustomPtr` 
+/// `Option<CustomPtr>` is the same size as `CustomPtr`
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct CustomPtr(NonZeroU32);
@@ -169,4 +169,3 @@ mod ptr_unit_tests {
         _assert_send_sync::<Gc<'static, i32>>();
     }
 }
-

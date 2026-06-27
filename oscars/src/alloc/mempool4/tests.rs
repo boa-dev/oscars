@@ -190,9 +190,7 @@ fn alloc_after_deserialize() {
     // verify next_pool_id is correctly restored
     let (bytes, existing_ptr) = {
         let mut alloc = PoolAllocator4::new();
-        let ptr = alloc.mutate(|cx: AllocCtx<'_>| {
-            cx.try_alloc(42_u32).unwrap().as_custom_ptr()
-        });
+        let ptr = alloc.mutate(|cx: AllocCtx<'_>| cx.try_alloc(42_u32).unwrap().as_custom_ptr());
         (serialize(&alloc), ptr)
     };
 
@@ -203,7 +201,10 @@ fn alloc_after_deserialize() {
         let new_ptr = new_gc.as_custom_ptr();
 
         // pointers must not collide
-        assert_ne!(new_ptr, existing_ptr, "new allocation collided with restored slot");
+        assert_ne!(
+            new_ptr, existing_ptr,
+            "new allocation collided with restored slot"
+        );
 
         // existing_ptr came from a live allocation before serialization
         let old: &u32 = cx.resolve(unsafe { Gc::from_custom_ptr(existing_ptr) });

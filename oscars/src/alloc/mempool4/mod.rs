@@ -1,6 +1,6 @@
 //! Allocations return a [`Gc<'_, T>`] wrapping a [`CustomPtr`] `(pool_id, slot_idx)`
 //! Values are read back through [`PoolAllocator4::mutate`] -> [`AllocCtx::resolve`]
-//! The heap can be saved and restored with [`serialize`] / [`deserialize`]
+//! The heap can be saved and restored with [`serialize()`] / [`deserialize()`]
 
 use core::{cell::Cell, marker::PhantomData, ptr::NonNull};
 use rust_alloc::alloc::{Layout, alloc, dealloc, handle_alloc_error};
@@ -36,7 +36,6 @@ fn size_class_for(size: usize) -> usize {
 }
 
 const DEFAULT_PAGE_BYTES: usize = 65_536;
-
 
 #[repr(C)]
 struct FreeSlot {
@@ -380,7 +379,6 @@ impl PoolAllocator4 {
             .find(|p| p.pool_id as usize == pool_id)
     }
 }
-
 
 /// Scoped context from [`PoolAllocator4::mutate`]
 ///

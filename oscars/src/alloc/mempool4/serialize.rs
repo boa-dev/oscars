@@ -1,7 +1,7 @@
 //! Heap serialization for `PoolAllocator4`
 //!
 //! Format: little-endian integers
-//! [pool_count] -> per pool: [id, size, count, live_count] -> per slot: [idx, data]
+//! `[pool_count]` -> per pool: `[id, size, count, live_count]` -> per slot: `[idx, data]`
 //! Slot data must not contain raw pointers
 
 use super::{Pool4, PoolAllocError4, PoolAllocator4};
