@@ -14,7 +14,7 @@ pub struct WeakGc<'id, T: Trace + ?Sized> {
     pub(crate) _marker: PhantomData<*mut &'id ()>,
 }
 
-impl<'id, T: Trace> WeakGc<'id, T> {
+impl<'id, T: Trace + ?Sized> WeakGc<'id, T> {
     pub(crate) fn with_pointer(ptr: PoolPointer<'static, GcBox<T>>) -> Self {
         Self {
             ptr,
@@ -40,7 +40,8 @@ impl<'id, T: Trace + ?Sized> Clone for WeakGc<'id, T> {
 
 impl<'id, T: Trace + ?Sized> Copy for WeakGc<'id, T> {}
 
-impl<'id, T: Trace> Finalize for WeakGc<'id, T> {}
-impl<'id, T: Trace> Trace for WeakGc<'id, T> {
-    fn trace(&mut self, _tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {}
+impl<'id, T: Trace + ?Sized> Finalize for WeakGc<'id, T> {}
+unsafe impl<'id, T: Trace + ?Sized> Trace for WeakGc<'id, T> {
+    unsafe fn trace(&self, _tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {
+    }
 }

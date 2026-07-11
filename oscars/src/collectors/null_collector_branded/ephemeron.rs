@@ -48,6 +48,6 @@ impl<'id, K: Trace, V: Trace> Copy for Ephemeron<'id, K, V> {}
 
 impl<'id, K: Trace, V: Trace> Finalize for Ephemeron<'id, K, V> {}
 
-impl<'id, K: Trace, V: Trace> Trace for Ephemeron<'id, K, V> {
-    fn trace(&mut self, _tracer: &mut Tracer) {}
+unsafe impl<'id, K: Trace, V: Trace> Trace for Ephemeron<'id, K, V> {
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }

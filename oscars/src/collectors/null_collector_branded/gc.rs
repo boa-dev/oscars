@@ -35,31 +35,36 @@ impl<'gc, T: Trace + ?Sized + 'gc> Gc<'gc, T> {
     }
 }
 
-impl<'gc, T: Trace + 'gc> Gc<'gc, T> {
+impl<'gc, T: Trace + ?Sized + 'gc> Gc<'gc, T> {
     /// Returns a shared reference to the value.
     #[inline]
     pub fn get(&self) -> &T {
         // SAFETY: `ptr` is non-null and valid for `'gc` by construction.
         unsafe { &(*self.ptr.as_ptr().as_ptr()).0.value }
     }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *const T {
+        self.get() as *const T
+    }
 }
 
-impl<'gc, T: Trace + fmt::Display + 'gc> fmt::Display for Gc<'gc, T> {
+impl<'gc, T: Trace + ?Sized + fmt::Display + 'gc> fmt::Display for Gc<'gc, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.get(), f)
     }
 }
 
-impl<'gc, T: Trace + 'gc> Deref for Gc<'gc, T> {
+impl<'gc, T: Trace + ?Sized + 'gc> Deref for Gc<'gc, T> {
     type Target = T;
     fn deref(&self) -> &T {
         self.get()
     }
 }
 
-impl<T: Trace> Finalize for Gc<'_, T> {}
-impl<T: Trace> Trace for Gc<'_, T> {
-    fn trace(&mut self, tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {
+impl<T: Trace + ?Sized> Finalize for Gc<'_, T> {}
+unsafe impl<T: Trace + ?Sized> Trace for Gc<'_, T> {
+    unsafe fn trace(&self, tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {
         tracer.mark(self);
     }
 }
