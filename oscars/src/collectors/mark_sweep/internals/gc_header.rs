@@ -177,4 +177,14 @@ mod tests {
         assert!(!header.is_white(), "failed to toggle black");
         assert!(!header.is_grey(), "failed to toggle black");
     }
+
+    #[test]
+    #[should_panic(expected = "GcHeader root_count overflow")]
+    fn root_count_overflow_panics() {
+        let header = GcHeader::new_white();
+
+        for _ in 0..=u16::MAX {
+            header.inc_roots();
+        }
+    }
 }
