@@ -5,8 +5,8 @@ use core::cell::Cell;
 
 struct DetectDrop<'a>(&'a Cell<bool>);
 
-impl<'a> Trace for DetectDrop<'a> {
-    fn trace(&mut self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
+unsafe impl<'a> Trace for DetectDrop<'a> {
+    unsafe fn trace(&self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
 }
 
 impl Finalize for DetectDrop<'_> {}
