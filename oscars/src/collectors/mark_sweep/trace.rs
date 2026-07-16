@@ -72,6 +72,23 @@ macro_rules! empty_trace {
     };
 }
 
+/// Utility macro to define an empty implementation of [`Trace`] inside an
+/// `unsafe impl Trace` block.
+///
+/// This mirrors `empty_trace!` semantics while making the unsafety explicit at
+/// the call site.
+#[macro_export]
+macro_rules! unsafe_empty_trace {
+    () => {
+        #[inline]
+        unsafe fn trace(&self, _color: $crate::collectors::mark_sweep::TraceColor) {}
+        #[inline]
+        fn run_finalizer(&self) {
+            $crate::collectors::mark_sweep::Finalize::finalize(self);
+        }
+    };
+}
+
 /// Utility macro to manually implement [`Trace`] on a type.
 ///
 /// You define a `this` parameter name and pass in a body, which should call `mark` on every
