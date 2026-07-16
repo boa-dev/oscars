@@ -35,6 +35,26 @@ impl<T: Trace> Gc<T> {
         gc
     }
 
+    #[must_use]
+    pub fn new_cyclic_in<C, F>(collector: &C, data_fn: F) -> Self
+    where
+        C: Collector,
+        F: FnOnce(&crate::collectors::mark_sweep::WeakGc<T>) -> T,
+    {
+        let weak = unsafe {
+            crate::collectors::mark_sweep::WeakGc::from_raw(
+                collector
+                    .alloc_empty_ephemeron_node::<T>()
+                    .expect("Failed to allocate Ephemeron node")
+                    .extend_lifetime(),
+            )
+        };
+
+        let gc = Self::new_in(data_fn(&weak), collector);
+        weak.set_key(&gc);
+        gc
+    }
+
     /// Converts a `Gc` into a raw [`PoolPointer`].
     pub fn into_raw(this: Self) -> PoolPointer<'static, GcBox<T>> {
         let ptr = this.inner_ptr();
