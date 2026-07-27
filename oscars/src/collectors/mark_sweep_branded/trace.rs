@@ -27,9 +27,15 @@ pub unsafe trait Trace {
     ///
     /// # Safety
     ///
-    /// See `boa_gc::Trace` for safety contract details.
+    /// Must only be called by the garbage collector. Implementors must call
+    /// `Tracer::mark` on all reachable `Gc` fields and avoid other unsafe operations
     unsafe fn trace(&self, tracer: &mut Tracer);
 
+    /// Unroots handles located in the GC heap.
+    ///
+    /// # Safety
+    ///
+    /// Must only be called by the garbage collector.
     #[inline]
     unsafe fn trace_non_roots(&self) {}
 

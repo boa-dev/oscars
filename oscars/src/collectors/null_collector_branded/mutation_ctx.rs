@@ -18,7 +18,26 @@ pub struct MutationContext<'id, 'gc> {
 }
 
 impl<'id, 'gc> MutationContext<'id, 'gc> {
-    /// Creates a dummy MutationContext
+    /// Creates a global thread-local MutationContext for the null collector.
+    pub fn global() -> Self {
+        std::thread_local! {
+            static COLLECTOR: crate::collectors::null_collector_branded::Collector = crate::collectors::null_collector_branded::Collector::new();
+        }
+        COLLECTOR.with(|c| {
+            let ptr = c as *const crate::collectors::null_collector_branded::Collector;
+            Self {
+                collector: unsafe { &*ptr },
+                _marker: core::marker::PhantomData,
+            }
+        })
+    }
+
+    /// Creates a dummy `MutationContext` backed by a dangling pointer.
+    ///
+    /// # Safety
+    ///
+    /// The returned context is a placeholder and must never be used to
+    /// allocate or access GC objects.
     pub unsafe fn dummy() -> Self {
         // SAFETY: We use a dangling pointer for the collector because it's a dummy.
         // It should never be used to allocate

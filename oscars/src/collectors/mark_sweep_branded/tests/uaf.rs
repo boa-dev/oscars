@@ -5,6 +5,7 @@ use core::cell::Cell;
 
 struct DetectDrop<'a>(&'a Cell<bool>);
 
+// SAFETY: DetectDrop contains no Gc pointers; tracing is a no-op.
 unsafe impl<'a> Trace for DetectDrop<'a> {
     unsafe fn trace(&self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
 }

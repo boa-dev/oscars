@@ -32,7 +32,7 @@ impl<'id, K: Trace + ?Sized, V: Trace> Ephemeron<'id, K, V> {
         V: Finalize,
     {
         let value_gc = Gc::new(cx, value);
-        Self::new_raw(Some(key.ptr.clone()), value_gc.ptr)
+        Self::new_raw(Some(key.ptr), value_gc.ptr)
     }
 
     pub fn get_value<'gc>(&self, cx: &MutationContext<'id, 'gc>) -> Option<Gc<'gc, V>> {
@@ -45,7 +45,7 @@ impl<'id, K: Trace + ?Sized, V: Trace> Ephemeron<'id, K, V> {
     /// TODO: Hook into the collector's finalization pass to return `None` when the key is
     /// only reachable through this ephemeron
     pub fn key<'gc>(&self, _cx: &MutationContext<'id, 'gc>) -> Option<Gc<'gc, K>> {
-        self.key_ptr.clone().map(|ptr| Gc::with_pointer(ptr))
+        self.key_ptr.map(|ptr| Gc::with_pointer(ptr))
     }
 
     /// Returns the value if the key is still live, or `None` if it has been collected.
@@ -54,7 +54,7 @@ impl<'id, K: Trace + ?Sized, V: Trace> Ephemeron<'id, K, V> {
     /// TODO: Same as `key()`, must return `None` when the key is collected
     pub fn value<'gc>(&self, _cx: &MutationContext<'id, 'gc>) -> Option<Gc<'gc, V>> {
         if self.key_ptr.is_some() {
-            Some(Gc::with_pointer(self.value_ptr.clone()))
+            Some(Gc::with_pointer(self.value_ptr))
         } else {
             None
         }

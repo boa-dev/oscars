@@ -29,7 +29,7 @@ impl<'id, T: Trace + ?Sized> WeakGc<'id, T> {
     where
         T: Sized + Finalize,
     {
-        mc.alloc_weak(inner.clone())
+        mc.alloc_weak(*inner)
     }
 
     /// Attempts to upgrade to a strong `Gc<'gc, T>`

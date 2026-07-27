@@ -17,15 +17,23 @@ use rust_alloc::vec::Vec;
 ///
 /// # Safety
 ///
-/// See `boa_gc::Trace` for safety contract details.
+/// Implementors must pass every reachable `Gc` pointer to `Tracer::mark`
+/// While the null collector reclaims no memory, implementations must be
+/// sound for other collectors to prevent UAF bugs.
 pub unsafe trait Trace {
-    /// Marks all Gc pointers reachable from `self`.
+    /// Marks all `Gc` pointers reachable from `self`.
     ///
     /// # Safety
     ///
-    /// See `boa_gc::Trace` for safety contract details.
+    /// Must only be called by the garbage collector. Implementors must call
+    /// `Tracer::mark` on all reachable `Gc` fields and avoid other unsafe operations.
     unsafe fn trace(&self, tracer: &mut Tracer);
 
+    /// Unroots handles located in the GC heap.
+    ///
+    /// # Safety
+    ///
+    /// Must only be called by the garbage collector.
     #[inline]
     unsafe fn trace_non_roots(&self) {}
 
@@ -107,7 +115,6 @@ unsafe impl<T: Trace, const N: usize> Trace for [T; N] {
 }
 
 unsafe impl<T: Trace> Trace for [T] {
-    #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
@@ -116,19 +123,8 @@ unsafe impl<T: Trace> Trace for [T] {
 }
 
 unsafe impl<T: Trace + ?Sized> Trace for Box<T> {
-    #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         (**self).trace(tracer);
-    }
-}
-
-#[cfg(feature = "thin-vec")]
-unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
-    #[inline]
-    unsafe fn trace(&self, tracer: &mut Tracer) {
-        for v in self.iter() {
-            v.trace(tracer);
-        }
     }
 }
 
@@ -158,6 +154,15 @@ unsafe impl<T: Trace> Trace for Vec<T> {
 }
 
 unsafe impl<T: Trace> Trace for VecDeque<T> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self.iter() {
+            v.trace(tracer);
+        }
+    }
+}
+
+#[cfg(feature = "thin-vec")]
+unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
@@ -236,7 +241,6 @@ unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {
         self.1.trace(tracer);
         self.2.trace(tracer);
         self.3.trace(tracer);
-        self.4.trace(tracer);
     }
 }
 
@@ -335,7 +339,7 @@ unsafe impl<K, V: Trace, S> Trace for hashbrown::hash_map::HashMap<K, V, S> {
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.values() {
-            Trace::trace(v, tracer);
+            v.trace(tracer);
         }
     }
 }
@@ -349,10 +353,9 @@ unsafe impl<T, S> Trace for hashbrown::hash_set::HashSet<T, S> {
 
 unsafe impl<T: Trace> Trace for rust_alloc::collections::BinaryHeap<T> {
     #[inline]
-    unsafe fn trace(&self, tracer: &mut Tracer) {
-        for v in self.iter() {
-            Trace::trace(v, tracer);
-        }
+    unsafe fn trace(&self, _tracer: &mut Tracer) {
+        // BinaryHeap has no iter_mut(); the null collector's trace is a no-op
+        // so no values need to be visited here.
     }
 }
 // Finalize is already implemented in common.rs
@@ -394,7 +397,7 @@ unsafe impl<K, V: Trace, S> Trace for std::collections::HashMap<K, V, S> {
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.values() {
-            Trace::trace(v, tracer);
+            v.trace(tracer);
         }
     }
 }

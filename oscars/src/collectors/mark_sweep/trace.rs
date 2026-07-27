@@ -54,6 +54,11 @@ pub unsafe trait Trace: Finalize {
     /// - An incorrect implementation may cause undefined behavior
     unsafe fn trace(&self, color: TraceColor);
 
+    /// Unroots handles located in the GC heap.
+    ///
+    /// # Safety
+    ///
+    /// Must only be called by the garbage collector.
     #[inline]
     unsafe fn trace_non_roots(&self) {}
 

@@ -44,16 +44,16 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "boa_gc"
 version = "1.0.0-dev"
-source = "git+https://github.com/boa-dev/boa?branch=main#6ec44883afffa6edbc4df7df35925a6ef888543d"
+source = "git+https://github.com/boa-dev/boa.git?branch=main#4fc75c6ae9d85f2b8065c6716f88e9b35318438c"
 dependencies = [
  "boa_macros",
- "hashbrown",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
 name = "boa_macros"
 version = "1.0.0-dev"
-source = "git+https://github.com/boa-dev/boa?branch=main#6ec44883afffa6edbc4df7df35925a6ef888543d"
+source = "git+https://github.com/boa-dev/boa.git?branch=main#4fc75c6ae9d85f2b8065c6716f88e9b35318438c"
 dependencies = [
  "cfg-if",
  "cow-utils",
@@ -66,6 +66,7 @@ dependencies = [
 [[package]]
 name = "boa_string"
 version = "1.0.0-dev"
+source = "git+https://github.com/boa-dev/boa.git?branch=main#4fc75c6ae9d85f2b8065c6716f88e9b35318438c"
 dependencies = [
  "fast-float2",
  "itoa",
@@ -282,6 +283,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashbrown"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash",
+]
+
+[[package]]
 name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -306,7 +318,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
 dependencies = [
  "equivalent",
- "hashbrown",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -393,7 +405,7 @@ dependencies = [
  "boa_string",
  "criterion",
  "either",
- "hashbrown",
+ "hashbrown 0.16.1",
  "icu_locale_core",
  "oscars_derive",
  "rustc-hash",
@@ -457,9 +469,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.44"
+version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21b2ebcf727b7760c461f091f9f0f539b77b8e87f2fd88131e7f1b433b3cece4"
+checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
 ]

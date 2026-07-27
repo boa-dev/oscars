@@ -10,7 +10,6 @@ use crate::{
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
-use core::ptr::NonNull;
 
 /// Transient pointer to a GC managed value.
 #[derive(Debug)]
@@ -45,30 +44,29 @@ impl<'gc, T: Trace + ?Sized + 'gc> Gc<'gc, T> {
         mc.try_alloc(value).unwrap()
     }
 
+    #[inline]
+    pub fn as_ptr(&self) -> *const T {
+        self.as_ref() as *const T
+    }
+
     pub fn into_raw(self) -> *const T {
         let ptr = self.ptr.as_ptr().as_ptr() as *const T;
         let _ = self;
         ptr
     }
 
+    /// Creates a `Gc` from a raw pointer previously obtained from `into_raw`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must have been returned by `Gc::into_raw` for the same `T`.
+    /// The allocation must be valid and uniquely referenced.
     pub unsafe fn from_raw(ptr: *const T) -> Self {
         unsafe {
             Self::with_pointer(crate::alloc::mempool3::PoolPointer::from_raw(
                 core::ptr::NonNull::new_unchecked(ptr as *mut _),
             ))
         }
-    }
-}
-
-impl<'gc, T: Trace + ?Sized + 'gc> Gc<'gc, T> {
-    #[inline]
-    pub fn as_ptr(&self) -> *const T {
-        self.as_ref() as *const T
-    }
-
-    #[inline]
-    pub fn as_ptr(&self) -> *const T {
-        self.get() as *const T
     }
 }
 
@@ -100,8 +98,7 @@ impl<'gc, T: Trace + ?Sized + 'gc> Deref for Gc<'gc, T> {
 
 impl<T: Trace + ?Sized> Finalize for Gc<'_, T> {}
 unsafe impl<T: Trace + ?Sized> Trace for Gc<'_, T> {
-    unsafe fn trace(&self, tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {
-        tracer.mark(self);
+    unsafe fn trace(&self, _tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {
     }
 }
 
@@ -109,7 +106,7 @@ impl<'gc, T: Default + Trace + Finalize + 'gc> Default for Gc<'gc, T> {
     #[inline]
     fn default() -> Self {
         Self::new(
-            &unsafe { crate::collectors::null_collector_branded::MutationContext::dummy() },
+            &crate::collectors::null_collector_branded::MutationContext::global(),
             Default::default(),
         )
     }
@@ -120,6 +117,12 @@ impl<'gc, T: Trace + ?Sized + 'gc> Gc<'gc, T> {
         core::ptr::eq(this.ptr.as_ptr().as_ptr(), other.ptr.as_ptr().as_ptr())
     }
 
+    /// Casts a `Gc<T>` to a `Gc<U>` without type checking.
+    ///
+    /// # Safety
+    ///
+    /// The allocation must contain a valid `U`, `T` and `U` must share
+    /// the same layout and alignment
     pub unsafe fn cast_unchecked<U: Trace + 'gc>(this: Self) -> Gc<'gc, U> {
         let ptr = this.ptr.as_ptr().as_ptr()
             as *mut crate::alloc::mempool3::PoolItem<
