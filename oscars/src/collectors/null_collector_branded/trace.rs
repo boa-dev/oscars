@@ -128,6 +128,15 @@ unsafe impl<T: Trace + ?Sized> Trace for Box<T> {
     }
 }
 
+#[cfg(feature = "thin-vec")]
+unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self.iter() {
+            v.trace(tracer);
+        }
+    }
+}
+
 unsafe impl<T: Trace> Trace for Option<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         if let Some(v) = self {
@@ -154,15 +163,6 @@ unsafe impl<T: Trace> Trace for Vec<T> {
 }
 
 unsafe impl<T: Trace> Trace for VecDeque<T> {
-    unsafe fn trace(&self, tracer: &mut Tracer) {
-        for v in self.iter() {
-            v.trace(tracer);
-        }
-    }
-}
-
-#[cfg(feature = "thin-vec")]
-unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
