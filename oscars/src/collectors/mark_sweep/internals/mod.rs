@@ -4,6 +4,7 @@ mod gc_header;
 mod vtable;
 
 pub(crate) use ephemeron::Ephemeron;
+#[allow(unused_imports)]
 pub(crate) use gc_header::{GcHeader, HeaderColor};
 pub(crate) use vtable::{DropFn, FinalizeFn, TraceFn, VTable, vtable_of};
 

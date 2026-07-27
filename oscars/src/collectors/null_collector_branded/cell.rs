@@ -3,7 +3,7 @@ use core::cell::{Ref, RefCell, RefMut};
 use core::ops::{Deref, DerefMut};
 
 /// GC aware wrapper around [`RefCell<T>`]
-pub struct GcRefCell<T: Trace> {
+pub struct GcRefCell<T: Trace + ?Sized> {
     inner: RefCell<T>,
 }
 
@@ -34,28 +34,80 @@ impl<T: Trace> GcRefCell<T> {
 }
 
 /// Shared borrow guard returned by [`GcRefCell::borrow`]
-pub struct GcRef<'a, T: Trace>(Ref<'a, T>);
-
-impl<T: Trace> Deref for GcRef<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.0
-    }
-}
+pub struct GcRef<'a, T: Trace + ?Sized>(Ref<'a, T>);
 
 /// A mutable borrow guard returned by [`GcRefCell::borrow_mut`]
-pub struct GcRefMut<'a, T: Trace>(RefMut<'a, T>);
-
-impl<T: Trace> Deref for GcRefMut<'_, T> {
+pub struct GcRefMut<'a, T: Trace + ?Sized>(RefMut<'a, T>);
+impl<T: Trace + ?Sized> Deref for GcRef<'_, T> {
     type Target = T;
-    fn deref(&self) -> &T {
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<T: Trace> DerefMut for GcRefMut<'_, T> {
-    fn deref_mut(&mut self) -> &mut T {
+impl<T: Trace + ?Sized> Deref for GcRefMut<'_, T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: Trace + ?Sized> DerefMut for GcRefMut<'_, T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+impl<'a, T: Trace + ?Sized> GcRef<'a, T> {
+    pub fn clone(orig: &GcRef<'a, T>) -> GcRef<'a, T> {
+        GcRef(Ref::clone(&orig.0))
+    }
+
+    pub fn map<U: Trace + ?Sized, F>(orig: GcRef<'a, T>, f: F) -> GcRef<'a, U>
+    where
+        F: FnOnce(&T) -> &U,
+    {
+        GcRef(Ref::map(orig.0, f))
+    }
+
+    pub fn try_map<U: Trace + ?Sized, F>(orig: GcRef<'a, T>, f: F) -> Option<GcRef<'a, U>>
+    where
+        F: FnOnce(&T) -> Option<&U>,
+    {
+        Ref::filter_map(orig.0, f).ok().map(GcRef)
+    }
+
+    pub unsafe fn cast<U: Trace>(orig: GcRef<'a, T>) -> GcRef<'a, U> {
+        GcRef(Ref::map(orig.0, |t| unsafe {
+            &*((t as *const T).cast::<U>())
+        }))
+    }
+}
+
+impl<'a, T: Trace + ?Sized> GcRefMut<'a, T> {
+    pub fn map<U: Trace + ?Sized, F>(orig: GcRefMut<'a, T>, f: F) -> GcRefMut<'a, U>
+    where
+        F: FnOnce(&mut T) -> &mut U,
+    {
+        GcRefMut(RefMut::map(orig.0, f))
+    }
+
+    pub fn try_map<U: Trace + ?Sized, F>(orig: GcRefMut<'a, T>, f: F) -> Option<GcRefMut<'a, U>>
+    where
+        F: FnOnce(&mut T) -> Option<&mut U>,
+    {
+        RefMut::filter_map(orig.0, f).ok().map(GcRefMut)
+    }
+
+    pub unsafe fn cast<U: Trace>(orig: GcRefMut<'a, T>) -> GcRefMut<'a, U> {
+        GcRefMut(RefMut::map(orig.0, |t| unsafe {
+            &mut *((t as *mut T).cast::<U>())
+        }))
     }
 }
 
@@ -64,5 +116,72 @@ impl<T: Trace> Finalize for GcRefCell<T> {}
 impl<T: Trace> Trace for GcRefCell<T> {
     fn trace(&mut self, tracer: &mut Tracer) {
         self.inner.get_mut().trace(tracer);
+    }
+}
+
+impl<T: Trace + Default> Default for GcRefCell<T> {
+    #[inline]
+    fn default() -> Self {
+        Self::new(T::default())
+    }
+}
+
+impl<T: Trace + core::fmt::Debug> core::fmt::Debug for GcRefCell<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.inner.try_borrow() {
+            Ok(borrow) => f.debug_tuple("GcRefCell").field(&*borrow).finish(),
+            Err(_) => {
+                struct BorrowedPlaceholder;
+                impl core::fmt::Debug for BorrowedPlaceholder {
+                    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                        f.write_str("<borrowed>")
+                    }
+                }
+                f.debug_tuple("GcRefCell")
+                    .field(&BorrowedPlaceholder)
+                    .finish()
+            }
+        }
+    }
+}
+
+impl<T: Trace + Clone> Clone for GcRefCell<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self::new(self.inner.borrow().clone())
+    }
+}
+
+impl<'a, T: Trace + core::fmt::Debug + ?Sized> core::fmt::Debug for GcRef<'a, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl<'a, T: Trace + core::fmt::Display + ?Sized> core::fmt::Display for GcRef<'a, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&**self, f)
+    }
+}
+
+impl<'a, T: Trace + core::fmt::Debug + ?Sized> core::fmt::Debug for GcRefMut<'a, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl<'a, T: Trace + core::fmt::Display + ?Sized> core::fmt::Display for GcRefMut<'a, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&**self, f)
+    }
+}
+
+impl<T: Trace + ?Sized> GcRefCell<T> {
+    pub fn try_borrow(&self) -> Result<GcRef<'_, T>, core::cell::BorrowError> {
+        self.inner.try_borrow().map(GcRef)
+    }
+
+    pub fn try_borrow_mut(&self) -> Result<GcRefMut<'_, T>, core::cell::BorrowMutError> {
+        self.inner.try_borrow_mut().map(GcRefMut)
     }
 }

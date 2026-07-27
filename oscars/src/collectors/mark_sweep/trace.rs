@@ -54,6 +54,9 @@ pub unsafe trait Trace: Finalize {
     /// - An incorrect implementation may cause undefined behavior
     unsafe fn trace(&self, color: TraceColor);
 
+    #[inline]
+    unsafe fn trace_non_roots(&self) {}
+
     fn run_finalizer(&self);
 }
 

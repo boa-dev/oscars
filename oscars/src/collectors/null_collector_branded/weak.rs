@@ -22,6 +22,16 @@ impl<'id, T: Trace> WeakGc<'id, T> {
         }
     }
 
+    pub fn new<'gc>(
+        mc: &crate::collectors::null_collector_branded::MutationContext<'id, 'gc>,
+        inner: &Gc<'gc, T>,
+    ) -> Self
+    where
+        T: Sized + Finalize,
+    {
+        mc.alloc_weak(inner.clone())
+    }
+
     /// Attempts to upgrade to a strong `Gc<'gc, T>`
     pub fn upgrade<'gc>(
         &self,
@@ -29,6 +39,10 @@ impl<'id, T: Trace> WeakGc<'id, T> {
     ) -> Option<Gc<'gc, T>> {
         // In the null collector, everything stays alive until context drops.
         Some(Gc::with_pointer(self.ptr))
+    }
+
+    pub fn is_upgradable(&self) -> bool {
+        true
     }
 }
 
@@ -40,7 +54,22 @@ impl<'id, T: Trace + ?Sized> Clone for WeakGc<'id, T> {
 
 impl<'id, T: Trace + ?Sized> Copy for WeakGc<'id, T> {}
 
-impl<'id, T: Trace> Finalize for WeakGc<'id, T> {}
-impl<'id, T: Trace> Trace for WeakGc<'id, T> {
-    fn trace(&mut self, _tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {}
+impl<'id, T: Trace + ?Sized> core::fmt::Debug for WeakGc<'id, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "WeakGc({:p})", self.ptr.as_ptr())
+    }
+}
+
+impl<'id, T: Trace + ?Sized> PartialEq for WeakGc<'id, T> {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::addr_eq(self.ptr.as_ptr().as_ptr(), other.ptr.as_ptr().as_ptr())
+    }
+}
+
+impl<'id, T: Trace + ?Sized> Eq for WeakGc<'id, T> {}
+
+impl<'id, T: Trace + ?Sized> Finalize for WeakGc<'id, T> {}
+unsafe impl<'id, T: Trace + ?Sized> Trace for WeakGc<'id, T> {
+    unsafe fn trace(&self, _tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {
+    }
 }

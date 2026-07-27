@@ -22,7 +22,17 @@ pub use crate::collectors::common::Finalize;
 /// Use `Tracer::mark` for every reachable `Gc` pointer.
 pub trait Trace {
     /// Marks all `Gc` pointers reachable from `self`.
-    fn trace(&mut self, tracer: &mut Tracer);
+    ///
+    /// # Safety
+    ///
+    /// See `boa_gc::Trace` for safety contract details.
+    unsafe fn trace(&self, tracer: &mut Tracer);
+
+    #[inline]
+    unsafe fn trace_non_roots(&self) {}
+
+    #[inline]
+    fn run_finalizer(&self) {}
 }
 
 pub(crate) type TraceFn = unsafe fn(core::ptr::NonNull<u8>, &mut Tracer<'_>);
