@@ -65,9 +65,14 @@ impl<'gc, T: Trace + ?Sized + 'gc> Gc<'gc, T> {
     pub fn as_ptr(&self) -> *const T {
         self.as_ref() as *const T
     }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *const T {
+        self.get() as *const T
+    }
 }
 
-impl<'gc, T: Trace + fmt::Display + 'gc> fmt::Display for Gc<'gc, T> {
+impl<'gc, T: Trace + ?Sized + fmt::Display + 'gc> fmt::Display for Gc<'gc, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.as_ref(), f)
     }
@@ -93,9 +98,9 @@ impl<'gc, T: Trace + ?Sized + 'gc> Deref for Gc<'gc, T> {
     }
 }
 
-impl<T: Trace> Finalize for Gc<'_, T> {}
-impl<T: Trace> Trace for Gc<'_, T> {
-    fn trace(&mut self, tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {
+impl<T: Trace + ?Sized> Finalize for Gc<'_, T> {}
+unsafe impl<T: Trace + ?Sized> Trace for Gc<'_, T> {
+    unsafe fn trace(&self, tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {
         tracer.mark(self);
     }
 }

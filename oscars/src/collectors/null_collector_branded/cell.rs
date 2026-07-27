@@ -113,9 +113,14 @@ impl<'a, T: Trace + ?Sized> GcRefMut<'a, T> {
 
 impl<T: Trace> Finalize for GcRefCell<T> {}
 
-impl<T: Trace> Trace for GcRefCell<T> {
-    fn trace(&mut self, tracer: &mut Tracer) {
-        self.inner.get_mut().trace(tracer);
+unsafe impl<T: Trace> Trace for GcRefCell<T> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        // SAFETY: We only access the inner value for tracing and do not mutate it.
+        // The null collector's trace is a no-op, so this is safe.
+        let val = unsafe { &*self.inner.as_ptr() };
+        unsafe {
+            val.trace(tracer);
+        }
     }
 }
 

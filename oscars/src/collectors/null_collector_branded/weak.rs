@@ -14,7 +14,7 @@ pub struct WeakGc<'id, T: Trace + ?Sized> {
     pub(crate) _marker: PhantomData<*mut &'id ()>,
 }
 
-impl<'id, T: Trace> WeakGc<'id, T> {
+impl<'id, T: Trace + ?Sized> WeakGc<'id, T> {
     pub(crate) fn with_pointer(ptr: PoolPointer<'static, GcBox<T>>) -> Self {
         Self {
             ptr,

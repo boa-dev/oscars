@@ -1,5 +1,7 @@
 //! Trace and Finalize traits for the lifetime branded GC
 
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use crate::{
     alloc::mempool3::PoolItem,
     collectors::mark_sweep_branded::{gc::Gc, gc_box::GcColor},
@@ -20,7 +22,7 @@ pub use crate::collectors::common::Finalize;
 /// # Safety
 ///
 /// Use `Tracer::mark` for every reachable `Gc` pointer.
-pub trait Trace {
+pub unsafe trait Trace {
     /// Marks all `Gc` pointers reachable from `self`.
     ///
     /// # Safety
@@ -118,9 +120,9 @@ impl<'a> Tracer<'a> {
     }
 }
 
-impl<T: ?Sized> Trace for &T {
+unsafe impl<T: ?Sized> Trace for &T {
     #[inline]
-    fn trace(&mut self, _tracer: &mut Tracer) {}
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
 // primitive + std-lib Trace impls
@@ -128,9 +130,9 @@ impl<T: ?Sized> Trace for &T {
 macro_rules! empty_trace {
     ($($T:ty),* $(,)?) => {
         $(
-            impl Trace for $T {
+            unsafe impl Trace for $T {
                 #[inline]
-                fn trace(&mut self, _tracer: &mut Tracer) {}
+                unsafe fn trace(&self, _tracer: &mut Tracer) {}
             }
         )*
     };
@@ -169,30 +171,30 @@ empty_trace![
     core::num::NonZeroU128,
 ];
 
-impl<T: Trace, const N: usize> Trace for [T; N] {
-    fn trace(&mut self, tracer: &mut Tracer) {
-        for v in self.iter_mut() {
+unsafe impl<T: Trace, const N: usize> Trace for [T; N] {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self.iter() {
             v.trace(tracer);
         }
     }
 }
 
-impl<T: Trace> Trace for Box<T> {
-    fn trace(&mut self, tracer: &mut Tracer) {
+unsafe impl<T: Trace> Trace for Box<T> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
         (**self).trace(tracer);
     }
 }
 
-impl<T: Trace> Trace for Option<T> {
-    fn trace(&mut self, tracer: &mut Tracer) {
+unsafe impl<T: Trace> Trace for Option<T> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
         if let Some(v) = self {
             v.trace(tracer);
         }
     }
 }
 
-impl<T: Trace, E: Trace> Trace for Result<T, E> {
-    fn trace(&mut self, tracer: &mut Tracer) {
+unsafe impl<T: Trace, E: Trace> Trace for Result<T, E> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
         match self {
             Ok(v) => v.trace(tracer),
             Err(e) => e.trace(tracer),
@@ -200,91 +202,91 @@ impl<T: Trace, E: Trace> Trace for Result<T, E> {
     }
 }
 
-impl<T: Trace> Trace for Vec<T> {
-    fn trace(&mut self, tracer: &mut Tracer) {
-        for v in self.iter_mut() {
+unsafe impl<T: Trace> Trace for Vec<T> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self.iter() {
             v.trace(tracer);
         }
     }
 }
 
-impl<T: Trace> Trace for VecDeque<T> {
-    fn trace(&mut self, tracer: &mut Tracer) {
-        for v in self.iter_mut() {
+unsafe impl<T: Trace> Trace for VecDeque<T> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self.iter() {
             v.trace(tracer);
         }
     }
 }
 
-impl<T: Trace> Trace for LinkedList<T> {
-    fn trace(&mut self, tracer: &mut Tracer) {
-        for v in self.iter_mut() {
+unsafe impl<T: Trace> Trace for LinkedList<T> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self.iter() {
             v.trace(tracer);
         }
     }
 }
 
-impl<T> Trace for PhantomData<T> {
+unsafe impl<T> Trace for PhantomData<T> {
     #[inline]
-    fn trace(&mut self, _tracer: &mut Tracer) {}
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
 // Cell<Option<T>> requires T: Copy to safely read the value via Cell::get().
 // For non-Copy types, use GcRefCell instead.
-impl<T: Copy + Trace> Trace for Cell<Option<T>> {
-    fn trace(&mut self, tracer: &mut Tracer) {
-        if let Some(mut v) = self.get() {
+unsafe impl<T: Trace + Default> Trace for Cell<T> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        let v = self.take();
+        v.trace(tracer);
+        self.set(v);
+    }
+}
+
+unsafe impl<T: Trace> Trace for OnceCell<T> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        if let Some(v) = self.get() {
             v.trace(tracer);
         }
     }
 }
 
-impl<T: Trace> Trace for OnceCell<T> {
-    fn trace(&mut self, tracer: &mut Tracer) {
-        if let Some(v) = self.get_mut() {
-            v.trace(tracer);
-        }
-    }
-}
-
-impl<T: ToOwned + Trace + ?Sized> Trace for Cow<'static, T>
+unsafe impl<T: ToOwned + Trace + ?Sized> Trace for Cow<'static, T>
 where
     T::Owned: Trace,
 {
-    fn trace(&mut self, tracer: &mut Tracer) {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
         if let Cow::Owned(v) = self {
             v.trace(tracer);
         }
     }
 }
 
-impl<A: Trace> Trace for (A,) {
+unsafe impl<A: Trace> Trace for (A,) {
     #[inline]
-    fn trace(&mut self, tracer: &mut Tracer) {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
         self.0.trace(tracer);
     }
 }
 
-impl<A: Trace, B: Trace> Trace for (A, B) {
+unsafe impl<A: Trace, B: Trace> Trace for (A, B) {
     #[inline]
-    fn trace(&mut self, tracer: &mut Tracer) {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
         self.0.trace(tracer);
         self.1.trace(tracer);
     }
 }
 
-impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {
+unsafe impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {
     #[inline]
-    fn trace(&mut self, tracer: &mut Tracer) {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
         self.0.trace(tracer);
         self.1.trace(tracer);
         self.2.trace(tracer);
     }
 }
 
-impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {
+unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {
     #[inline]
-    fn trace(&mut self, tracer: &mut Tracer) {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
         self.0.trace(tracer);
         self.1.trace(tracer);
         self.2.trace(tracer);
@@ -295,27 +297,27 @@ impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {
 // Rc and Arc do not contain Gc pointers (they use reference counting, not GC).
 // If you need to store Gc pointers inside Rc/Arc, wrap them in a GC-allocated
 // struct instead.
-impl<T: ?Sized> Trace for rust_alloc::rc::Rc<T> {
+unsafe impl<T: ?Sized> Trace for rust_alloc::rc::Rc<T> {
     #[inline]
-    fn trace(&mut self, _tracer: &mut Tracer) {}
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
-impl<T: ?Sized> Trace for rust_alloc::sync::Arc<T> {
+unsafe impl<T: ?Sized> Trace for rust_alloc::sync::Arc<T> {
     #[inline]
-    fn trace(&mut self, _tracer: &mut Tracer) {}
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
-impl<K, V: Trace> Trace for BTreeMap<K, V> {
-    fn trace(&mut self, tracer: &mut Tracer) {
-        for v in self.values_mut() {
+unsafe impl<K, V: Trace> Trace for BTreeMap<K, V> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self.values() {
             v.trace(tracer);
         }
     }
 }
 
-impl<T> Trace for BTreeSet<T> {
+unsafe impl<T> Trace for BTreeSet<T> {
     #[inline]
-    fn trace(&mut self, _tracer: &mut Tracer) {
+    unsafe fn trace(&self, _tracer: &mut Tracer) {
         // BTreeSet keys are immutable and cannot contain Gc pointers
         // that need tracing (Gc requires &mut self to trace).
     }
