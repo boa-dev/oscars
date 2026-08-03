@@ -27,8 +27,22 @@ pub unsafe trait Trace {
     ///
     /// # Safety
     ///
-    /// See `boa_gc::Trace` for safety contract details.
+    /// Must only be called by the garbage collector. Implementors must call
+    /// `Tracer::mark` on all reachable `Gc` fields and avoid other unsafe operations
     unsafe fn trace(&self, tracer: &mut Tracer);
+
+    /// Unroots handles located in the GC heap.
+    ///
+    /// # Safety
+    ///
+    /// Must only be called by the garbage collector.
+    // TODO: remove in the future
+    #[inline]
+    unsafe fn trace_non_roots(&self) {}
+
+    // TODO: remove in the future
+    #[inline]
+    fn run_finalizer(&self) {}
 }
 
 pub(crate) type TraceFn = unsafe fn(core::ptr::NonNull<u8>, &mut Tracer<'_>);
@@ -314,5 +328,108 @@ unsafe impl<T> Trace for BTreeSet<T> {
     unsafe fn trace(&self, _tracer: &mut Tracer) {
         // BTreeSet keys are immutable and cannot contain Gc pointers
         // that need tracing (Gc requires &mut self to trace).
+    }
+}
+
+#[cfg(feature = "icu")]
+mod icu_trace {
+    use crate::collectors::mark_sweep_branded::{Finalize, Trace, Tracer};
+    use icu_locale_core::{LanguageIdentifier, Locale};
+
+    unsafe impl Trace for LanguageIdentifier {
+        #[inline]
+        unsafe fn trace(&self, _tracer: &mut Tracer) {}
+    }
+
+    unsafe impl Trace for Locale {
+        #[inline]
+        unsafe fn trace(&self, _tracer: &mut Tracer) {}
+    }
+}
+
+#[cfg(feature = "boa_string")]
+mod boa_string_trace {
+    use crate::collectors::mark_sweep_branded::{Finalize, Trace, Tracer};
+
+    unsafe impl Trace for boa_string::JsString {
+        #[inline]
+        unsafe fn trace(&self, _tracer: &mut Tracer) {}
+    }
+}
+
+#[cfg(feature = "either")]
+mod either_trace {
+    use crate::collectors::mark_sweep_branded::{Finalize, Trace, Tracer};
+
+    unsafe impl<L: Trace, R: Trace> Trace for either::Either<L, R> {
+        unsafe fn trace(&self, tracer: &mut Tracer) {
+            match self {
+                either::Either::Left(l) => l.trace(tracer),
+                either::Either::Right(r) => r.trace(tracer),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "arrayvec")]
+unsafe impl<T: Trace, const N: usize> Trace for arrayvec::ArrayVec<T, N> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self {
+            v.trace(tracer);
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+unsafe impl Trace for std::path::Path {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+#[cfg(feature = "std")]
+unsafe impl Trace for std::path::PathBuf {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+#[cfg(feature = "std")]
+unsafe impl Trace for std::time::Instant {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+#[cfg(feature = "std")]
+unsafe impl Trace for std::time::SystemTime {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+#[cfg(feature = "std")]
+unsafe impl<K: Trace, V: Trace, S> Trace for std::collections::HashMap<K, V, S> {
+    #[inline]
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for (k, v) in self {
+            k.trace(tracer);
+            v.trace(tracer);
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+unsafe impl<T: Trace, S> Trace for std::collections::HashSet<T, S> {
+    #[inline]
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self {
+            v.trace(tracer);
+        }
+    }
+}
+
+unsafe impl<T: Trace> Trace for rust_alloc::collections::BinaryHeap<T> {
+    #[inline]
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self.iter() {
+            v.trace(tracer);
+        }
     }
 }
