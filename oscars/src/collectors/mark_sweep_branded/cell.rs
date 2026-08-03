@@ -64,8 +64,11 @@ impl<T: Trace> DerefMut for GcRefMut<'_, T> {
 
 impl<T: Trace> Finalize for GcRefCell<T> {}
 
-impl<T: Trace> Trace for GcRefCell<T> {
-    fn trace(&mut self, tracer: &mut Tracer) {
-        self.inner.get_mut().trace(tracer);
+unsafe impl<T: Trace> Trace for GcRefCell<T> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        let val = unsafe { &*self.inner.as_ptr() };
+        unsafe {
+            val.trace(tracer);
+        }
     }
 }

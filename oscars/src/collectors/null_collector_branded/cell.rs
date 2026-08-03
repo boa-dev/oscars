@@ -37,7 +37,7 @@ impl<T: Trace + ?Sized> GcRefCell<T> {
     pub fn try_borrow(&self) -> Result<GcRef<'_, T>, core::cell::BorrowError> {
         self.inner.try_borrow().map(GcRef)
     }
-    
+
     pub fn try_borrow_mut(&self) -> Result<GcRefMut<'_, T>, core::cell::BorrowMutError> {
         self.inner.try_borrow_mut().map(GcRefMut)
     }
@@ -127,14 +127,17 @@ impl<'a, T: Trace + ?Sized> GcRefMut<'a, T> {
     }
 }
 
-impl<T: Trace> Finalize for GcRefCell<T> {}
+impl<T: Trace + ?Sized> Finalize for GcRefCell<T> {}
 
-unsafe impl<T: Trace> Trace for GcRefCell<T> {
+unsafe impl<T: Trace + ?Sized> Trace for GcRefCell<T> {
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         // SAFETY: We only access the inner value for tracing and do not mutate it.
         // The null collector's trace is a no-op, so this is safe.
-        unsafe { self.borrow().trace(tracer) };
+        let val = unsafe { &*self.inner.as_ptr() };
+        unsafe {
+            val.trace(tracer);
+        }
     }
 }
 

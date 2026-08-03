@@ -41,6 +41,11 @@ impl<'gc, T: Trace + ?Sized + 'gc> Gc<'gc, T> {
     pub fn get(&self) -> &T {
         unsafe { &self.ptr.as_ptr().as_ref().0.value }
     }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *const T {
+        self.get() as *const T
+    }
 }
 
 impl<'gc, T: Trace + ?Sized + fmt::Display + 'gc> fmt::Display for Gc<'gc, T> {

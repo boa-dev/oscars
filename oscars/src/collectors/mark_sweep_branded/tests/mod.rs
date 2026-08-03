@@ -6,8 +6,8 @@ struct JsObject {
     value: i32,
 }
 
-impl crate::collectors::mark_sweep_branded::Trace for JsObject {
-    fn trace(&mut self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
+unsafe impl crate::collectors::mark_sweep_branded::Trace for JsObject {
+    unsafe fn trace(&self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
 }
 impl crate::collectors::mark_sweep_branded::Finalize for JsObject {}
 
