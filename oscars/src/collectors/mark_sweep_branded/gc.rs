@@ -60,7 +60,7 @@ impl<'gc, T: Trace + 'gc> Deref for Gc<'gc, T> {
     }
 }
 
-impl<T: Trace> Finalize for Gc<'_, T> {}
+impl<T: Trace + ?Sized> Finalize for Gc<'_, T> {}
 impl<T: Trace> Trace for Gc<'_, T> {
     fn trace(&mut self, tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {
         tracer.mark(self);
