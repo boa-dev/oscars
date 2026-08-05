@@ -48,6 +48,7 @@ impl<T: ?Sized> ArenaHeapItem<T> {
     ///
     /// This avoids creating a `&mut self` reference, which can lead to stacked borrows
     /// if shared references to the heap item exist
+    #[allow(dead_code)]
     pub(crate) fn as_value_ptr(ptr: NonNull<Self>) -> *mut T {
         // SAFETY: `&raw mut` computes the field address without creating a reference
         unsafe { &raw mut (*ptr.as_ptr()).value }
@@ -147,6 +148,7 @@ impl<'arena> ErasedArenaPointer<'arena> {
     /// SAFETY:
     ///
     /// safe because the gc collector owns the arena and keeps it alive
+    #[allow(dead_code)]
     pub(crate) unsafe fn extend_lifetime(self) -> ErasedArenaPointer<'static> {
         ErasedArenaPointer(self.0, PhantomData)
     }
@@ -202,6 +204,7 @@ impl<'arena, T> ArenaPointer<'arena, T> {
     /// SAFETY:
     ///
     /// safe because the gc collector owns the arena and keeps it alive
+    #[allow(dead_code)]
     pub(crate) unsafe fn extend_lifetime(self) -> ArenaPointer<'static, T> {
         // SAFETY: upheld by caller
         ArenaPointer(unsafe { self.0.extend_lifetime() }, PhantomData)

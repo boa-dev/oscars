@@ -107,7 +107,7 @@ impl<'pool, T: ?Sized> PoolPointer<'pool, T> {
     }
 }
 
-impl<'pool, T> PoolPointer<'pool, T> {
+impl<'pool, T: ?Sized> PoolPointer<'pool, T> {
     pub(crate) unsafe fn from_raw(raw: NonNull<PoolItem<T>>) -> Self {
         Self(raw, PhantomData)
     }
