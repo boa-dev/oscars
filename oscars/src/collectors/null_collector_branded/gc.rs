@@ -33,6 +33,16 @@ impl<'gc, T: Trace + ?Sized + 'gc> Gc<'gc, T> {
             _marker: PhantomData,
         }
     }
+
+    pub fn new<'id>(
+        mc: &crate::collectors::null_collector_branded::MutationContext<'id, 'gc>,
+        value: T,
+    ) -> Self
+    where
+        T: Sized + Finalize,
+    {
+        mc.try_alloc(value).unwrap()
+    }
 }
 
 impl<'gc, T: Trace + ?Sized + 'gc> Gc<'gc, T> {

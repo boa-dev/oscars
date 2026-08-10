@@ -178,3 +178,27 @@ impl<T: Finalize> Finalize for OnceCell<T> {}
 impl<T: ToOwned + Finalize + ?Sized> Finalize for Cow<'static, T> where T::Owned: Finalize {}
 
 impl<T> Finalize for PhantomData<T> {}
+
+#[cfg(feature = "icu")]
+impl Finalize for icu_locale_core::LanguageIdentifier {}
+
+#[cfg(feature = "icu")]
+impl Finalize for icu_locale_core::Locale {}
+
+#[cfg(feature = "boa_string")]
+impl Finalize for boa_string::JsString {}
+
+#[cfg(feature = "either")]
+impl<L: Finalize, R: Finalize> Finalize for either::Either<L, R> {}
+
+#[cfg(feature = "arrayvec")]
+impl<T: Finalize, const N: usize> Finalize for arrayvec::ArrayVec<T, N> {}
+
+#[cfg(feature = "std")]
+impl Finalize for std::path::Path {}
+#[cfg(feature = "std")]
+impl Finalize for std::path::PathBuf {}
+#[cfg(feature = "std")]
+impl Finalize for std::time::Instant {}
+#[cfg(feature = "std")]
+impl Finalize for std::time::SystemTime {}

@@ -22,7 +22,7 @@ use crate::alloc::mempool3::{PoolAllocError, PoolAllocator};
 use core::cell::RefCell;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
-use gc_box::{DropFn, GcBox};
+pub use gc_box::{DropFn, GcBox};
 use rust_alloc::vec::Vec;
 
 pub(crate) struct Collector {

@@ -18,6 +18,35 @@ pub struct MutationContext<'id, 'gc> {
 }
 
 impl<'id, 'gc> MutationContext<'id, 'gc> {
+    /// Creates a global thread-local MutationContext for the null collector.
+    pub fn global() -> Self {
+        std::thread_local! {
+            static COLLECTOR: crate::collectors::null_collector_branded::Collector = crate::collectors::null_collector_branded::Collector::new();
+        }
+        COLLECTOR.with(|c| {
+            let ptr = c as *const crate::collectors::null_collector_branded::Collector;
+            Self {
+                collector: unsafe { &*ptr },
+                _marker: core::marker::PhantomData,
+            }
+        })
+    }
+
+    /// Creates a dummy `MutationContext` backed by a dangling pointer.
+    ///
+    /// # Safety
+    ///
+    /// The returned context is a placeholder and must never be used to
+    /// allocate or access GC objects.
+    pub unsafe fn dummy() -> Self {
+        // SAFETY: We use a dangling pointer for the collector because it's a dummy.
+        // It should never be used to allocate
+        Self {
+            collector: unsafe { &*core::ptr::NonNull::dangling().as_ptr() },
+            _marker: PhantomData,
+        }
+    }
+
     /// Allocates a value on the GC heap
     pub fn try_alloc<T: Trace + Finalize + 'gc>(
         &self,
@@ -43,14 +72,14 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
     /// The value is kept alive by the collector as long as the key remains
     /// reachable from a root. Once the key is collected, `get_value` returns
     /// `None` and the value is eligible for collection on next cycle.
-    pub fn alloc_ephemeron<K: Trace + Finalize + 'gc, V: Trace + Finalize + 'gc>(
+    pub fn alloc_ephemeron<K: Trace + Finalize + ?Sized + 'gc, V: Trace + Finalize + 'gc>(
         &self,
         key: Gc<'gc, K>,
         value: Gc<'gc, V>,
     ) -> Ephemeron<'id, K, V> {
         // In the null collector, ephemerons don't need to be registered
         // since the collector never collects.
-        Ephemeron::new(Some(key.ptr), value.ptr)
+        Ephemeron::new_raw(Some(key.ptr), value.ptr)
     }
 
     pub fn collect(&self) {

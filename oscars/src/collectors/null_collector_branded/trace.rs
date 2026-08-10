@@ -17,14 +17,30 @@ use rust_alloc::vec::Vec;
 ///
 /// # Safety
 ///
-/// See `boa_gc::Trace` for safety contract details.
+/// Implementors must pass every reachable `Gc` pointer to `Tracer::mark`
+/// While the null collector reclaims no memory, implementations must be
+/// sound for other collectors to prevent UAF bugs.
 pub unsafe trait Trace {
-    /// Marks all Gc pointers reachable from `self`.
+    /// Marks all `Gc` pointers reachable from `self`.
     ///
     /// # Safety
     ///
-    /// See `boa_gc::Trace` for safety contract details.
+    /// Must only be called by the garbage collector. Implementors must call
+    /// `Tracer::mark` on all reachable `Gc` fields and avoid other unsafe operations.
     unsafe fn trace(&self, tracer: &mut Tracer);
+
+    /// Unroots handles located in the GC heap.
+    ///
+    /// # Safety
+    ///
+    /// Must only be called by the garbage collector.
+    // TODO: remove in the future
+    #[inline]
+    unsafe fn trace_non_roots(&self) {}
+
+    // TODO: remove in the future
+    #[inline]
+    fn run_finalizer(&self) {}
 }
 
 /// Dummy tracer for the null collector
@@ -101,7 +117,6 @@ unsafe impl<T: Trace, const N: usize> Trace for [T; N] {
 }
 
 unsafe impl<T: Trace> Trace for [T] {
-    #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
@@ -110,7 +125,6 @@ unsafe impl<T: Trace> Trace for [T] {
 }
 
 unsafe impl<T: Trace + ?Sized> Trace for Box<T> {
-    #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         (**self).trace(tracer);
     }
@@ -118,7 +132,6 @@ unsafe impl<T: Trace + ?Sized> Trace for Box<T> {
 
 #[cfg(feature = "thin-vec")]
 unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
-    #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
@@ -233,6 +246,17 @@ unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {
     }
 }
 
+unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace> Trace for (A, B, C, D, E) {
+    #[inline]
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        self.0.trace(tracer);
+        self.1.trace(tracer);
+        self.2.trace(tracer);
+        self.3.trace(tracer);
+        self.4.trace(tracer);
+    }
+}
+
 unsafe impl<T: ?Sized> Trace for rust_alloc::rc::Rc<T> {
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
@@ -255,3 +279,134 @@ unsafe impl<T> Trace for BTreeSet<T> {
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
+
+#[cfg(feature = "boa_string")]
+unsafe impl Trace for boa_string::JsString {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+unsafe impl Trace for str {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+#[cfg(feature = "icu")]
+unsafe impl Trace for icu_locale_core::LanguageIdentifier {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+#[cfg(feature = "icu")]
+unsafe impl Trace for icu_locale_core::Locale {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+#[cfg(feature = "either")]
+unsafe impl<L: Trace, R: Trace> Trace for either::Either<L, R> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        match self {
+            either::Either::Left(l) => l.trace(tracer),
+            either::Either::Right(r) => r.trace(tracer),
+        }
+    }
+}
+
+#[cfg(feature = "arrayvec")]
+unsafe impl<T: Trace, const N: usize> Trace for arrayvec::ArrayVec<T, N> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self {
+            v.trace(tracer);
+        }
+    }
+}
+
+unsafe impl<K: Trace, V: Trace, S> Trace for hashbrown::hash_map::HashMap<K, V, S> {
+    #[inline]
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for (k, v) in self {
+            k.trace(tracer);
+            v.trace(tracer);
+        }
+    }
+}
+// Finalize is already implemented in common.rs
+
+unsafe impl<T: Trace, S> Trace for hashbrown::hash_set::HashSet<T, S> {
+    #[inline]
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self {
+            v.trace(tracer);
+        }
+    }
+}
+// Finalize is already implemented in common.rs
+
+unsafe impl<T: Trace> Trace for rust_alloc::collections::BinaryHeap<T> {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {
+        // BinaryHeap has no iter_mut(); the null collector's trace is a no-op
+        // so no values need to be visited here.
+    }
+}
+// Finalize is already implemented in common.rs
+
+#[cfg(feature = "std")]
+unsafe impl Trace for std::path::Path {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+#[cfg(feature = "std")]
+unsafe impl Trace for std::path::PathBuf {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+#[cfg(feature = "std")]
+unsafe impl Trace for std::time::Instant {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+#[cfg(feature = "std")]
+unsafe impl Trace for std::time::SystemTime {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+#[cfg(feature = "std")]
+unsafe impl<K: Trace, V: Trace, S> Trace for std::collections::HashMap<K, V, S> {
+    #[inline]
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for (k, v) in self {
+            k.trace(tracer);
+            v.trace(tracer);
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+unsafe impl<T: Trace, S> Trace for std::collections::HashSet<T, S> {
+    #[inline]
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self {
+            v.trace(tracer);
+        }
+    }
+}
+
+empty_trace!(
+    core::sync::atomic::AtomicBool,
+    core::sync::atomic::AtomicI8,
+    core::sync::atomic::AtomicU8,
+    core::sync::atomic::AtomicI16,
+    core::sync::atomic::AtomicU16,
+    core::sync::atomic::AtomicI32,
+    core::sync::atomic::AtomicU32,
+    core::sync::atomic::AtomicIsize,
+    core::sync::atomic::AtomicUsize,
+    core::sync::atomic::AtomicI64,
+    core::sync::atomic::AtomicU64
+);
