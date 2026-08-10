@@ -23,7 +23,7 @@ pub(crate) enum GcColor {
 /// Heap wrapper for a garbage-collected value.
 ///
 /// Allocated via [`PoolAllocator`].
-pub(crate) struct GcBox<T: ?Sized> {
+pub struct GcBox<T: ?Sized> {
     /// tricolor marking state, updated by the mark phase
     pub(crate) color: Cell<GcColor>,
     /// Type-erased trace function.
@@ -32,6 +32,8 @@ pub(crate) struct GcBox<T: ?Sized> {
     pub(crate) drop_fn: DropFn,
     /// Allocation ID used to validate weak pointers.
     pub(crate) alloc_id: usize,
+    /// Type name of the underlying value
+    pub(crate) type_name: &'static str,
     /// The user value.
     pub(crate) value: T,
 }
@@ -48,6 +50,7 @@ impl<T> GcBox<T> {
             trace_fn,
             drop_fn,
             alloc_id,
+            type_name: core::any::type_name::<T>(),
             value,
         }
     }

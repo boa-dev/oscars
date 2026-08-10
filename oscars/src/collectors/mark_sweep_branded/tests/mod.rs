@@ -16,7 +16,7 @@ fn unrooted_alloc_is_swept() {
     with_gc(|ctx| {
         let weak = ctx.mutate(|cx| {
             cx.alloc_weak(
-                cx.try_alloc(JsObject {
+                &cx.try_alloc(JsObject {
                     name: "ephemeral".into(),
                     value: 999,
                 })
@@ -46,8 +46,8 @@ fn rooted_alloc_survives_collection() {
         ctx.collect();
         ctx.mutate(|cx| {
             let gc = root.get(cx);
-            assert_eq!(gc.get().value, 42);
-            assert_eq!(gc.get().name, "pinned");
+            assert_eq!(gc.value, 42);
+            assert_eq!(gc.name, "pinned");
         });
     });
 }
@@ -57,7 +57,7 @@ fn weak_upgrade_after_collection_without_root_is_none() {
     with_gc(|ctx| {
         let weak = ctx.mutate(|cx| {
             cx.alloc_weak(
-                cx.try_alloc(JsObject {
+                &cx.try_alloc(JsObject {
                     name: "weak".into(),
                     value: 10,
                 })
@@ -84,7 +84,7 @@ fn weak_upgrade_with_live_root_is_some() {
             let root = cx.root(obj).unwrap();
 
             let weak = cx.alloc_weak(
-                cx.try_alloc(JsObject {
+                &cx.try_alloc(JsObject {
                     name: "weak_entry".into(),
                     value: 77,
                 })
@@ -95,7 +95,7 @@ fn weak_upgrade_with_live_root_is_some() {
         ctx.collect();
         ctx.mutate(|cx| {
             assert!(weak.upgrade(cx).is_none());
-            assert_eq!(root.get(cx).get().value, 7);
+            assert_eq!(root.get(cx).value, 7);
         });
     });
 }
@@ -112,15 +112,15 @@ fn multiple_roots_are_independent() {
         ctx.collect();
 
         ctx.mutate(|cx| {
-            assert_eq!(*root1.get(cx).get(), 100);
-            assert_eq!(*root2.get(cx).get(), 200);
+            assert_eq!(*root1.get(cx), 100);
+            assert_eq!(*root2.get(cx), 200);
         });
 
         drop(root1);
         ctx.collect();
 
         ctx.mutate(|cx| {
-            assert_eq!(*root2.get(cx).get(), 200);
+            assert_eq!(*root2.get(cx), 200);
         });
     });
 }
@@ -136,7 +136,7 @@ fn root_escapes_closure_safely() {
         ctx.collect();
 
         ctx.mutate(|cx| {
-            assert_eq!(*root.get(cx).get(), 555);
+            assert_eq!(*root.get(cx), 555);
         });
     });
 }

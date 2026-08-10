@@ -21,6 +21,24 @@ pub struct MutationContext<'id, 'gc> {
 }
 
 impl<'id, 'gc> MutationContext<'id, 'gc> {
+    /// Creates a global thread-local MutationContext for the mark sweep collector.
+    ///
+    /// **Note**: This is a temporary workaround to keep `boa_engine` working.
+    /// It breaks the normal safety rules of the collector, and should only be
+    /// used to support older code that relies on `Default`.
+    #[cfg(feature = "std")]
+    pub fn global() -> Self {
+        std::thread_local! {
+            static COLLECTOR: crate::collectors::mark_sweep_branded::Collector = crate::collectors::mark_sweep_branded::Collector::new();
+        }
+        COLLECTOR.with(|c| {
+            let ptr = c as *const crate::collectors::mark_sweep_branded::Collector;
+            Self {
+                collector: unsafe { &*ptr },
+                _marker: core::marker::PhantomData,
+            }
+        })
+    }
     /// Allocates a value on the GC heap.
     pub fn try_alloc<T: Trace + Finalize + 'gc>(
         &self,
@@ -30,7 +48,10 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
     }
 
     /// Downgrades a `Gc` into a weak reference
-    pub fn alloc_weak<T: Trace + Finalize + 'gc>(&self, gc: Gc<'gc, T>) -> WeakGc<'id, T> {
+    pub fn alloc_weak<T: Trace + Finalize + ?Sized + 'gc>(
+        &self,
+        gc: &Gc<'gc, T>,
+    ) -> WeakGc<'id, T> {
         let alloc_id = unsafe { (*gc.ptr.as_ptr().as_ptr()).0.alloc_id };
         WeakGc::with_pointer_and_alloc_id(gc.ptr, alloc_id)
     }
@@ -49,9 +70,9 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
     /// The value is kept alive by the collector as long as the key remains
     /// reachable from a root. Once the key is collected, `get_value` returns
     /// `None` and the value is eligible for collection on the next cycle.
-    pub fn alloc_ephemeron<K: Trace + Finalize + 'gc, V: Trace + Finalize + 'gc>(
+    pub fn alloc_ephemeron<K: Trace + Finalize + ?Sized + 'gc, V: Trace + Finalize + 'gc>(
         &self,
-        key: Gc<'gc, K>,
+        key: &Gc<'gc, K>,
         value: Gc<'gc, V>,
     ) -> Ephemeron<'id, K, V> {
         let key_alloc_id = unsafe { (*key.ptr.as_ptr().as_ptr()).0.alloc_id };
@@ -62,7 +83,7 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
         let erased_value: PoolPointer<'static, GcBox<()>> =
             unsafe { value.ptr.to_erased().to_typed_pool_pointer::<GcBox<()>>() };
         self.collector.register_ephemeron(erased_key, erased_value);
-        Ephemeron::new(Some(key.ptr), key_alloc_id, value.ptr)
+        Ephemeron::new_raw(Some(key.ptr), key_alloc_id, value.ptr)
     }
 
     /// Triggers a gc cycle.
