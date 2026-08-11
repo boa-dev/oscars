@@ -35,7 +35,7 @@ pub(crate) struct EphemeronEntry {
     pub(crate) value_ptr: PoolPointer<'static, GcBox<()>>,
 }
 
-pub(crate) struct Collector {
+pub struct Collector {
     // SAFETY: We use 'static here because the PoolAllocator owns its memory,
     // and we ensure that `Gc` objects and pool allocations do not outlive
     // the `Collector` instance
@@ -48,7 +48,7 @@ pub(crate) struct Collector {
 }
 
 impl Collector {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             pool: RefCell::new(PoolAllocator::default()),
             root_pool: RefCell::new(PoolAllocator::default()),
@@ -143,8 +143,18 @@ impl Collector {
     }
 
     /// Runs a collection cycle
-    pub(crate) fn collect(&self) {
+    pub fn collect(&self) {
+        self.collect_with_roots(|_| {})
+    }
+
+    /// Runs a collection cycle, allowing external roots to be traced
+    pub(crate) fn collect_with_roots<F>(&self, trace_external: F)
+    where
+        F: FnOnce(&mut Tracer),
+    {
         let mut tracer = Tracer::new();
+
+        trace_external(&mut tracer);
 
         for link_ptr in self.sentinel.iter() {
             unsafe {

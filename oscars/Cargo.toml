@@ -9,7 +9,6 @@ oscars_derive = { path = "../oscars_derive", version = "0.1.0" }
 rustc-hash = "2.1.1"
 thin-vec = { version = "0.2", optional = true }
 # Optional Trace/Finalize impls for external types.
-boa_string = { git = "https://github.com/boa-dev/boa.git", branch = "main", optional = true }
 icu_locale_core = { version = "2.2.0", default-features = false, optional = true }
 either = { version = "1.16.0", optional = true }
 arrayvec = { version = "0.7.6", optional = true }
@@ -44,7 +43,6 @@ mark_sweep_branded = ["mark_sweep"]
 null_collector = ["mark_sweep"]
 null_collector_branded = ["mark_sweep"]
 thin-vec = ["dep:thin-vec", "mark_sweep"]
-boa_string = ["dep:boa_string", "mark_sweep"]
 icu = ["dep:icu_locale_core", "mark_sweep"]
 either = ["dep:either", "mark_sweep"]
 arrayvec = ["dep:arrayvec", "mark_sweep"]

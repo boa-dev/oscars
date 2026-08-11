@@ -17,7 +17,7 @@ pub struct WeakGc<'id, T: Trace + ?Sized> {
     pub(crate) _marker: PhantomData<*mut &'id ()>,
 }
 
-impl<'id, T: Trace> WeakGc<'id, T> {
+impl<'id, T: Trace + ?Sized> WeakGc<'id, T> {
     pub(crate) fn with_pointer_and_alloc_id(
         ptr: PoolPointer<'static, GcBox<T>>,
         alloc_id: usize,
@@ -27,6 +27,21 @@ impl<'id, T: Trace> WeakGc<'id, T> {
             alloc_id,
             _marker: PhantomData,
         }
+    }
+
+    /// Creates a new weak reference to a GC-managed value.
+    ///
+    /// This is a convenience wrapper over [`crate::collectors::mark_sweep_branded::MutationContext::alloc_weak`] that
+    /// mirrors the `null_collector_branded` `WeakGc::new` API.
+    #[inline]
+    pub fn new<'gc>(
+        cx: &crate::collectors::mark_sweep_branded::MutationContext<'id, 'gc>,
+        value: &Gc<'gc, T>,
+    ) -> Self
+    where
+        T: Finalize,
+    {
+        cx.alloc_weak(value)
     }
 
     /// Attempts to upgrade to a strong `Gc<'gc, T>`.
@@ -45,6 +60,12 @@ impl<'id, T: Trace> WeakGc<'id, T> {
             None
         }
     }
+
+    /// Returns `true` if the referenced value is still alive.
+    pub fn is_upgradable(&self) -> bool {
+        let is_valid = unsafe { (*self.ptr.as_ptr().as_ptr()).0.alloc_id == self.alloc_id };
+        is_valid
+    }
 }
 
 impl<'id, T: Trace + ?Sized> Clone for WeakGc<'id, T> {
@@ -55,8 +76,24 @@ impl<'id, T: Trace + ?Sized> Clone for WeakGc<'id, T> {
 
 impl<'id, T: Trace + ?Sized> Copy for WeakGc<'id, T> {}
 
-impl<'id, T: Trace> Finalize for WeakGc<'id, T> {}
-unsafe impl<'id, T: Trace> Trace for WeakGc<'id, T> {
+impl<'id, T: Trace + ?Sized> core::fmt::Debug for WeakGc<'id, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WeakGc")
+            .field("ptr", &self.ptr.as_ptr())
+            .field("alloc_id", &self.alloc_id)
+            .finish()
+    }
+}
+
+impl<'id, T: Trace + ?Sized> PartialEq for WeakGc<'id, T> {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::addr_eq(self.ptr.as_ptr().as_ptr(), other.ptr.as_ptr().as_ptr())
+            && self.alloc_id == other.alloc_id
+    }
+}
+
+impl<'id, T: Trace + ?Sized> Finalize for WeakGc<'id, T> {}
+unsafe impl<'id, T: Trace + ?Sized> Trace for WeakGc<'id, T> {
     // Weak references do not mark their target, upgrade() returning None after collection is the intended behaviour.
     unsafe fn trace(&self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
 }

@@ -7,7 +7,7 @@ fn ephemeron_value_survives_when_key_is_rooted() {
             let key = cx.try_alloc(1u32).unwrap();
             let value = cx.try_alloc(42u32).unwrap();
             let root_key = cx.root(key).unwrap();
-            let eph = cx.alloc_ephemeron(key, value);
+            let eph = cx.alloc_ephemeron(&key, value);
             (root_key, eph)
         });
 
@@ -17,7 +17,7 @@ fn ephemeron_value_survives_when_key_is_rooted() {
             let val = eph
                 .get_value(cx)
                 .expect("value must be alive while key is rooted");
-            assert_eq!(*val.get(), 42);
+            assert_eq!(*val, 42);
             drop(root_key);
         });
     });
@@ -29,7 +29,7 @@ fn ephemeron_value_collected_when_key_unrooted() {
         let eph = ctx.mutate(|cx| {
             let key = cx.try_alloc(1u32).unwrap();
             let value = cx.try_alloc(99u32).unwrap();
-            cx.alloc_ephemeron(key, value)
+            cx.alloc_ephemeron(&key, value)
         });
 
         ctx.collect();
@@ -55,8 +55,8 @@ fn ephemeron_chain_fixpoint() {
             let b = cx.try_alloc(2u32).unwrap();
             let c = cx.try_alloc(3u32).unwrap();
             let root_a = cx.root(a).unwrap();
-            let eph_ab = cx.alloc_ephemeron(a, b);
-            let eph_bc = cx.alloc_ephemeron(b, c);
+            let eph_ab = cx.alloc_ephemeron(&a, b);
+            let eph_bc = cx.alloc_ephemeron(&b, c);
             (root_a, eph_ab, eph_bc)
         });
 
@@ -64,11 +64,11 @@ fn ephemeron_chain_fixpoint() {
 
         ctx.mutate(|cx| {
             let b_val = eph_ab.get_value(cx).expect("b must survive: a is rooted");
-            assert_eq!(*b_val.get(), 2);
+            assert_eq!(*b_val, 2);
             let c_val = eph_bc
                 .get_value(cx)
                 .expect("c must survive: b is kept alive by ephemeron");
-            assert_eq!(*c_val.get(), 3);
+            assert_eq!(*c_val, 3);
         });
 
         drop(root_a);
@@ -94,7 +94,7 @@ fn ephemeron_entry_cleaned_up_after_sweep() {
         ctx.mutate(|cx| {
             let key = cx.try_alloc(0u32).unwrap();
             let value = cx.try_alloc(0u32).unwrap();
-            cx.alloc_ephemeron(key, value);
+            cx.alloc_ephemeron(&key, value);
         });
         assert_eq!(ctx.ephemeron_count(), 1);
 

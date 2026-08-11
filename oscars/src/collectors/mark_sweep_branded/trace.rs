@@ -90,16 +90,14 @@ impl<'a> Tracer<'a> {
 
     /// Marks `gc` as reachable (White → Gray).
     #[inline]
-    pub fn mark<T: Trace>(&mut self, gc: &Gc<'_, T>) {
+    pub fn mark<T: Trace + ?Sized>(&mut self, gc: &Gc<'_, T>) {
         // SAFETY: `gc.ptr` is a valid `PoolItem<GcBox<T>>`.
         unsafe {
             let gc_box = &(*gc.ptr.as_ptr().as_ptr()).0;
             if gc_box.color.get() == GcColor::White {
                 gc_box.color.set(GcColor::Gray);
-                self.worklist.push((
-                    gc.ptr.as_ptr().cast::<u8>(),
-                    crate::collectors::mark_sweep_branded::gc_box::trace_value::<T>,
-                ));
+                self.worklist
+                    .push((gc.ptr.as_ptr().cast::<u8>(), gc_box.trace_fn));
             }
         }
     }
@@ -151,6 +149,7 @@ empty_trace![
     bool,
     isize,
     usize,
+    str,
     i8,
     u8,
     i16,
@@ -177,6 +176,8 @@ empty_trace![
     core::num::NonZeroU64,
     core::num::NonZeroI128,
     core::num::NonZeroU128,
+    core::sync::atomic::AtomicIsize,
+    core::sync::atomic::AtomicUsize,
 ];
 
 unsafe impl<T: Trace, const N: usize> Trace for [T; N] {
@@ -187,7 +188,7 @@ unsafe impl<T: Trace, const N: usize> Trace for [T; N] {
     }
 }
 
-unsafe impl<T: Trace> Trace for Box<T> {
+unsafe impl<T: Trace + ?Sized> Trace for Box<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         (**self).trace(tracer);
     }
@@ -218,6 +219,15 @@ unsafe impl<T: Trace> Trace for Vec<T> {
     }
 }
 
+#[cfg(feature = "thin-vec")]
+unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self.iter() {
+            v.trace(tracer);
+        }
+    }
+}
+
 unsafe impl<T: Trace> Trace for VecDeque<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
@@ -235,6 +245,20 @@ unsafe impl<T: Trace> Trace for LinkedList<T> {
 }
 
 unsafe impl<T> Trace for PhantomData<T> {
+    #[inline]
+    unsafe fn trace(&self, _tracer: &mut Tracer) {}
+}
+
+unsafe impl<T: Trace> Trace for [T] {
+    #[inline]
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        for v in self {
+            v.trace(tracer);
+        }
+    }
+}
+
+unsafe impl Trace for core::any::TypeId {
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
@@ -293,12 +317,63 @@ unsafe impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {
 }
 
 unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {
-    #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         self.0.trace(tracer);
         self.1.trace(tracer);
         self.2.trace(tracer);
         self.3.trace(tracer);
+    }
+}
+
+unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace> Trace for (A, B, C, D, E) {
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        self.0.trace(tracer);
+        self.1.trace(tracer);
+        self.2.trace(tracer);
+        self.3.trace(tracer);
+        self.4.trace(tracer);
+    }
+}
+
+unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace, F: Trace> Trace
+    for (A, B, C, D, E, F)
+{
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        self.0.trace(tracer);
+        self.1.trace(tracer);
+        self.2.trace(tracer);
+        self.3.trace(tracer);
+        self.4.trace(tracer);
+        self.5.trace(tracer);
+    }
+}
+
+unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace, F: Trace, G: Trace> Trace
+    for (A, B, C, D, E, F, G)
+{
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        self.0.trace(tracer);
+        self.1.trace(tracer);
+        self.2.trace(tracer);
+        self.3.trace(tracer);
+        self.4.trace(tracer);
+        self.5.trace(tracer);
+        self.6.trace(tracer);
+    }
+}
+
+unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace, F: Trace, G: Trace, H: Trace> Trace
+    for (A, B, C, D, E, F, G, H)
+{
+    unsafe fn trace(&self, tracer: &mut Tracer) {
+        self.0.trace(tracer);
+        self.1.trace(tracer);
+        self.2.trace(tracer);
+        self.3.trace(tracer);
+        self.4.trace(tracer);
+        self.5.trace(tracer);
+        self.6.trace(tracer);
+        self.7.trace(tracer);
     }
 }
 
@@ -333,7 +408,7 @@ unsafe impl<T> Trace for BTreeSet<T> {
 
 #[cfg(feature = "icu")]
 mod icu_trace {
-    use crate::collectors::mark_sweep_branded::{Finalize, Trace, Tracer};
+    use crate::collectors::mark_sweep_branded::{Trace, Tracer};
     use icu_locale_core::{LanguageIdentifier, Locale};
 
     unsafe impl Trace for LanguageIdentifier {
@@ -347,19 +422,9 @@ mod icu_trace {
     }
 }
 
-#[cfg(feature = "boa_string")]
-mod boa_string_trace {
-    use crate::collectors::mark_sweep_branded::{Finalize, Trace, Tracer};
-
-    unsafe impl Trace for boa_string::JsString {
-        #[inline]
-        unsafe fn trace(&self, _tracer: &mut Tracer) {}
-    }
-}
-
 #[cfg(feature = "either")]
 mod either_trace {
-    use crate::collectors::mark_sweep_branded::{Finalize, Trace, Tracer};
+    use crate::collectors::mark_sweep_branded::{Trace, Tracer};
 
     unsafe impl<L: Trace, R: Trace> Trace for either::Either<L, R> {
         unsafe fn trace(&self, tracer: &mut Tracer) {

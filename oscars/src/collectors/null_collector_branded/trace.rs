@@ -280,12 +280,6 @@ unsafe impl<T> Trace for BTreeSet<T> {
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
-#[cfg(feature = "boa_string")]
-unsafe impl Trace for boa_string::JsString {
-    #[inline]
-    unsafe fn trace(&self, _tracer: &mut Tracer) {}
-}
-
 unsafe impl Trace for str {
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}

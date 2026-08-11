@@ -185,9 +185,6 @@ impl Finalize for icu_locale_core::LanguageIdentifier {}
 #[cfg(feature = "icu")]
 impl Finalize for icu_locale_core::Locale {}
 
-#[cfg(feature = "boa_string")]
-impl Finalize for boa_string::JsString {}
-
 #[cfg(feature = "either")]
 impl<L: Finalize, R: Finalize> Finalize for either::Either<L, R> {}
 

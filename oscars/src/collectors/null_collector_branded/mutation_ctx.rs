@@ -19,6 +19,11 @@ pub struct MutationContext<'id, 'gc> {
 
 impl<'id, 'gc> MutationContext<'id, 'gc> {
     /// Creates a global thread-local MutationContext for the null collector.
+    ///
+    /// **Note**: This is a temporary workaround to keep `boa_engine` working.
+    /// It breaks the normal safety rules of the collector, and should only be
+    /// used to support older code that relies on `Default`
+    #[cfg(feature = "std")]
     pub fn global() -> Self {
         std::thread_local! {
             static COLLECTOR: crate::collectors::null_collector_branded::Collector = crate::collectors::null_collector_branded::Collector::new();
