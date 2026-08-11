@@ -21,6 +21,20 @@ pub struct MutationContext<'id, 'gc> {
 }
 
 impl<'id, 'gc> MutationContext<'id, 'gc> {
+    /// Creates an erased `MutationContext` tied to the provided `Collector`.
+    ///
+    /// # Safety
+    /// The caller must ensure that the returned `MutationContext` (and any
+    /// `Gc` pointers it creates) do not outlive the `Collector`.
+    pub unsafe fn from_collector_erased(
+        collector: &crate::collectors::mark_sweep_branded::Collector,
+    ) -> MutationContext<'static, 'static> {
+        let ptr = collector as *const _;
+        MutationContext {
+            collector: unsafe { &*ptr },
+            _marker: PhantomData,
+        }
+    }
     /// Creates a global thread-local MutationContext for the mark sweep collector.
     ///
     /// **Note**: This is a temporary workaround to keep `boa_engine` working.
@@ -89,5 +103,13 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
     /// Triggers a gc cycle.
     pub fn collect(&self) {
         self.collector.collect();
+    }
+
+    /// Triggers a gc cycle, allowing external roots to be traced.
+    pub fn collect_with_roots<F: FnOnce(&mut crate::collectors::mark_sweep_branded::Tracer)>(
+        &self,
+        trace_external: F,
+    ) {
+        self.collector.collect_with_roots(trace_external);
     }
 }
