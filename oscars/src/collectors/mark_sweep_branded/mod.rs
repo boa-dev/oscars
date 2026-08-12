@@ -47,6 +47,12 @@ pub struct Collector {
     pub(crate) ephemerons: RefCell<Vec<EphemeronEntry>>,
 }
 
+impl Default for Collector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Collector {
     pub fn new() -> Self {
         Self {

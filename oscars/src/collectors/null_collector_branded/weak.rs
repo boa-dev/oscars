@@ -69,7 +69,12 @@ impl<'id, T: Trace + ?Sized> PartialEq for WeakGc<'id, T> {
 impl<'id, T: Trace + ?Sized> Eq for WeakGc<'id, T> {}
 
 impl<'id, T: Trace + ?Sized> Finalize for WeakGc<'id, T> {}
-unsafe impl<'id, T: Trace + ?Sized> Trace for WeakGc<'id, T> {
+unsafe impl<'id, T: Trace + ?Sized> Trace for WeakGc<'id, T>
+where
+    T::StaticId: Sized,
+{
+    // WeakGc<'id, T> maps to WeakGc<'static, T::StaticId> as the static proxy.
+    type StaticId = WeakGc<'static, T::StaticId>;
     unsafe fn trace(&self, _tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {
     }
 }

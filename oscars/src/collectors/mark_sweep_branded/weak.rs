@@ -63,8 +63,7 @@ impl<'id, T: Trace + ?Sized> WeakGc<'id, T> {
 
     /// Returns `true` if the referenced value is still alive.
     pub fn is_upgradable(&self) -> bool {
-        let is_valid = unsafe { (*self.ptr.as_ptr().as_ptr()).0.alloc_id == self.alloc_id };
-        is_valid
+        unsafe { (*self.ptr.as_ptr().as_ptr()).0.alloc_id == self.alloc_id }
     }
 }
 
@@ -93,7 +92,12 @@ impl<'id, T: Trace + ?Sized> PartialEq for WeakGc<'id, T> {
 }
 
 impl<'id, T: Trace + ?Sized> Finalize for WeakGc<'id, T> {}
-unsafe impl<'id, T: Trace + ?Sized> Trace for WeakGc<'id, T> {
+unsafe impl<'id, T: Trace + ?Sized> Trace for WeakGc<'id, T>
+where
+    T::StaticId: Sized,
+{
+    // WeakGc<'id, T> maps to WeakGc<'static, T::StaticId> as the static proxy.
+    type StaticId = WeakGc<'static, T::StaticId>;
     // Weak references do not mark their target, upgrade() returning None after collection is the intended behaviour.
     unsafe fn trace(&self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
 }

@@ -106,7 +106,12 @@ impl<'id, K: Trace + ?Sized, V: Trace> Copy for Ephemeron<'id, K, V> {}
 
 impl<'id, K: Trace + ?Sized, V: Trace> Finalize for Ephemeron<'id, K, V> {}
 
-unsafe impl<'id, K: Trace + ?Sized, V: Trace> Trace for Ephemeron<'id, K, V> {
+unsafe impl<'id, K: Trace + ?Sized, V: Trace> Trace for Ephemeron<'id, K, V>
+where
+    K::StaticId: Sized,
+{
+    // Ephemeron<'id, K, V> -> Ephemeron<'static, K::StaticId, V::StaticId>
+    type StaticId = Ephemeron<'static, K::StaticId, V::StaticId>;
     // Ephemerons do not mark their key; liveness of the key is determined
     // by the GC independently. The value is marked via the GC's ephemeron
     // fixpoint phase in `Collector::collect`.

@@ -78,6 +78,11 @@ impl<'id, K: Trace + ?Sized, V: Trace> Copy for Ephemeron<'id, K, V> {}
 
 impl<'id, K: Trace + ?Sized, V: Trace> Finalize for Ephemeron<'id, K, V> {}
 
-unsafe impl<'id, K: Trace + ?Sized, V: Trace> Trace for Ephemeron<'id, K, V> {
+unsafe impl<'id, K: Trace + ?Sized, V: Trace> Trace for Ephemeron<'id, K, V>
+where
+    K::StaticId: Sized,
+{
+    // Ephemeron<'id, K, V> -> Ephemeron<'static, K::StaticId, V::StaticId>
+    type StaticId = Ephemeron<'static, K::StaticId, V::StaticId>;
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }

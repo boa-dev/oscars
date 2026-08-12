@@ -6,6 +6,8 @@ use core::cell::Cell;
 struct DetectDrop<'a>(&'a Cell<bool>);
 
 unsafe impl<'a> Trace for DetectDrop<'a> {
+    // DetectDrop<'a> borrows a local `Cell`, the static proxy is DetectDrop<'static>.
+    type StaticId = DetectDrop<'static>;
     unsafe fn trace(&self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
 }
 
