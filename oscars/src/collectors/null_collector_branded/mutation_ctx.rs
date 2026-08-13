@@ -23,12 +23,24 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
     /// **Note**: This is a temporary workaround to keep `boa_engine` working.
     /// It breaks the normal safety rules of the collector, and should only be
     /// used to support older code that relies on `Default`
+    ///
+    /// # Safety
+    ///
+    /// `Gc<'gc, T>` and `MutationContext` are both `!Send`, so neither can escape
+    /// the thread that created them. `Collector::drop` only runs at thread exit,
+    /// after which no `Gc` on this thread can be accessed. The raw pointer reborrow
+    /// below is therefore sound ,the reference cannot outlive the TLS slot.
     #[cfg(feature = "std")]
     pub fn global() -> Self {
         std::thread_local! {
             static COLLECTOR: crate::collectors::null_collector_branded::Collector = crate::collectors::null_collector_branded::Collector::new();
         }
         COLLECTOR.with(|c| {
+            // SAFETY: `Gc` and `MutationContext` are `!Send`, so they cannot escape
+            // this thread. `COLLECTOR` is a thread-local whose destructor only runs
+            // at thread exit, after all thread-local values are inaccessible.
+            // Therefore, `c` remains valid for at least as long as any `MutationContext`
+            // or `Gc` that could possibly reference it.
             let ptr = c as *const crate::collectors::null_collector_branded::Collector;
             Self {
                 collector: unsafe { &*ptr },

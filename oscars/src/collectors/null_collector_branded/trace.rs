@@ -57,7 +57,7 @@ impl<'a> Tracer<'a> {
     }
 }
 
-unsafe impl<T: ?Sized> Trace for &T {
+unsafe impl<T: Trace + ?Sized> Trace for &T {
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
@@ -116,6 +116,7 @@ unsafe impl<T: Trace, const N: usize> Trace for [T; N] {
     }
 }
 
+// Slices [T] cannot be allocated directly in the GC.
 unsafe impl<T: Trace> Trace for [T] {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
@@ -124,6 +125,7 @@ unsafe impl<T: Trace> Trace for [T] {
     }
 }
 
+// Box<T> where T: ?Sized. Box is always Sized even for DST contents.
 unsafe impl<T: Trace + ?Sized> Trace for Box<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         (**self).trace(tracer);
@@ -180,7 +182,8 @@ unsafe impl<T: Trace> Trace for LinkedList<T> {
     }
 }
 
-unsafe impl<T> Trace for PhantomData<T> {
+// PhantomData<T> doesn't trace T, so T need not implement Trace.
+unsafe impl<T: 'static> Trace for PhantomData<T> {
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
@@ -201,10 +204,11 @@ unsafe impl<T: Trace> Trace for OnceCell<T> {
     }
 }
 
-unsafe impl<T: ToOwned + Trace + ?Sized> Trace for Cow<'static, T>
+unsafe impl<T: ToOwned + Trace + ?Sized + 'static> Trace for Cow<'static, T>
 where
     T::Owned: Trace,
 {
+    // T is already 'static so we can use it directly as the proxy.
     unsafe fn trace(&self, tracer: &mut Tracer) {
         if let Cow::Owned(v) = self {
             v.trace(tracer);
@@ -257,17 +261,20 @@ unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace> Trace for (A, B, C
     }
 }
 
-unsafe impl<T: ?Sized> Trace for rust_alloc::rc::Rc<T> {
+// Rc/Arc are reference-counted, not GC-traced. They cannot contain live Gc
+// pointers (that would create a cycle the GC cannot see).
+unsafe impl<T: ?Sized + 'static> Trace for rust_alloc::rc::Rc<T> {
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
-unsafe impl<T: ?Sized> Trace for rust_alloc::sync::Arc<T> {
+unsafe impl<T: ?Sized + 'static> Trace for rust_alloc::sync::Arc<T> {
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
-unsafe impl<K, V: Trace> Trace for BTreeMap<K, V> {
+// K is not traced (BTreeMap keys are immutable).
+unsafe impl<K: 'static, V: Trace> Trace for BTreeMap<K, V> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.values() {
             v.trace(tracer);
@@ -275,11 +282,13 @@ unsafe impl<K, V: Trace> Trace for BTreeMap<K, V> {
     }
 }
 
-unsafe impl<T> Trace for BTreeSet<T> {
+// BTreeSet keys are never traced.
+unsafe impl<T: 'static> Trace for BTreeSet<T> {
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
+// str is a DST, so we cannot allocate it directly. Use String as the Sized proxy.
 unsafe impl Trace for str {
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
@@ -316,7 +325,7 @@ unsafe impl<T: Trace, const N: usize> Trace for arrayvec::ArrayVec<T, N> {
     }
 }
 
-unsafe impl<K: Trace, V: Trace, S> Trace for hashbrown::hash_map::HashMap<K, V, S> {
+unsafe impl<K: Trace, V: Trace, S: 'static> Trace for hashbrown::hash_map::HashMap<K, V, S> {
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for (k, v) in self {
@@ -327,7 +336,7 @@ unsafe impl<K: Trace, V: Trace, S> Trace for hashbrown::hash_map::HashMap<K, V, 
 }
 // Finalize is already implemented in common.rs
 
-unsafe impl<T: Trace, S> Trace for hashbrown::hash_set::HashSet<T, S> {
+unsafe impl<T: Trace, S: 'static> Trace for hashbrown::hash_set::HashSet<T, S> {
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self {
@@ -371,7 +380,7 @@ unsafe impl Trace for std::time::SystemTime {
 }
 
 #[cfg(feature = "std")]
-unsafe impl<K: Trace, V: Trace, S> Trace for std::collections::HashMap<K, V, S> {
+unsafe impl<K: Trace, V: Trace, S: 'static> Trace for std::collections::HashMap<K, V, S> {
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for (k, v) in self {
@@ -382,7 +391,7 @@ unsafe impl<K: Trace, V: Trace, S> Trace for std::collections::HashMap<K, V, S> 
 }
 
 #[cfg(feature = "std")]
-unsafe impl<T: Trace, S> Trace for std::collections::HashSet<T, S> {
+unsafe impl<T: Trace, S: 'static> Trace for std::collections::HashSet<T, S> {
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self {

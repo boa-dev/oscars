@@ -63,8 +63,7 @@ impl<'id, T: Trace + ?Sized> WeakGc<'id, T> {
 
     /// Returns `true` if the referenced value is still alive.
     pub fn is_upgradable(&self) -> bool {
-        let is_valid = unsafe { (*self.ptr.as_ptr().as_ptr()).0.alloc_id == self.alloc_id };
-        is_valid
+        unsafe { (*self.ptr.as_ptr().as_ptr()).0.alloc_id == self.alloc_id }
     }
 }
 

@@ -72,10 +72,14 @@ impl<T: Trace + ?Sized> DerefMut for GcRefMut<'_, T> {
     }
 }
 
-impl<'a, T: Trace + ?Sized> GcRef<'a, T> {
-    pub fn clone(orig: &GcRef<'a, T>) -> GcRef<'a, T> {
-        GcRef(Ref::clone(&orig.0))
+impl<'a, T: Trace + ?Sized> Clone for GcRef<'a, T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        GcRef(Ref::clone(&self.0))
     }
+}
+
+impl<'a, T: Trace + ?Sized> GcRef<'a, T> {
     pub fn map<U: Trace + ?Sized, F>(orig: GcRef<'a, T>, f: F) -> GcRef<'a, U>
     where
         F: FnOnce(&T) -> &U,
@@ -130,6 +134,7 @@ impl<'a, T: Trace + ?Sized> GcRefMut<'a, T> {
 impl<T: Trace + ?Sized> Finalize for GcRefCell<T> {}
 
 unsafe impl<T: Trace + ?Sized> Trace for GcRefCell<T> {
+    // GcRefCell<'gc, T> is branded by T's lifetime. Map to the static form.
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         // SAFETY: We only access the inner value for tracing and do not mutate it.

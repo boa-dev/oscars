@@ -80,10 +80,15 @@ impl<'gc, T: Trace + ?Sized + 'gc> Gc<'gc, T> {
         }
     }
 
+    /// Returns `true` if the inner value is of type `U`.
+    ///
+    /// Uses `typeid::of::<U>()`, sound even when `U` carries a branded
+    /// lifetime because it properly handles branded lifetimes. This avoids the `T: 'static` restriction while still
+    /// giving us a stable, unique identity guarantee
     #[inline]
-    pub fn is<U: Trace + ?Sized + 'gc>(&self) -> bool {
-        let actual_type_name = unsafe { (*self.ptr.as_ptr().as_ptr()).0.type_name };
-        actual_type_name == core::any::type_name::<U>()
+    pub fn is<U: Trace + ?Sized>(&self) -> bool {
+        let actual_type_id = unsafe { (*self.ptr.as_ptr().as_ptr()).0.type_id };
+        actual_type_id == typeid::of::<U>()
     }
 
     #[inline]
@@ -141,7 +146,7 @@ impl<'gc, T: Trace + ?Sized + 'gc> Deref for Gc<'gc, T> {
 
 impl<T: Trace + ?Sized> Finalize for Gc<'_, T> {}
 
-unsafe impl<T: Trace + ?Sized> Trace for Gc<'_, T> {
+unsafe impl<'gc, T: Trace + ?Sized + 'gc> Trace for Gc<'gc, T> {
     unsafe fn trace(&self, tracer: &mut crate::collectors::null_collector_branded::trace::Tracer) {
         tracer.mark(self);
     }
