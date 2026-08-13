@@ -174,12 +174,7 @@ impl<'a, T: Trace + ?Sized> GcRefMut<'a, T> {
 
 impl<T: Trace + ?Sized> Finalize for GcRefCell<T> {}
 
-unsafe impl<T: Trace + ?Sized> Trace for GcRefCell<T>
-where
-    T::StaticId: Sized,
-{
-    // GcRefCell branded by T's lifetime, map to the static form.
-    type StaticId = GcRefCell<T::StaticId>;
+unsafe impl<T: Trace + ?Sized> Trace for GcRefCell<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         let val = unsafe { &*self.inner.as_ptr() };
         unsafe {

@@ -7,8 +7,6 @@ struct JsObject {
 }
 
 unsafe impl crate::collectors::mark_sweep_branded::Trace for JsObject {
-    // JsObject contains no GC pointers and no lifetimes, so its static proxy is itself.
-    type StaticId = JsObject;
     unsafe fn trace(&self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
 }
 impl crate::collectors::mark_sweep_branded::Finalize for JsObject {}

@@ -92,12 +92,7 @@ impl<'id, T: Trace + ?Sized> PartialEq for WeakGc<'id, T> {
 }
 
 impl<'id, T: Trace + ?Sized> Finalize for WeakGc<'id, T> {}
-unsafe impl<'id, T: Trace + ?Sized> Trace for WeakGc<'id, T>
-where
-    T::StaticId: Sized,
-{
-    // WeakGc<'id, T> maps to WeakGc<'static, T::StaticId> as the static proxy.
-    type StaticId = WeakGc<'static, T::StaticId>;
+unsafe impl<'id, T: Trace + ?Sized> Trace for WeakGc<'id, T> {
     // Weak references do not mark their target, upgrade() returning None after collection is the intended behaviour.
     unsafe fn trace(&self, _tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {}
 }

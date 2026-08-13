@@ -21,7 +21,6 @@ use rust_alloc::vec::Vec;
 /// While the null collector reclaims no memory, implementations must be
 /// sound for other collectors to prevent UAF bugs.
 pub unsafe trait Trace {
-    type StaticId: 'static + Trace<StaticId = Self::StaticId>;
     /// Marks all `Gc` pointers reachable from `self`.
     ///
     /// # Safety
@@ -58,14 +57,7 @@ impl<'a> Tracer<'a> {
     }
 }
 
-// For &T, the StaticId is &'static T::StaticId. Since &U is always Sized, this
-// satisfies the Sized requirement on StaticId even when T::StaticId is a DST.
-// We add the bound T::StaticId: Sized to keep things simple and unambiguous.
-unsafe impl<T: Trace + ?Sized> Trace for &T
-where
-    T::StaticId: Sized,
-{
-    type StaticId = &'static T::StaticId;
+unsafe impl<T: Trace + ?Sized> Trace for &T {
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
@@ -74,7 +66,6 @@ macro_rules! empty_trace {
     ($($T:ty),* $(,)?) => {
         $(
             unsafe impl Trace for $T {
-                type StaticId = $T;
                 #[inline]
                 unsafe fn trace(&self, _tracer: &mut Tracer) {}
             }
@@ -118,7 +109,6 @@ empty_trace![
 ];
 
 unsafe impl<T: Trace, const N: usize> Trace for [T; N] {
-    type StaticId = [T::StaticId; N];
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
@@ -126,10 +116,8 @@ unsafe impl<T: Trace, const N: usize> Trace for [T; N] {
     }
 }
 
-// Slices [T] cannot be allocated directly in the GC. Their StaticId is a
-// Vec, which is always Sized and avoids Box fixed point divergence.
+// Slices [T] cannot be allocated directly in the GC.
 unsafe impl<T: Trace> Trace for [T] {
-    type StaticId = Vec<T::StaticId>;
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
@@ -138,12 +126,7 @@ unsafe impl<T: Trace> Trace for [T] {
 }
 
 // Box<T> where T: ?Sized. Box is always Sized even for DST contents.
-// We require T::StaticId: Sized to produce a concrete Sized StaticId.
-unsafe impl<T: Trace + ?Sized> Trace for Box<T>
-where
-    T::StaticId: Sized,
-{
-    type StaticId = Box<T::StaticId>;
+unsafe impl<T: Trace + ?Sized> Trace for Box<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         (**self).trace(tracer);
     }
@@ -151,7 +134,6 @@ where
 
 #[cfg(feature = "thin-vec")]
 unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
-    type StaticId = thin_vec::ThinVec<T::StaticId>;
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
@@ -160,7 +142,6 @@ unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
 }
 
 unsafe impl<T: Trace> Trace for Option<T> {
-    type StaticId = Option<T::StaticId>;
     unsafe fn trace(&self, tracer: &mut Tracer) {
         if let Some(v) = self {
             v.trace(tracer);
@@ -169,7 +150,6 @@ unsafe impl<T: Trace> Trace for Option<T> {
 }
 
 unsafe impl<T: Trace, E: Trace> Trace for Result<T, E> {
-    type StaticId = Result<T::StaticId, E::StaticId>;
     unsafe fn trace(&self, tracer: &mut Tracer) {
         match self {
             Ok(v) => v.trace(tracer),
@@ -179,7 +159,6 @@ unsafe impl<T: Trace, E: Trace> Trace for Result<T, E> {
 }
 
 unsafe impl<T: Trace> Trace for Vec<T> {
-    type StaticId = Vec<T::StaticId>;
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
@@ -188,7 +167,6 @@ unsafe impl<T: Trace> Trace for Vec<T> {
 }
 
 unsafe impl<T: Trace> Trace for VecDeque<T> {
-    type StaticId = VecDeque<T::StaticId>;
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
@@ -197,7 +175,6 @@ unsafe impl<T: Trace> Trace for VecDeque<T> {
 }
 
 unsafe impl<T: Trace> Trace for LinkedList<T> {
-    type StaticId = LinkedList<T::StaticId>;
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
@@ -206,18 +183,12 @@ unsafe impl<T: Trace> Trace for LinkedList<T> {
 }
 
 // PhantomData<T> doesn't trace T, so T need not implement Trace.
-// For StaticId we require T: 'static so the proxy type itself is 'static.
 unsafe impl<T: 'static> Trace for PhantomData<T> {
-    type StaticId = PhantomData<T>;
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
-unsafe impl<T: Trace + Default> Trace for Cell<T>
-where
-    T::StaticId: Default,
-{
-    type StaticId = Cell<T::StaticId>;
+unsafe impl<T: Trace + Default> Trace for Cell<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         let v = self.take();
         v.trace(tracer);
@@ -226,7 +197,6 @@ where
 }
 
 unsafe impl<T: Trace> Trace for OnceCell<T> {
-    type StaticId = OnceCell<T::StaticId>;
     unsafe fn trace(&self, tracer: &mut Tracer) {
         if let Some(v) = self.get() {
             v.trace(tracer);
@@ -237,10 +207,8 @@ unsafe impl<T: Trace> Trace for OnceCell<T> {
 unsafe impl<T: ToOwned + Trace + ?Sized + 'static> Trace for Cow<'static, T>
 where
     T::Owned: Trace,
-    T::StaticId: ToOwned,
 {
     // T is already 'static so we can use it directly as the proxy.
-    type StaticId = Cow<'static, T>;
     unsafe fn trace(&self, tracer: &mut Tracer) {
         if let Cow::Owned(v) = self {
             v.trace(tracer);
@@ -249,7 +217,6 @@ where
 }
 
 unsafe impl<A: Trace> Trace for (A,) {
-    type StaticId = (A::StaticId,);
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         self.0.trace(tracer);
@@ -257,7 +224,6 @@ unsafe impl<A: Trace> Trace for (A,) {
 }
 
 unsafe impl<A: Trace, B: Trace> Trace for (A, B) {
-    type StaticId = (A::StaticId, B::StaticId);
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         self.0.trace(tracer);
@@ -266,7 +232,6 @@ unsafe impl<A: Trace, B: Trace> Trace for (A, B) {
 }
 
 unsafe impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {
-    type StaticId = (A::StaticId, B::StaticId, C::StaticId);
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         self.0.trace(tracer);
@@ -276,7 +241,6 @@ unsafe impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {
 }
 
 unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {
-    type StaticId = (A::StaticId, B::StaticId, C::StaticId, D::StaticId);
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         self.0.trace(tracer);
@@ -287,13 +251,6 @@ unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {
 }
 
 unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace> Trace for (A, B, C, D, E) {
-    type StaticId = (
-        A::StaticId,
-        B::StaticId,
-        C::StaticId,
-        D::StaticId,
-        E::StaticId,
-    );
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         self.0.trace(tracer);
@@ -305,23 +262,19 @@ unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace> Trace for (A, B, C
 }
 
 // Rc/Arc are reference-counted, not GC-traced. They cannot contain live Gc
-// pointers (that would create a cycle the GC cannot see). StaticId uses the
-// 'static-bounded form so TypeId is well-formed.
+// pointers (that would create a cycle the GC cannot see).
 unsafe impl<T: ?Sized + 'static> Trace for rust_alloc::rc::Rc<T> {
-    type StaticId = rust_alloc::rc::Rc<T>;
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
 unsafe impl<T: ?Sized + 'static> Trace for rust_alloc::sync::Arc<T> {
-    type StaticId = rust_alloc::sync::Arc<T>;
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
-// K is not traced (BTreeMap keys are immutable); require K: 'static for StaticId.
+// K is not traced (BTreeMap keys are immutable).
 unsafe impl<K: 'static, V: Trace> Trace for BTreeMap<K, V> {
-    type StaticId = BTreeMap<K, V::StaticId>;
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.values() {
             v.trace(tracer);
@@ -329,37 +282,32 @@ unsafe impl<K: 'static, V: Trace> Trace for BTreeMap<K, V> {
     }
 }
 
-// BTreeSet keys are never traced; require T: 'static for StaticId.
+// BTreeSet keys are never traced.
 unsafe impl<T: 'static> Trace for BTreeSet<T> {
-    type StaticId = BTreeSet<T>;
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
 // str is a DST, so we cannot allocate it directly. Use String as the Sized proxy.
 unsafe impl Trace for str {
-    type StaticId = String;
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
 #[cfg(feature = "icu")]
 unsafe impl Trace for icu_locale_core::LanguageIdentifier {
-    type StaticId = icu_locale_core::LanguageIdentifier;
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
 #[cfg(feature = "icu")]
 unsafe impl Trace for icu_locale_core::Locale {
-    type StaticId = icu_locale_core::Locale;
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
 #[cfg(feature = "either")]
 unsafe impl<L: Trace, R: Trace> Trace for either::Either<L, R> {
-    type StaticId = either::Either<L::StaticId, R::StaticId>;
     unsafe fn trace(&self, tracer: &mut Tracer) {
         match self {
             either::Either::Left(l) => l.trace(tracer),
@@ -370,7 +318,6 @@ unsafe impl<L: Trace, R: Trace> Trace for either::Either<L, R> {
 
 #[cfg(feature = "arrayvec")]
 unsafe impl<T: Trace, const N: usize> Trace for arrayvec::ArrayVec<T, N> {
-    type StaticId = arrayvec::ArrayVec<T::StaticId, N>;
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self {
             v.trace(tracer);
@@ -379,7 +326,6 @@ unsafe impl<T: Trace, const N: usize> Trace for arrayvec::ArrayVec<T, N> {
 }
 
 unsafe impl<K: Trace, V: Trace, S: 'static> Trace for hashbrown::hash_map::HashMap<K, V, S> {
-    type StaticId = hashbrown::hash_map::HashMap<K::StaticId, V::StaticId, S>;
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for (k, v) in self {
@@ -391,7 +337,6 @@ unsafe impl<K: Trace, V: Trace, S: 'static> Trace for hashbrown::hash_map::HashM
 // Finalize is already implemented in common.rs
 
 unsafe impl<T: Trace, S: 'static> Trace for hashbrown::hash_set::HashSet<T, S> {
-    type StaticId = hashbrown::hash_set::HashSet<T::StaticId, S>;
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self {
@@ -402,7 +347,6 @@ unsafe impl<T: Trace, S: 'static> Trace for hashbrown::hash_set::HashSet<T, S> {
 // Finalize is already implemented in common.rs
 
 unsafe impl<T: Trace> Trace for rust_alloc::collections::BinaryHeap<T> {
-    type StaticId = rust_alloc::collections::BinaryHeap<T::StaticId>;
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {
         // BinaryHeap has no iter_mut(); the null collector's trace is a no-op
@@ -413,35 +357,30 @@ unsafe impl<T: Trace> Trace for rust_alloc::collections::BinaryHeap<T> {
 
 #[cfg(feature = "std")]
 unsafe impl Trace for std::path::Path {
-    type StaticId = std::path::PathBuf;
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
 #[cfg(feature = "std")]
 unsafe impl Trace for std::path::PathBuf {
-    type StaticId = std::path::PathBuf;
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
 #[cfg(feature = "std")]
 unsafe impl Trace for std::time::Instant {
-    type StaticId = std::time::Instant;
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
 #[cfg(feature = "std")]
 unsafe impl Trace for std::time::SystemTime {
-    type StaticId = std::time::SystemTime;
     #[inline]
     unsafe fn trace(&self, _tracer: &mut Tracer) {}
 }
 
 #[cfg(feature = "std")]
 unsafe impl<K: Trace, V: Trace, S: 'static> Trace for std::collections::HashMap<K, V, S> {
-    type StaticId = std::collections::HashMap<K::StaticId, V::StaticId, S>;
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for (k, v) in self {
@@ -453,7 +392,6 @@ unsafe impl<K: Trace, V: Trace, S: 'static> Trace for std::collections::HashMap<
 
 #[cfg(feature = "std")]
 unsafe impl<T: Trace, S: 'static> Trace for std::collections::HashSet<T, S> {
-    type StaticId = std::collections::HashSet<T::StaticId, S>;
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self {

@@ -133,12 +133,8 @@ impl<'a, T: Trace + ?Sized> GcRefMut<'a, T> {
 
 impl<T: Trace + ?Sized> Finalize for GcRefCell<T> {}
 
-unsafe impl<T: Trace + ?Sized> Trace for GcRefCell<T>
-where
-    T::StaticId: Sized,
-{
+unsafe impl<T: Trace + ?Sized> Trace for GcRefCell<T> {
     // GcRefCell<'gc, T> is branded by T's lifetime. Map to the static form.
-    type StaticId = GcRefCell<T::StaticId>;
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         // SAFETY: We only access the inner value for tracing and do not mutate it.
