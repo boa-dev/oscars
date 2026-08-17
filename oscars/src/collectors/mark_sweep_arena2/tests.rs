@@ -252,6 +252,25 @@ fn cast_ref_unchecked_preserves_identity_and_value() {
 }
 
 #[test]
+fn new_cyclic_closure_cannot_upgrade_before_init() {
+    let collector = &mut MarkSweepGarbageCollector::default()
+        .with_arena_size(256)
+        .with_heap_threshold(512);
+
+    let mut saw_none = false;
+    let gc = Gc::new_cyclic_in(collector, |weak| {
+        saw_none = weak.upgrade().is_none();
+        7u32
+    });
+
+    assert!(
+        saw_none,
+        "weak should not upgrade during new_cyclic construction"
+    );
+    assert_eq!(*gc, 7u32, "new_cyclic should initialize final value");
+}
+
+#[test]
 fn multi_gc() {
     let collector = &mut MarkSweepGarbageCollector::default()
         .with_arena_size(128)

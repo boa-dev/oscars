@@ -37,4 +37,12 @@ impl<T: Trace> WeakGc<T> {
     pub fn upgrade(&self) -> Option<Gc<T>> {
         self.inner_ptr.as_inner_ref().upgrade()
     }
+
+    pub(crate) unsafe fn from_raw(inner_ptr: ArenaPointer<'static, Ephemeron<T, ()>>) -> Self {
+        Self { inner_ptr }
+    }
+
+    pub(crate) fn set_key(&self, key: &Gc<T>) {
+        self.inner_ptr.as_inner_ref().set_key(key);
+    }
 }

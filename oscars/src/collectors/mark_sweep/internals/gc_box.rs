@@ -50,6 +50,13 @@ impl<T: Trace + Finalize + ?Sized> WeakGcBox<T> {
         }
     }
 
+    pub fn new_empty() -> Self {
+        Self {
+            inner_ptr: Cell::new(None),
+            marker: PhantomData,
+        }
+    }
+
     pub(crate) fn erased_inner_ptr(&self) -> Option<NonNull<GcBox<NonTraceable>>> {
         // SAFETY: `as_heap_ptr` returns a valid pointer to
         // `PoolItem` whose lifetime is tied to the pool
