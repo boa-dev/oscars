@@ -28,19 +28,21 @@ impl From<LayoutError> for PoolAllocError {
     }
 }
 
-const SIZE_CLASSES: &[usize] = &[16, 24, 32, 48, 64, 96, 128, 192, 256, 512, 1024, 2048];
+const SIZE_CLASSES: &[usize] = &[
+    16, 24, 32, 48, 64, 96, 128, 192, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+];
 
 #[inline(always)]
 fn size_class_index_for(size: usize) -> usize {
     // binary search over size classes
     let idx = SIZE_CLASSES.partition_point(|&sc| sc < size);
-    debug_assert!(
+    assert!(
         idx < SIZE_CLASSES.len(),
         "object size {size}B exceeds the largest size class ({}B); \
          consider adding a larger class",
         SIZE_CLASSES.last().unwrap()
     );
-    idx.min(SIZE_CLASSES.len() - 1)
+    idx
 }
 
 const DEFAULT_PAGE_SIZE: usize = 262_144;
@@ -58,7 +60,7 @@ pub struct PoolAllocator<'alloc> {
     // cached index of the last pool used by free_slot
     pub(crate) free_cache: Cell<usize>,
     // per size class cached index of the last pool used by alloc_slot
-    pub(crate) alloc_cache: [Cell<usize>; 12],
+    pub(crate) alloc_cache: [Cell<usize>; 17],
     // empty slot pools kept alive to avoid OS reallocation on the next cycle
     pub(crate) recycled_pools: Vec<SlotPool>,
     // maximum number of idle pages held across all size classes
@@ -78,20 +80,7 @@ impl<'alloc> Default for PoolAllocator<'alloc> {
             slot_pools: Vec::new(),
             bump_pages: Vec::new(),
             free_cache: Cell::new(usize::MAX),
-            alloc_cache: [
-                Cell::new(usize::MAX),
-                Cell::new(usize::MAX),
-                Cell::new(usize::MAX),
-                Cell::new(usize::MAX),
-                Cell::new(usize::MAX),
-                Cell::new(usize::MAX),
-                Cell::new(usize::MAX),
-                Cell::new(usize::MAX),
-                Cell::new(usize::MAX),
-                Cell::new(usize::MAX),
-                Cell::new(usize::MAX),
-                Cell::new(usize::MAX),
-            ],
+            alloc_cache: core::array::from_fn(|_| Cell::new(usize::MAX)),
             recycled_pools: Vec::new(),
             // keep two empty pages per size class to reduce OS overhead
             max_recycled: SIZE_CLASSES.len() * 2,

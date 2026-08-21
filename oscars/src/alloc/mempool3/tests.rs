@@ -234,3 +234,33 @@ fn max_recycled_cap_respected() {
     assert_eq!(allocator.recycled_pools.len(), 1);
     assert!(allocator.current_heap_size < heap_before);
 }
+
+#[test]
+fn alloc_large_object_success() {
+    let mut allocator = PoolAllocator::default().with_page_size(16384);
+    // allocate a size that maps to a class > 2048
+    // e.g. 4096 size class => size 3000
+    struct LargeObject {
+        _data: [u8; 3000],
+    }
+    let a = allocator
+        .try_alloc(LargeObject { _data: [0; 3000] })
+        .unwrap();
+    assert_eq!(allocator.pools_len(), 1);
+
+    // Test that the caching works for the new size classes
+    let _b = allocator
+        .try_alloc(LargeObject { _data: [0; 3000] })
+        .unwrap();
+    assert_eq!(allocator.pools_len(), 1); // should still fit in the same page
+}
+
+#[test]
+#[should_panic(expected = "object size")]
+fn alloc_oversized_object_panics() {
+    let mut allocator = PoolAllocator::default().with_page_size(128 * 1024);
+    struct OversizedObject {
+        _data: [u8; 70000],
+    }
+    let _ = allocator.try_alloc(OversizedObject { _data: [0; 70000] });
+}
