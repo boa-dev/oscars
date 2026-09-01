@@ -28,7 +28,7 @@ impl From<LayoutError> for PoolAllocError {
     }
 }
 
-const SIZE_CLASSES: &[usize] = &[16, 24, 32, 48, 64, 96, 128, 192, 256, 512, 1024, 2048];
+const SIZE_CLASSES: &[usize] = &[16, 24, 32, 48, 64, 96, 128, 192, 256, 512, 1024, 2048, 4096];
 
 #[inline(always)]
 fn size_class_index_for(size: usize) -> usize {
