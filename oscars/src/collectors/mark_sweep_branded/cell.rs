@@ -181,4 +181,11 @@ unsafe impl<T: Trace + ?Sized> Trace for GcRefCell<T> {
             val.trace(tracer);
         }
     }
+
+    unsafe fn trace_non_roots(&self) {
+        let val = unsafe { &*self.inner.as_ptr() };
+        unsafe {
+            val.trace_non_roots();
+        }
+    }
 }

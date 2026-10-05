@@ -208,6 +208,12 @@ unsafe impl<T: Trace, const N: usize> Trace for [T; N] {
             v.trace(tracer);
         }
     }
+
+    unsafe fn trace_non_roots(&self) {
+        for v in self.iter() {
+            v.trace_non_roots();
+        }
+    }
 }
 
 // Slices [T] cannot be allocated directly in the GC.
@@ -218,6 +224,13 @@ unsafe impl<T: Trace> Trace for [T] {
             v.trace(tracer);
         }
     }
+
+    #[inline]
+    unsafe fn trace_non_roots(&self) {
+        for v in self {
+            v.trace_non_roots();
+        }
+    }
 }
 
 // Box<T> where T: ?Sized. Box is always Sized even for DST contents.
@@ -225,12 +238,22 @@ unsafe impl<T: Trace + ?Sized> Trace for Box<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         (**self).trace(tracer);
     }
+
+    unsafe fn trace_non_roots(&self) {
+        (**self).trace_non_roots();
+    }
 }
 
 unsafe impl<T: Trace> Trace for Option<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         if let Some(v) = self {
             v.trace(tracer);
+        }
+    }
+
+    unsafe fn trace_non_roots(&self) {
+        if let Some(v) = self {
+            v.trace_non_roots();
         }
     }
 }
@@ -242,12 +265,25 @@ unsafe impl<T: Trace, E: Trace> Trace for Result<T, E> {
             Err(e) => e.trace(tracer),
         }
     }
+
+    unsafe fn trace_non_roots(&self) {
+        match self {
+            Ok(v) => v.trace_non_roots(),
+            Err(e) => e.trace_non_roots(),
+        }
+    }
 }
 
 unsafe impl<T: Trace> Trace for Vec<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
+        }
+    }
+
+    unsafe fn trace_non_roots(&self) {
+        for v in self.iter() {
+            v.trace_non_roots();
         }
     }
 }
@@ -259,6 +295,12 @@ unsafe impl<T: Trace> Trace for thin_vec::ThinVec<T> {
             v.trace(tracer);
         }
     }
+
+    unsafe fn trace_non_roots(&self) {
+        for v in self.iter() {
+            v.trace_non_roots();
+        }
+    }
 }
 
 unsafe impl<T: Trace> Trace for VecDeque<T> {
@@ -267,12 +309,24 @@ unsafe impl<T: Trace> Trace for VecDeque<T> {
             v.trace(tracer);
         }
     }
+
+    unsafe fn trace_non_roots(&self) {
+        for v in self.iter() {
+            v.trace_non_roots();
+        }
+    }
 }
 
 unsafe impl<T: Trace> Trace for LinkedList<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
+        }
+    }
+
+    unsafe fn trace_non_roots(&self) {
+        for v in self.iter() {
+            v.trace_non_roots();
         }
     }
 }
@@ -296,12 +350,24 @@ unsafe impl<T: Trace + Default> Trace for Cell<T> {
         v.trace(tracer);
         self.set(v);
     }
+
+    unsafe fn trace_non_roots(&self) {
+        let v = self.take();
+        v.trace_non_roots();
+        self.set(v);
+    }
 }
 
 unsafe impl<T: Trace> Trace for OnceCell<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         if let Some(v) = self.get() {
             v.trace(tracer);
+        }
+    }
+
+    unsafe fn trace_non_roots(&self) {
+        if let Some(v) = self.get() {
+            v.trace_non_roots();
         }
     }
 }
@@ -316,12 +382,23 @@ where
             v.trace(tracer);
         }
     }
+
+    unsafe fn trace_non_roots(&self) {
+        if let Cow::Owned(v) = self {
+            v.trace_non_roots();
+        }
+    }
 }
 
 unsafe impl<A: Trace> Trace for (A,) {
     #[inline]
     unsafe fn trace(&self, tracer: &mut Tracer) {
         self.0.trace(tracer);
+    }
+
+    #[inline]
+    unsafe fn trace_non_roots(&self) {
+        self.0.trace_non_roots();
     }
 }
 
@@ -330,6 +407,12 @@ unsafe impl<A: Trace, B: Trace> Trace for (A, B) {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         self.0.trace(tracer);
         self.1.trace(tracer);
+    }
+
+    #[inline]
+    unsafe fn trace_non_roots(&self) {
+        self.0.trace_non_roots();
+        self.1.trace_non_roots();
     }
 }
 
@@ -340,6 +423,13 @@ unsafe impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {
         self.1.trace(tracer);
         self.2.trace(tracer);
     }
+
+    #[inline]
+    unsafe fn trace_non_roots(&self) {
+        self.0.trace_non_roots();
+        self.1.trace_non_roots();
+        self.2.trace_non_roots();
+    }
 }
 
 unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {
@@ -348,6 +438,13 @@ unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {
         self.1.trace(tracer);
         self.2.trace(tracer);
         self.3.trace(tracer);
+    }
+
+    unsafe fn trace_non_roots(&self) {
+        self.0.trace_non_roots();
+        self.1.trace_non_roots();
+        self.2.trace_non_roots();
+        self.3.trace_non_roots();
     }
 }
 
@@ -358,6 +455,14 @@ unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace> Trace for (A, B, C
         self.2.trace(tracer);
         self.3.trace(tracer);
         self.4.trace(tracer);
+    }
+
+    unsafe fn trace_non_roots(&self) {
+        self.0.trace_non_roots();
+        self.1.trace_non_roots();
+        self.2.trace_non_roots();
+        self.3.trace_non_roots();
+        self.4.trace_non_roots();
     }
 }
 
@@ -371,6 +476,15 @@ unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace, F: Trace> Trace
         self.3.trace(tracer);
         self.4.trace(tracer);
         self.5.trace(tracer);
+    }
+
+    unsafe fn trace_non_roots(&self) {
+        self.0.trace_non_roots();
+        self.1.trace_non_roots();
+        self.2.trace_non_roots();
+        self.3.trace_non_roots();
+        self.4.trace_non_roots();
+        self.5.trace_non_roots();
     }
 }
 
@@ -386,6 +500,16 @@ unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace, F: Trace, G: Trace
         self.5.trace(tracer);
         self.6.trace(tracer);
     }
+
+    unsafe fn trace_non_roots(&self) {
+        self.0.trace_non_roots();
+        self.1.trace_non_roots();
+        self.2.trace_non_roots();
+        self.3.trace_non_roots();
+        self.4.trace_non_roots();
+        self.5.trace_non_roots();
+        self.6.trace_non_roots();
+    }
 }
 
 unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace, F: Trace, G: Trace, H: Trace> Trace
@@ -400,6 +524,17 @@ unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace, F: Trace, G: Trace
         self.5.trace(tracer);
         self.6.trace(tracer);
         self.7.trace(tracer);
+    }
+
+    unsafe fn trace_non_roots(&self) {
+        self.0.trace_non_roots();
+        self.1.trace_non_roots();
+        self.2.trace_non_roots();
+        self.3.trace_non_roots();
+        self.4.trace_non_roots();
+        self.5.trace_non_roots();
+        self.6.trace_non_roots();
+        self.7.trace_non_roots();
     }
 }
 
@@ -423,6 +558,12 @@ unsafe impl<K: 'static, V: Trace> Trace for BTreeMap<K, V> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.values() {
             v.trace(tracer);
+        }
+    }
+
+    unsafe fn trace_non_roots(&self) {
+        for v in self.values() {
+            v.trace_non_roots();
         }
     }
 }
@@ -463,6 +604,13 @@ mod either_trace {
                 either::Either::Right(r) => r.trace(tracer),
             }
         }
+
+        unsafe fn trace_non_roots(&self) {
+            match self {
+                either::Either::Left(l) => l.trace_non_roots(),
+                either::Either::Right(r) => r.trace_non_roots(),
+            }
+        }
     }
 }
 
@@ -471,6 +619,12 @@ unsafe impl<T: Trace, const N: usize> Trace for arrayvec::ArrayVec<T, N> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self {
             v.trace(tracer);
+        }
+    }
+
+    unsafe fn trace_non_roots(&self) {
+        for v in self {
+            v.trace_non_roots();
         }
     }
 }
@@ -508,6 +662,14 @@ unsafe impl<K: Trace, V: Trace, S: 'static> Trace for std::collections::HashMap<
             v.trace(tracer);
         }
     }
+
+    #[inline]
+    unsafe fn trace_non_roots(&self) {
+        for (k, v) in self {
+            k.trace_non_roots();
+            v.trace_non_roots();
+        }
+    }
 }
 
 #[cfg(feature = "std")]
@@ -518,6 +680,13 @@ unsafe impl<T: Trace, S: 'static> Trace for std::collections::HashSet<T, S> {
             v.trace(tracer);
         }
     }
+
+    #[inline]
+    unsafe fn trace_non_roots(&self) {
+        for v in self {
+            v.trace_non_roots();
+        }
+    }
 }
 
 unsafe impl<T: Trace> Trace for rust_alloc::collections::BinaryHeap<T> {
@@ -525,6 +694,13 @@ unsafe impl<T: Trace> Trace for rust_alloc::collections::BinaryHeap<T> {
     unsafe fn trace(&self, tracer: &mut Tracer) {
         for v in self.iter() {
             v.trace(tracer);
+        }
+    }
+
+    #[inline]
+    unsafe fn trace_non_roots(&self) {
+        for v in self.iter() {
+            v.trace_non_roots();
         }
     }
 }
