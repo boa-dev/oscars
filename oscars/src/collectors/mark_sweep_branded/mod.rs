@@ -284,6 +284,52 @@ impl Collector {
             })
         });
     }
+
+    /// Debug-only snapshot of collector state.
+    pub fn debug_stats(&self) -> DebugStats {
+        let pool = self.pool.borrow();
+        let mut live_slots = 0usize;
+        let mut rooted_boxes = 0usize;
+        let mut root_count_sum = 0usize;
+        let mut non_root_count_sum = 0usize;
+        for ptr in pool.iter_live_slots() {
+            live_slots += 1;
+            let gc_box = unsafe {
+                &(*ptr
+                    .cast::<crate::alloc::mempool3::PoolItem<GcBox<()>>>()
+                    .as_ptr())
+                .0
+            };
+            let rc = gc_box.root_count.get();
+            let nrc = gc_box.non_root_count.get();
+            root_count_sum += rc;
+            non_root_count_sum += nrc;
+            if rc > nrc {
+                rooted_boxes += 1;
+            }
+        }
+        DebugStats {
+            live_slots,
+            rooted_boxes,
+            root_count_sum,
+            non_root_count_sum,
+            sentinel_roots: self.sentinel.iter().count(),
+            ephemerons: self.ephemerons.borrow().len(),
+            heap_bytes: pool.current_heap_size,
+        }
+    }
+}
+
+/// Debug-only snapshot of collector state.
+#[derive(Debug, Clone, Copy)]
+pub struct DebugStats {
+    pub live_slots: usize,
+    pub rooted_boxes: usize,
+    pub root_count_sum: usize,
+    pub non_root_count_sum: usize,
+    pub sentinel_roots: usize,
+    pub ephemerons: usize,
+    pub heap_bytes: usize,
 }
 
 impl Drop for Collector {

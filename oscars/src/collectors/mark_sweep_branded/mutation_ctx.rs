@@ -105,6 +105,11 @@ impl<'id, 'gc> MutationContext<'id, 'gc> {
         self.collector.collect();
     }
 
+    /// Debug-only snapshot of collector state.
+    pub fn debug_stats(&self) -> super::DebugStats {
+        self.collector.debug_stats()
+    }
+
     /// Triggers a gc cycle, allowing external roots to be traced.
     pub fn collect_with_roots<F: FnOnce(&mut crate::collectors::mark_sweep_branded::Tracer)>(
         &self,
