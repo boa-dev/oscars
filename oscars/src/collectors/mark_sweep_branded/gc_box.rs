@@ -30,8 +30,10 @@ pub struct GcBox<T: ?Sized> {
     pub(crate) color: Cell<GcColor>,
     /// Type-erased trace function.
     pub(crate) trace_fn: TraceFn,
+    pub(crate) trace_non_roots_fn: unsafe fn(NonNull<u8>),
     pub(crate) finalize_fn: unsafe fn(NonNull<u8>),
     pub(crate) root_count: Cell<usize>,
+    pub(crate) non_root_count: Cell<usize>,
     /// Type-erased finalize and free fn
     pub(crate) drop_fn: DropFn,
     /// Allocation ID used to validate weak pointers.
@@ -48,6 +50,10 @@ pub struct GcBox<T: ?Sized> {
 
 impl<T: ?Sized> GcBox<T> {
     pub(crate) const FREED_ALLOC_ID: usize = usize::MAX;
+
+    pub(crate) fn is_rooted(&self) -> bool {
+        self.root_count.get() > self.non_root_count.get()
+    }
 }
 
 impl<T: Trace> GcBox<T> {
@@ -61,11 +67,19 @@ impl<T: Trace> GcBox<T> {
                 (*item_ptr.as_ptr()).0.value.run_finalizer();
             }
         }
+        unsafe fn trace_non_roots_node<T: Trace>(ptr: NonNull<u8>) {
+            let item_ptr = ptr.cast::<PoolItem<GcBox<T>>>();
+            unsafe {
+                (*item_ptr.as_ptr()).0.value.trace_non_roots();
+            }
+        }
         Self {
             color: Cell::new(GcColor::White),
             trace_fn,
+            trace_non_roots_fn: trace_non_roots_node::<T>,
             finalize_fn: finalize_node::<T>,
             root_count: Cell::new(0),
+            non_root_count: Cell::new(0),
             drop_fn,
             alloc_id,
             type_id: typeid::of::<T>(),

@@ -176,4 +176,8 @@ unsafe impl<'gc, T: Trace + ?Sized + 'gc> Trace for Gc<'gc, T> {
     unsafe fn trace(&self, tracer: &mut crate::collectors::mark_sweep_branded::trace::Tracer) {
         tracer.mark(self);
     }
+    unsafe fn trace_non_roots(&self) {
+        let mut tracer = crate::collectors::mark_sweep_branded::trace::Tracer::new();
+        tracer.mark_non_root(self);
+    }
 }

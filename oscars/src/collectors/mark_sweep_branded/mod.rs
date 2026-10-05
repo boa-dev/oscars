@@ -168,13 +168,33 @@ impl Collector {
 
         trace_external(&mut tracer);
 
+        // Phase 0: Calculate non-root counts
         for ptr in self.pool.borrow().iter_live_slots() {
             unsafe {
                 let gc_box = &(*ptr
                     .cast::<crate::alloc::mempool3::PoolItem<GcBox<()>>>()
                     .as_ptr())
                 .0;
-                if gc_box.root_count.get() > 0 {
+                gc_box.non_root_count.set(0);
+            }
+        }
+        for ptr in self.pool.borrow().iter_live_slots() {
+            unsafe {
+                let gc_box = &(*ptr
+                    .cast::<crate::alloc::mempool3::PoolItem<GcBox<()>>>()
+                    .as_ptr())
+                .0;
+                (gc_box.trace_non_roots_fn)(ptr);
+            }
+        }
+
+        for ptr in self.pool.borrow().iter_live_slots() {
+            unsafe {
+                let gc_box = &(*ptr
+                    .cast::<crate::alloc::mempool3::PoolItem<GcBox<()>>>()
+                    .as_ptr())
+                .0;
+                if gc_box.is_rooted() {
                     let trace_fn_ptr = gc_box.trace_fn as *const ();
                     if trace_fn_ptr.is_null() {
                         panic!(
